@@ -62,7 +62,7 @@ fun ChatScreen(activity: MainActivity) {
         }
 
         Spacer(Modifier.height(8.dp))
-        HorizontalDivider()
+        Divider()
         Spacer(Modifier.height(8.dp))
 
         // Send controls

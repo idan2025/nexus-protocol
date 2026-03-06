@@ -110,7 +110,7 @@ fun NexusApp(activity: MainActivity) {
                         onClick = { selectedTab = 1; navController.navigate("mesh") { launchSingleTop = true } }
                     )
                     NavigationBarItem(
-                        icon = { Icon(Icons.Default.Bluetooth, "Devices") },
+                        icon = { Icon(Icons.Default.Phone, "Devices") },
                         label = { Text("Devices") },
                         selected = selectedTab == 2,
                         onClick = { selectedTab = 2; navController.navigate("devices") { launchSingleTop = true } }
