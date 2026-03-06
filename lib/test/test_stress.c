@@ -340,8 +340,7 @@ static void init_nodes(void)
     for (int i = 0; i < STRESS_NUM_NODES; i++) {
         test_node_t *n = &g_nodes[i];
         
-        nx_err_t err = nx_identity_generate(&n->identity);
-        assert(err == NX_OK);
+        assert(nx_identity_generate(&n->identity) == NX_OK);
         
         nx_node_config_t cfg = {
             .role = NX_ROLE_RELAY,
@@ -351,7 +350,7 @@ static void init_nodes(void)
             .user_ctx = n
         };
         
-        err = nx_node_init_with_identity(&n->node, &cfg, &n->identity);
+        nx_err_t err = nx_node_init_with_identity(&n->node, &cfg, &n->identity);
         assert(err == NX_OK);
     }
 }

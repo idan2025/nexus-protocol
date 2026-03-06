@@ -23,5 +23,7 @@ set(TESTS
 foreach(test ${TESTS})
     add_executable(${test} ${test}.c)
     target_link_libraries(${test} PRIVATE nexus)
+    # Keep asserts active in Release builds
+    target_compile_options(${test} PRIVATE -UNDEBUG)
     add_test(NAME ${test} COMMAND ${test})
 endforeach()

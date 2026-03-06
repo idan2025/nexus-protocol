@@ -152,23 +152,21 @@ static void test_asf_record_ack(void)
 /* ── Test: airtime estimation ─────────────────────────────────────── */
 static void test_asf_airtime(void)
 {
-    uint32_t sf7  = nx_asf_estimate_airtime(7, 100);
-    uint32_t sf10 = nx_asf_estimate_airtime(10, 100);
-    uint32_t sf12 = nx_asf_estimate_airtime(12, 100);
+    uint32_t at7  = nx_asf_estimate_airtime(7, 100);
+    uint32_t at10 = nx_asf_estimate_airtime(10, 100);
+    uint32_t at12 = nx_asf_estimate_airtime(12, 100);
 
     /* Higher SF = much longer airtime */
-    assert(sf7 > 0);
-    assert(sf10 > sf7);
-    assert(sf12 > sf10);
-    assert(sf12 > sf7 * 10);  /* SF12 should be ~15-30x SF7 */
+    assert(at7 > 0);
+    assert(at10 > at7);
+    assert(at12 > at10);
+    assert(at12 > at7 * 10);  /* SF12 should be ~15-30x SF7 */
 
     /* Zero-length payload still has base airtime */
-    uint32_t zero_len = nx_asf_estimate_airtime(10, 0);
-    assert(zero_len > 0);
+    assert(nx_asf_estimate_airtime(10, 0) > 0);
 
     /* Out of range SF is clamped to SF7 */
-    uint32_t bad = nx_asf_estimate_airtime(5, 100);
-    assert(bad == sf7);
+    assert(nx_asf_estimate_airtime(5, 100) == at7);
 }
 
 /* ── Test: reset clears state ─────────────────────────────────────── */
@@ -228,8 +226,8 @@ static void test_asf_all_strategies(void)
             nx_asf_record_ack(asf, i % 4 != 0);
         }
 
-        uint8_t sf = nx_asf_get_recommended_sf(asf);
-        assert(sf >= 7 && sf <= 12);
+        assert(nx_asf_get_recommended_sf(asf) >= 7);
+        assert(nx_asf_get_recommended_sf(asf) <= 12);
 
         nx_asf_destroy(asf);
     }

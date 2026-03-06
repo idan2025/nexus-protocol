@@ -275,8 +275,7 @@ static void test_halow_assess_channel(void)
     t->ops->init(t, NULL);
 
     uint8_t rate, power;
-    nx_err_t err = nx_halow_assess_channel(t, &rate, &power);
-    assert(err == NX_OK);
+    assert(nx_halow_assess_channel(t, &rate, &power) == NX_OK);
     /* With default snr=0, should pick lowest rate, highest power */
     assert(rate == 0);   /* 150K */
     assert(power == 20);

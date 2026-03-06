@@ -59,6 +59,8 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
 
       - name: Build APK
         run: cd android && gradle assembleDebug
@@ -72,6 +74,7 @@ jobs:
   build-firmware:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         target: [heltec_v3, rak4631]
     steps:
@@ -85,6 +88,19 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
+      - name: Install RAK4631 board support
+        if: matrix.target == 'rak4631'
+        run: |
+          pio pkg install -g -p nordicnrf52
+          BOARDS_DIR=$(find ~/.platformio/platforms/nordicnrf52*/boards -maxdepth 0 2>/dev/null | head -1)
+          cp firmware/rak4631/boards/wiscore_rak4631.json "$BOARDS_DIR/"
+          VARIANTS_DIR=$(find ~/.platformio/packages/framework-arduinoadafruitnrf52/variants -maxdepth 0 2>/dev/null | head -1)
+          if [ -n "$VARIANTS_DIR" ]; then
+            mkdir -p "$VARIANTS_DIR/WisCore_RAK4631_Board"
+            curl -sL https://raw.githubusercontent.com/RAKWireless/WisBlock/master/PlatformIO/RAK4630/WisCore_RAK4631_Board/variant.h -o "$VARIANTS_DIR/WisCore_RAK4631_Board/variant.h"
+            curl -sL https://raw.githubusercontent.com/RAKWireless/WisBlock/master/PlatformIO/RAK4630/WisCore_RAK4631_Board/variant.cpp -o "$VARIANTS_DIR/WisCore_RAK4631_Board/variant.cpp"
+          fi
+
       - name: Build firmware
         run: cd firmware/${{ matrix.target }} && pio run
 
@@ -95,7 +111,8 @@ jobs:
           path: firmware/${{ matrix.target }}/.pio/build/**/firmware.*
 
   create-release:
-    needs: [build-linux, build-android, build-firmware]
+    needs: [build-linux, build-android]
+    if: always() && needs.build-linux.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -105,12 +122,17 @@ jobs:
         with:
           path: artifacts
 
+      - name: Collect release files
+        run: |
+          mkdir -p release-files
+          cp artifacts/nexus-linux-x64/nexus-linux-x64.tar.gz release-files/ 2>/dev/null || true
+          find artifacts/nexus-mesh-android -name '*.apk' -exec cp {} release-files/ \; 2>/dev/null || true
+          find artifacts/firmware-heltec_v3 -name 'firmware.*' -exec cp {} release-files/ \; 2>/dev/null || true
+          find artifacts/firmware-rak4631 -name 'firmware.*' -exec cp {} release-files/ \; 2>/dev/null || true
+          ls -la release-files/
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: |
-            artifacts/nexus-linux-x64/nexus-linux-x64.tar.gz
-            artifacts/nexus-mesh-android/*.apk
-            artifacts/firmware-heltec_v3/**/*
-            artifacts/firmware-rak4631/**/*
+          files: release-files/*
