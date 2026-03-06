@@ -1,0 +1,40 @@
+# Build
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+# PlatformIO
+firmware/*/.pio/
+firmware/*/lib/
+firmware/*/.vscode/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/local.properties
+*.apk
+*.aab
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+*.egg
+
+# Keys
+*.key
+*.pem
