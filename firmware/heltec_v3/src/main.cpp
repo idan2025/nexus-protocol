@@ -18,6 +18,7 @@
 /* NEXUS C API */
 extern "C" {
 #include "nexus/node.h"
+#include "nexus/identity.h"
 #include "nexus/transport.h"
 #include "nexus/lora_radio.h"
 }

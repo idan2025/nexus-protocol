@@ -15,6 +15,7 @@
 /* NEXUS C API */
 extern "C" {
 #include "nexus/node.h"
+#include "nexus/identity.h"
 #include "nexus/transport.h"
 #include "nexus/lora_radio.h"
 }
@@ -28,8 +29,7 @@ extern "C" {
 #define LORA_RST    WB_IO2
 #define LORA_BUSY   WB_IO3
 
-#define LED_GREEN   LED_BUILTIN
-#define LED_BLUE    LED_CONN
+/* LED_GREEN and LED_BLUE are defined in variant.h */
 
 /* ── Globals ──────────────────────────────────────────────────────────── */
 

@@ -217,8 +217,6 @@ nx_lora_radio_t *nx_radiolib_create(SX1262 *radio)
     return r;
 }
 
-extern "C" {
-
 nx_transport_t *nx_radiolib_transport_setup(SX1262 *radio,
                                              const nx_lora_config_t *config)
 {
@@ -257,4 +255,3 @@ nx_transport_t *nx_radiolib_transport_setup(SX1262 *radio,
     return t;
 }
 
-} /* extern "C" */

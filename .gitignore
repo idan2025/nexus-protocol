@@ -9,6 +9,12 @@ build/
 firmware/*/.pio/
 firmware/*/lib/
 firmware/*/.vscode/
+# Symlinks created by link_sources.py pre-build script
+firmware/*/src/*.c
+firmware/*/src/*.h
+firmware/*/src/radiolib_hal.cpp
+firmware/*/src/ble_bridge.cpp
+firmware/*/src/identity_store.cpp
 
 # Android
 android/.gradle/
