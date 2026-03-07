@@ -5,15 +5,12 @@
  * - SX1262 LoRa radio (via RadioLib HAL bridge)
  * - BLE bridge for phone app connectivity
  * - Identity persistence in NVS
- * - OLED status display
- *
- * Internet connectivity is provided by connecting to a phone
- * (via BLE) or a Linux nexusd node (via LoRa) that has TCP/UDP
- * transports. The ESP32 acts as a LoRa + BLE mesh relay.
+ * - Interactive OLED display with button navigation
+ * - Store-and-forward persistence in flash
  */
 #include <Arduino.h>
 #include <RadioLib.h>
-#include <Wire.h>
+#include <U8x8lib.h>
 
 /* NEXUS C API */
 extern "C" {
@@ -21,6 +18,8 @@ extern "C" {
 #include "nexus/identity.h"
 #include "nexus/transport.h"
 #include "nexus/lora_radio.h"
+#include "nexus/route.h"
+#include "nexus/anchor.h"
 }
 
 #include "radiolib_hal.h"
@@ -39,10 +38,16 @@ extern "C" {
 #define OLED_SCL    18
 #define OLED_RST    21
 
-#define BTN_PRG     0   /* PRG button (active low) */
+#define BTN_PRG     0   /* PRG button (active low, internal pullup) */
 #define LED_PIN     35
 
-/* ── Globals ──────────────────────────────────────────────────────────── */
+/* ── Display ─────────────────────────────────────────────────────────── */
+
+/* U8x8 text-mode driver: 16 chars x 8 lines, no framebuffer needed */
+U8X8_SSD1306_128X64_NONAME_HW_I2C u8x8(OLED_RST, OLED_SCL, OLED_SDA);
+static bool oled_ok = false;
+
+/* ── Globals ─────────────────────────────────────────────────────────── */
 
 SX1262 radio = new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
@@ -51,86 +56,311 @@ static nx_identity_t stored_identity;
 static char ble_name[20];
 
 /* Stats */
-static uint32_t msg_count = 0;
+static uint32_t rx_count = 0;
 static uint32_t neighbor_count = 0;
 static int last_anchor_count = 0;
 
-/* ── OLED Display (SSD1306 via I2C, minimal driver) ───────────────────── */
+/* ── UI State ────────────────────────────────────────────────────────── */
 
-#define OLED_ADDR  0x3C
-#define OLED_WIDTH 128
-#define OLED_HEIGHT 64
+enum UIScreen {
+    SCREEN_STATUS,
+    SCREEN_NEIGHBORS,
+    SCREEN_MAILBOX,
+    SCREEN_COUNT
+};
 
-static bool oled_ok = false;
+static UIScreen ui_screen = SCREEN_STATUS;
+static int ui_scroll = 0;
+static bool ui_dirty = true;
+static uint32_t ui_last_draw_ms = 0;
 
-static void oled_cmd(uint8_t cmd)
+#define UI_REFRESH_MS    2000
+
+/* Button */
+static bool btn_down = false;
+static uint32_t btn_press_ms = 0;
+static bool btn_long_fired = false;
+
+#define BTN_DEBOUNCE_MS   50
+#define BTN_LONG_MS      1000
+
+/* ── Helpers ─────────────────────────────────────────────────────────── */
+
+static const char* role_name(int role)
 {
-    Wire.beginTransmission(OLED_ADDR);
-    Wire.write(0x00);
-    Wire.write(cmd);
-    Wire.endTransmission();
+    switch (role) {
+    case 0: return "LEAF";
+    case 1: return "RELAY";
+    case 2: return "GATEWAY";
+    case 3: return "ANCHOR";
+    case 4: return "SENTINL";
+    case 5: return "PILLAR";
+    case 6: return "VAULT";
+    default: return "???";
+    }
 }
 
-static void oled_init(void)
+static void format_uptime(uint32_t ms, char *buf, size_t len)
 {
-    pinMode(OLED_RST, OUTPUT);
-    digitalWrite(OLED_RST, LOW);
-    delay(20);
-    digitalWrite(OLED_RST, HIGH);
-    delay(20);
+    uint32_t s = ms / 1000;
+    uint32_t m = s / 60; s %= 60;
+    uint32_t h = m / 60; m %= 60;
+    uint32_t d = h / 24; h %= 24;
+    if (d > 0)      snprintf(buf, len, "%lud %luh", (unsigned long)d, (unsigned long)h);
+    else if (h > 0) snprintf(buf, len, "%luh %lum", (unsigned long)h, (unsigned long)m);
+    else            snprintf(buf, len, "%lum %lus", (unsigned long)m, (unsigned long)s);
+}
 
-    Wire.begin(OLED_SDA, OLED_SCL);
-    Wire.setClock(400000);
+/* Draw a full-width inverted header bar (centered text) */
+static void draw_header(const char *text)
+{
+    char hdr[17];
+    memset(hdr, ' ', 16);
+    hdr[16] = '\0';
+    int len = strlen(text);
+    if (len > 16) len = 16;
+    int pad = (16 - len) / 2;
+    memcpy(hdr + pad, text, len);
+    u8x8.setInverseFont(1);
+    u8x8.drawString(0, 0, hdr);
+    u8x8.setInverseFont(0);
+}
 
-    Wire.beginTransmission(OLED_ADDR);
-    if (Wire.endTransmission() != 0) {
-        Serial.println("[OLED] Not found");
+/* Draw a padded line (clears trailing chars from previous draws) */
+static void draw_line(int row, const char *fmt, ...)
+{
+    char buf[17];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    /* Pad to 16 chars to clear old text */
+    if (n < 0) n = 0;
+    if (n > 16) n = 16;
+    while (n < 16) buf[n++] = ' ';
+    buf[16] = '\0';
+    u8x8.drawString(0, row, buf);
+}
+
+/* ── Screen: Status ──────────────────────────────────────────────────── */
+
+static void draw_status()
+{
+    const nx_identity_t *id = nx_node_identity(&node);
+    char hdr[24];
+    snprintf(hdr, sizeof(hdr), "NEXUS  %s", role_name(node.config.role));
+    draw_header(hdr);
+
+    draw_line(1, "");
+
+    draw_line(2, "Addr: %02X%02X%02X%02X",
+              id->short_addr.bytes[0], id->short_addr.bytes[1],
+              id->short_addr.bytes[2], id->short_addr.bytes[3]);
+
+    char uptime[12];
+    format_uptime(millis(), uptime, sizeof(uptime));
+    draw_line(3, "Up:   %s", uptime);
+
+    int nbrs = nx_neighbor_count(&node.route_table);
+    draw_line(4, "Nbrs: %d", nbrs);
+
+    draw_line(5, "Msgs: %lu", (unsigned long)rx_count);
+
+    draw_line(6, "Store:%d/%d",
+              nx_anchor_count(&node.anchor), node.anchor.max_slots);
+
+    draw_line(7, "BLE:%c  LoRa:Y",
+              nx_ble_bridge_connected() ? 'Y' : 'N');
+}
+
+/* ── Screen: Neighbors ───────────────────────────────────────────────── */
+
+static void draw_neighbors()
+{
+    int count = nx_neighbor_count(&node.route_table);
+    char hdr[24];
+    snprintf(hdr, sizeof(hdr), "NEIGHBORS  %d", count);
+    draw_header(hdr);
+
+    if (count == 0) {
+        draw_line(1, "");
+        draw_line(2, "");
+        draw_line(3, " No neighbors");
+        draw_line(4, " discovered yet");
+        draw_line(5, "");
+        draw_line(6, "");
+        draw_line(7, "");
         return;
     }
 
-    oled_cmd(0xAE); oled_cmd(0xD5); oled_cmd(0x80);
-    oled_cmd(0xA8); oled_cmd(0x3F); oled_cmd(0xD3); oled_cmd(0x00);
-    oled_cmd(0x40); oled_cmd(0x8D); oled_cmd(0x14);
-    oled_cmd(0x20); oled_cmd(0x00); oled_cmd(0xA1); oled_cmd(0xC8);
-    oled_cmd(0xDA); oled_cmd(0x12); oled_cmd(0x81); oled_cmd(0xCF);
-    oled_cmd(0xD9); oled_cmd(0xF1); oled_cmd(0xDB); oled_cmd(0x40);
-    oled_cmd(0xA4); oled_cmd(0xA6); oled_cmd(0xAF);
+    /* Show neighbors on lines 1-6 (6 per page), line 7 = scroll hint */
+    int shown = 0;
+    int skip = ui_scroll;
+    for (int i = 0; i < NX_MAX_NEIGHBORS && shown < 6; i++) {
+        const nx_neighbor_t *n = &node.route_table.neighbors[i];
+        if (!n->valid) continue;
+        if (skip > 0) { skip--; continue; }
 
-    oled_ok = true;
-    Serial.println("[OLED] OK");
-}
+        draw_line(1 + shown, "%02X%02X%02X%02X %s",
+                  n->addr.bytes[0], n->addr.bytes[1],
+                  n->addr.bytes[2], n->addr.bytes[3],
+                  role_name(n->role));
+        shown++;
+    }
+    /* Clear remaining lines */
+    for (int r = 1 + shown; r < 7; r++)
+        draw_line(r, "");
 
-static void oled_clear(void)
-{
-    if (!oled_ok) return;
-    oled_cmd(0x21); oled_cmd(0); oled_cmd(127);
-    oled_cmd(0x22); oled_cmd(0); oled_cmd(7);
-
-    for (int i = 0; i < 1024; i++) {
-        Wire.beginTransmission(OLED_ADDR);
-        Wire.write(0x40);
-        for (int j = 0; j < 16 && i < 1024; j++, i++) {
-            Wire.write(0x00);
-        }
-        i--;
-        Wire.endTransmission();
+    /* Footer */
+    int pages = (count + 5) / 6;
+    int page = (ui_scroll / 6) + 1;
+    if (pages > 1) {
+        draw_line(7, "[PRG] %d/%d", page, pages);
+    } else {
+        draw_line(7, "[PRG] next");
     }
 }
 
-static void oled_print_status(const char *line1, const char *line2,
-                               const char *line3, const char *line4)
+/* ── Screen: Mailbox ─────────────────────────────────────────────────── */
+
+static void draw_mailbox()
 {
-    if (!oled_ok) return;
-    (void)line1; (void)line2; (void)line3; (void)line4;
+    draw_header("STORE & FORWARD");
+
+    int count = nx_anchor_count(&node.anchor);
+    draw_line(1, "");
+    draw_line(2, "Slots: %d/%d", count, node.anchor.max_slots);
+
+    uint32_t ttl_min = node.anchor.msg_ttl_ms / 60000;
+    if (ttl_min >= 60)
+        draw_line(3, "TTL:   %luh", (unsigned long)(ttl_min / 60));
+    else
+        draw_line(3, "TTL:   %lumin", (unsigned long)ttl_min);
+
+    if (count == 0) {
+        draw_line(4, "");
+        draw_line(5, " No stored msgs");
+        draw_line(6, "");
+        draw_line(7, "[PRG] next");
+        return;
+    }
+
+    /* Group messages by destination */
+    struct { nx_addr_short_t addr; int count; } dests[8];
+    int ndests = 0;
+    int limit = node.anchor.max_slots < NX_ANCHOR_MAX_STORED ?
+                node.anchor.max_slots : NX_ANCHOR_MAX_STORED;
+
+    for (int i = 0; i < limit; i++) {
+        if (!node.anchor.msgs[i].valid) continue;
+
+        bool found = false;
+        for (int d = 0; d < ndests; d++) {
+            if (memcmp(dests[d].addr.bytes,
+                       node.anchor.msgs[i].dest.bytes, 4) == 0) {
+                dests[d].count++;
+                found = true;
+                break;
+            }
+        }
+        if (!found && ndests < 8) {
+            dests[ndests].addr = node.anchor.msgs[i].dest;
+            dests[ndests].count = 1;
+            ndests++;
+        }
+    }
+
+    draw_line(4, "");
+    for (int d = 0; d < ndests && d < 3; d++) {
+        draw_line(5 + d, "%02X%02X%02X%02X  x%d",
+                  dests[d].addr.bytes[0], dests[d].addr.bytes[1],
+                  dests[d].addr.bytes[2], dests[d].addr.bytes[3],
+                  dests[d].count);
+    }
+    /* Clear remaining */
+    for (int r = 5 + (ndests < 3 ? ndests : 3); r < 7; r++)
+        draw_line(r, "");
+
+    draw_line(7, "[PRG] next");
 }
 
-/* ── Callbacks ────────────────────────────────────────────────────────── */
+/* ── Screen dispatch ─────────────────────────────────────────────────── */
+
+static void draw_screen()
+{
+    if (!oled_ok) return;
+
+    switch (ui_screen) {
+    case SCREEN_STATUS:    draw_status(); break;
+    case SCREEN_NEIGHBORS: draw_neighbors(); break;
+    case SCREEN_MAILBOX:   draw_mailbox(); break;
+    default: break;
+    }
+}
+
+/* ── Button handler ──────────────────────────────────────────────────── */
+
+static void button_update()
+{
+    bool pressed = (digitalRead(BTN_PRG) == LOW);
+    uint32_t now = millis();
+
+    if (pressed && !btn_down) {
+        /* Just pressed */
+        btn_down = true;
+        btn_press_ms = now;
+        btn_long_fired = false;
+    } else if (pressed && btn_down && !btn_long_fired) {
+        /* Held — check for long press */
+        if (now - btn_press_ms > BTN_LONG_MS) {
+            btn_long_fired = true;
+            /* Long press action: send announcement */
+            nx_node_announce(&node);
+            Serial.println("[BTN] Announce sent");
+
+            /* Brief LED flash for feedback */
+            digitalWrite(LED_PIN, LOW);
+            delay(100);
+            digitalWrite(LED_PIN, HIGH);
+
+            ui_dirty = true;
+        }
+    } else if (!pressed && btn_down) {
+        /* Released */
+        btn_down = false;
+        if (!btn_long_fired && (now - btn_press_ms > BTN_DEBOUNCE_MS)) {
+            /* Short press */
+            if (ui_screen == SCREEN_NEIGHBORS) {
+                int count = nx_neighbor_count(&node.route_table);
+                if (ui_scroll + 6 < count) {
+                    /* Scroll to next page of neighbors */
+                    ui_scroll += 6;
+                } else {
+                    /* Past last page — next screen */
+                    ui_scroll = 0;
+                    ui_screen = (UIScreen)((int)ui_screen + 1);
+                    if ((int)ui_screen >= SCREEN_COUNT)
+                        ui_screen = SCREEN_STATUS;
+                }
+            } else {
+                ui_scroll = 0;
+                ui_screen = (UIScreen)((int)ui_screen + 1);
+                if ((int)ui_screen >= SCREEN_COUNT)
+                    ui_screen = SCREEN_STATUS;
+            }
+            ui_dirty = true;
+        }
+    }
+}
+
+/* ── Callbacks ───────────────────────────────────────────────────────── */
 
 static void on_data(const nx_addr_short_t *src,
                     const uint8_t *data, size_t len, void *user)
 {
     (void)user;
-    msg_count++;
+    rx_count++;
+    ui_dirty = true;
     Serial.printf("[RX] From %02X%02X%02X%02X len=%d\n",
                   src->bytes[0], src->bytes[1],
                   src->bytes[2], src->bytes[3], (int)len);
@@ -152,6 +382,7 @@ static void on_neighbor(const nx_addr_short_t *addr,
 {
     (void)user;
     neighbor_count++;
+    ui_dirty = true;
     Serial.printf("[NBR] %02X%02X%02X%02X role=%d\n",
                   addr->bytes[0], addr->bytes[1],
                   addr->bytes[2], addr->bytes[3], role);
@@ -161,7 +392,8 @@ static void on_session(const nx_addr_short_t *src,
                        const uint8_t *data, size_t len, void *user)
 {
     (void)user;
-    msg_count++;
+    rx_count++;
+    ui_dirty = true;
     Serial.printf("[SESSION] From %02X%02X%02X%02X len=%d\n",
                   src->bytes[0], src->bytes[1],
                   src->bytes[2], src->bytes[3], (int)len);
@@ -178,25 +410,44 @@ static void on_session(const nx_addr_short_t *src,
     }
 }
 
-/* ── Serial commands ──────────────────────────────────────────────────── */
+/* ── Serial commands ─────────────────────────────────────────────────── */
 
 static void process_serial_command(const char *line)
 {
     if (strcmp(line, "STATUS") == 0) {
         const nx_identity_t *id = nx_node_identity(&node);
-        Serial.printf("[STATUS] %02X%02X%02X%02X neighbors=%lu msgs=%lu LoRa=yes BLE=%s\n",
+        Serial.printf("[STATUS] %02X%02X%02X%02X nbrs=%lu msgs=%lu stored=%d BLE=%s\n",
                       id->short_addr.bytes[0], id->short_addr.bytes[1],
                       id->short_addr.bytes[2], id->short_addr.bytes[3],
                       (unsigned long)neighbor_count,
-                      (unsigned long)msg_count,
+                      (unsigned long)rx_count,
+                      nx_anchor_count(&node.anchor),
                       nx_ble_bridge_connected() ? "yes" : "no");
     } else if (strcmp(line, "ANNOUNCE") == 0) {
         nx_node_announce(&node);
         Serial.println("[ANNOUNCE] Sent");
+    } else if (strcmp(line, "NEIGHBORS") == 0) {
+        int count = nx_neighbor_count(&node.route_table);
+        Serial.printf("[NEIGHBORS] %d total\n", count);
+        for (int i = 0; i < NX_MAX_NEIGHBORS; i++) {
+            const nx_neighbor_t *n = &node.route_table.neighbors[i];
+            if (!n->valid) continue;
+            Serial.printf("  %02X%02X%02X%02X  %s\n",
+                          n->addr.bytes[0], n->addr.bytes[1],
+                          n->addr.bytes[2], n->addr.bytes[3],
+                          role_name(n->role));
+        }
+    } else if (strcmp(line, "MAILBOX") == 0) {
+        int count = nx_anchor_count(&node.anchor);
+        Serial.printf("[MAILBOX] %d/%d slots used, TTL=%lus\n",
+                      count, node.anchor.max_slots,
+                      (unsigned long)(node.anchor.msg_ttl_ms / 1000));
+    } else if (strcmp(line, "HELP") == 0) {
+        Serial.println("Commands: STATUS ANNOUNCE NEIGHBORS MAILBOX HELP");
     }
 }
 
-/* ── Setup ────────────────────────────────────────────────────────────── */
+/* ── Setup ───────────────────────────────────────────────────────────── */
 
 void setup()
 {
@@ -204,11 +455,28 @@ void setup()
     delay(1000);
     Serial.println("\n[NEXUS] Heltec V3 starting...");
 
+    /* GPIO */
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
+    pinMode(BTN_PRG, INPUT_PULLUP);
 
-    oled_init();
-    oled_clear();
+    /* OLED display */
+    oled_ok = u8x8.begin();
+    if (oled_ok) {
+        u8x8.setFont(u8x8_font_chroma48medium8_r);
+        u8x8.clear();
+
+        /* Splash screen */
+        draw_header("NEXUS MESH");
+        draw_line(2, "   LoRa + BLE");
+        draw_line(3, " E2E Encrypted");
+        draw_line(5, "    v0.1.0");
+        draw_line(7, " Starting...");
+
+        Serial.println("[OLED] OK");
+    } else {
+        Serial.println("[OLED] Not found");
+    }
 
     /* Transport registry */
     nx_transport_registry_init();
@@ -218,6 +486,12 @@ void setup()
     nx_transport_t *lora_t = nx_radiolib_transport_setup(&radio, &lora_cfg);
     if (!lora_t) {
         Serial.println("[NEXUS] LoRa transport setup failed!");
+        if (oled_ok) {
+            u8x8.clear();
+            draw_header("!! ERROR !!");
+            draw_line(3, " LoRa FAILED");
+            draw_line(5, " Check wiring");
+        }
         while (1) delay(1000);
     }
     Serial.println("[NEXUS] LoRa transport OK");
@@ -247,6 +521,11 @@ void setup()
 
     if (nx_node_init_with_identity(&node, &cfg, &stored_identity) != NX_OK) {
         Serial.println("[NEXUS] Node init failed!");
+        if (oled_ok) {
+            u8x8.clear();
+            draw_header("!! ERROR !!");
+            draw_line(3, " Node init FAIL");
+        }
         while (1) delay(1000);
     }
 
@@ -272,11 +551,21 @@ void setup()
 
     nx_node_announce(&node);
 
-    Serial.println("[NEXUS] Ready");
+    Serial.println("[NEXUS] Ready - press PRG to cycle screens, hold for announce");
+    Serial.println("[NEXUS] Serial commands: STATUS ANNOUNCE NEIGHBORS MAILBOX HELP");
     digitalWrite(LED_PIN, HIGH);
+
+    /* Clear splash and draw initial screen */
+    delay(1500);
+    if (oled_ok) {
+        u8x8.clear();
+        draw_screen();
+    }
+    ui_dirty = false;
+    ui_last_draw_ms = millis();
 }
 
-/* ── Main Loop ────────────────────────────────────────────────────────── */
+/* ── Main Loop ───────────────────────────────────────────────────────── */
 
 static uint32_t last_status_ms = 0;
 
@@ -300,6 +589,18 @@ void loop()
 
     nx_ble_bridge_poll();
 
+    /* Button navigation */
+    button_update();
+
+    /* Persist anchor mailbox when contents change */
+    int cur_anchor = nx_anchor_count(&node.anchor);
+    if (cur_anchor != last_anchor_count) {
+        nx_anchor_store_save(&node.anchor);
+        Serial.printf("[ANCHOR] Saved %d messages to flash\n", cur_anchor);
+        last_anchor_count = cur_anchor;
+        ui_dirty = true;
+    }
+
     /* Serial command processing */
     static char serial_buf[128];
     static int serial_pos = 0;
@@ -316,36 +617,25 @@ void loop()
         }
     }
 
-    /* Persist anchor mailbox when contents change */
-    int cur_anchor = nx_anchor_count(&node.anchor);
-    if (cur_anchor != last_anchor_count) {
-        nx_anchor_store_save(&node.anchor);
-        Serial.printf("[ANCHOR] Saved %d messages to flash\n", cur_anchor);
-        last_anchor_count = cur_anchor;
+    /* Update display */
+    uint32_t now = millis();
+    if (ui_dirty || (now - ui_last_draw_ms > UI_REFRESH_MS)) {
+        draw_screen();
+        ui_dirty = false;
+        ui_last_draw_ms = now;
     }
 
-    /* Periodic status output */
-    uint32_t now = millis();
+    /* Periodic serial status */
     if (now - last_status_ms > 30000) {
         last_status_ms = now;
 
         const nx_identity_t *id = nx_node_identity(&node);
-        Serial.printf("[STATUS] %02X%02X%02X%02X neighbors=%lu msgs=%lu stored=%d BLE=%s\n",
+        Serial.printf("[STATUS] %02X%02X%02X%02X nbrs=%d msgs=%lu stored=%d BLE=%s\n",
                       id->short_addr.bytes[0], id->short_addr.bytes[1],
                       id->short_addr.bytes[2], id->short_addr.bytes[3],
-                      (unsigned long)neighbor_count,
-                      (unsigned long)msg_count,
+                      nx_neighbor_count(&node.route_table),
+                      (unsigned long)rx_count,
                       nx_anchor_count(&node.anchor),
                       nx_ble_bridge_connected() ? "yes" : "no");
-
-        char l1[32], l2[32], l3[32], l4[32];
-        snprintf(l1, sizeof(l1), "NEXUS %02X%02X%02X%02X",
-                 id->short_addr.bytes[0], id->short_addr.bytes[1],
-                 id->short_addr.bytes[2], id->short_addr.bytes[3]);
-        snprintf(l2, sizeof(l2), "Neighbors: %lu", (unsigned long)neighbor_count);
-        snprintf(l3, sizeof(l3), "Messages: %lu", (unsigned long)msg_count);
-        snprintf(l4, sizeof(l4), "LoRa:Y BLE:%s",
-                 nx_ble_bridge_connected() ? "Y" : "N");
-        oled_print_status(l1, l2, l3, l4);
     }
 }
