@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.nexus.mesh.ble.BleTransport
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DevicesScreen(activity: MainActivity) {
     val bleTransport = remember { BleTransport(activity) }
@@ -19,81 +20,96 @@ fun DevicesScreen(activity: MainActivity) {
     val connectedDevice by bleTransport.connectedDevice.collectAsState()
     var scanning by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp)
-    ) {
-        Text("BLE Devices", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(8.dp))
-
-        // Connection status
-        if (connected) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("Connected", style = MaterialTheme.typography.titleMedium)
-                        Text(connectedDevice ?: "", style = MaterialTheme.typography.bodySmall)
-                    }
-                    Button(onClick = { bleTransport.disconnect() }) {
-                        Text("Disconnect")
+    Scaffold(
+        topBar = {
+            TopAppBar(title = { Text("BLE Devices") })
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Connection status
+            if (connected) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Connected", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    connectedDevice ?: "",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Button(onClick = { bleTransport.disconnect() }) {
+                                Text("Disconnect")
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        Spacer(Modifier.height(16.dp))
-
-        // Scan button
-        Button(
-            onClick = {
-                if (scanning) {
-                    bleTransport.stopScan()
-                    scanning = false
-                } else {
-                    bleTransport.startScan()
-                    scanning = true
+            // Scan button
+            item {
+                Button(
+                    onClick = {
+                        if (scanning) {
+                            bleTransport.stopScan()
+                            scanning = false
+                        } else {
+                            bleTransport.startScan()
+                            scanning = true
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (scanning) "Stop Scanning" else "Scan for NEXUS Devices")
                 }
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(if (scanning) "Stop Scanning" else "Scan for NEXUS Devices")
-        }
+            }
 
-        Spacer(Modifier.height(16.dp))
+            if (devices.isEmpty() && scanning) {
+                item {
+                    Text(
+                        "Scanning for NEXUS devices...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
 
-        if (devices.isEmpty() && scanning) {
-            Text(
-                "Scanning for NEXUS devices...",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        // Device list
-        LazyColumn {
+            // Device list
             items(devices) { device ->
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 4.dp)
                         .clickable {
                             bleTransport.connect(device.address)
                             scanning = false
                         }
                 ) {
                     Row(
-                        modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(device.name, style = MaterialTheme.typography.titleSmall)
                             Text(
                                 device.address,
@@ -101,6 +117,7 @@ fun DevicesScreen(activity: MainActivity) {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        Spacer(Modifier.width(8.dp))
                         Text(
                             "${device.rssi} dBm",
                             color = MaterialTheme.colorScheme.secondary

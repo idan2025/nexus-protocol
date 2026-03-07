@@ -13,10 +13,6 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-/**
- * Foreground service that keeps the NEXUS node running.
- * Handles identity persistence, polling loop, and message dispatch.
- */
 class NexusService : Service(), NexusNode.Callback {
     companion object {
         private const val TAG = "NexusService"
@@ -36,12 +32,21 @@ class NexusService : Service(), NexusNode.Callback {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var multicastLock: WifiManager.MulticastLock? = null
 
-    // Observable state
-    data class Message(val src: String, val data: ByteArray, val timestamp: Long)
+    // --- Data models ---
+
+    data class ChatMessage(
+        val peerAddr: String,
+        val text: String,
+        val timestamp: Long,
+        val isOutgoing: Boolean
+    )
+
     data class Neighbor(val addr: String, val role: Int)
 
-    private val _messages = MutableStateFlow<List<Message>>(emptyList())
-    val messages: StateFlow<List<Message>> = _messages
+    // --- Observable state ---
+
+    private val _conversations = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
+    val conversations: StateFlow<Map<String, List<ChatMessage>>> = _conversations
 
     private val _neighbors = MutableStateFlow<List<Neighbor>>(emptyList())
     val neighbors: StateFlow<List<Neighbor>> = _neighbors
@@ -79,7 +84,6 @@ class NexusService : Service(), NexusNode.Callback {
     }
 
     private fun startNode() {
-        // Try to load saved identity
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedBytes = prefs.getString(KEY_IDENTITY, null)
 
@@ -96,7 +100,6 @@ class NexusService : Service(), NexusNode.Callback {
             return
         }
 
-        // Save identity for next launch
         node.getIdentityBytes()?.let { bytes ->
             val encoded = android.util.Base64.encodeToString(bytes, android.util.Base64.DEFAULT)
             prefs.edit().putString(KEY_IDENTITY, encoded).apply()
@@ -105,7 +108,6 @@ class NexusService : Service(), NexusNode.Callback {
         _address.value = node.getAddressHex()
         updateNotification("Node: ${_address.value}")
 
-        // Start polling loop
         pollJob = scope.launch {
             while (isActive) {
                 node.poll(50)
@@ -113,7 +115,6 @@ class NexusService : Service(), NexusNode.Callback {
             }
         }
 
-        // Periodic announce
         scope.launch {
             while (isActive) {
                 delay(30_000)
@@ -121,7 +122,6 @@ class NexusService : Service(), NexusNode.Callback {
             }
         }
 
-        // Auto-start TCP inet if previously enabled
         val tcpPrefs = getSharedPreferences(PREFS_TCP, Context.MODE_PRIVATE)
         if (tcpPrefs.getBoolean(KEY_TCP_ENABLED, false)) {
             val port = tcpPrefs.getInt(KEY_TCP_PORT, 4242)
@@ -129,7 +129,6 @@ class NexusService : Service(), NexusNode.Callback {
             startTcpInetFromConfig(port, peersStr)
         }
 
-        // Auto-start UDP multicast for LAN discovery
         startUdpMulticast()
 
         Log.i(TAG, "Node started: ${_address.value}")
@@ -163,10 +162,9 @@ class NexusService : Service(), NexusNode.Callback {
         val srcHex = src.joinToString("") { "%02X".format(it) }
         Log.i(TAG, "Data from $srcHex: ${data.size} bytes")
 
-        val msg = Message(srcHex, data.copyOf(), System.currentTimeMillis())
-        _messages.value = _messages.value + msg
-
-        showMessageNotification(srcHex, data)
+        val text = String(data, Charsets.UTF_8)
+        addMessage(srcHex, ChatMessage(srcHex, text, System.currentTimeMillis(), false))
+        showMessageNotification(srcHex, text)
     }
 
     override fun onNeighbor(addr: ByteArray, role: Int) {
@@ -183,17 +181,28 @@ class NexusService : Service(), NexusNode.Callback {
         val srcHex = src.joinToString("") { "%02X".format(it) }
         Log.i(TAG, "Session msg from $srcHex: ${data.size} bytes")
 
-        val msg = Message(srcHex, data.copyOf(), System.currentTimeMillis())
-        _messages.value = _messages.value + msg
+        val text = String(data, Charsets.UTF_8)
+        addMessage(srcHex, ChatMessage(srcHex, text, System.currentTimeMillis(), false))
+        showMessageNotification(srcHex, text)
+    }
 
-        showMessageNotification(srcHex, data)
+    // --- Conversation management ---
+
+    private fun addMessage(peerAddr: String, msg: ChatMessage) {
+        val current = _conversations.value.toMutableMap()
+        current[peerAddr] = (current[peerAddr] ?: emptyList()) + msg
+        _conversations.value = current
     }
 
     // --- Public API for UI ---
 
     fun sendMessage(dest: String, text: String): Boolean {
         val destBytes = hexToBytes(dest) ?: return false
-        return node.send(destBytes, text.toByteArray(Charsets.UTF_8))
+        val ok = node.send(destBytes, text.toByteArray(Charsets.UTF_8))
+        if (ok) {
+            addMessage(dest, ChatMessage(dest, text, System.currentTimeMillis(), true))
+        }
+        return ok
     }
 
     fun sendSessionMessage(dest: String, text: String): Boolean {
@@ -241,11 +250,9 @@ class NexusService : Service(), NexusNode.Callback {
         )
     }
 
-    // --- UDP Multicast (LAN auto-discovery) ---
+    // --- UDP Multicast ---
 
     fun startUdpMulticast(): Boolean {
-        // Android blocks multicast by default to save battery.
-        // We must acquire a MulticastLock before we can receive.
         if (multicastLock == null) {
             val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             multicastLock = wifi?.createMulticastLock("nexus_mcast")?.apply {
@@ -315,8 +322,7 @@ class NexusService : Service(), NexusNode.Callback {
         mgr.notify(NOTIFICATION_ID, buildNotification(text))
     }
 
-    private fun showMessageNotification(from: String, data: ByteArray) {
-        val text = String(data, Charsets.UTF_8)
+    private fun showMessageNotification(from: String, text: String) {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Message from $from")
             .setContentText(text.take(100))

@@ -18,9 +18,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.nexus.mesh.service.NexusService
 
 class MainActivity : ComponentActivity() {
@@ -48,7 +51,6 @@ class MainActivity : ComponentActivity() {
 
         requestPermissions()
 
-        // Start and bind to service
         val intent = Intent(this, NexusService::class.java)
         startForegroundService(intent)
         bindService(intent, connection, Context.BIND_AUTO_CREATE)
@@ -89,46 +91,91 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun NexusApp(activity: MainActivity) {
     val navController = rememberNavController()
-    var selectedTab by remember { mutableIntStateOf(0) }
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route ?: "chat"
+
+    // Hide bottom bar on conversation detail screen
+    val showBottomBar = !currentRoute.startsWith("conversation/")
+
+    val selectedTab = when {
+        currentRoute == "chat" -> 0
+        currentRoute == "mesh" -> 1
+        currentRoute == "devices" -> 2
+        currentRoute == "settings" -> 3
+        else -> 0
+    }
 
     MaterialTheme(
         colorScheme = darkColorScheme()
     ) {
         Scaffold(
             bottomBar = {
-                NavigationBar {
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Default.Email, "Chat") },
-                        label = { Text("Chat") },
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0; navController.navigate("chat") { launchSingleTop = true } }
-                    )
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Default.Share, "Mesh") },
-                        label = { Text("Mesh") },
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1; navController.navigate("mesh") { launchSingleTop = true } }
-                    )
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Default.Phone, "Devices") },
-                        label = { Text("Devices") },
-                        selected = selectedTab == 2,
-                        onClick = { selectedTab = 2; navController.navigate("devices") { launchSingleTop = true } }
-                    )
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Default.Settings, "Settings") },
-                        label = { Text("Settings") },
-                        selected = selectedTab == 3,
-                        onClick = { selectedTab = 3; navController.navigate("settings") { launchSingleTop = true } }
-                    )
+                if (showBottomBar) {
+                    NavigationBar {
+                        NavigationBarItem(
+                            icon = { Icon(Icons.Default.Email, "Chat") },
+                            label = { Text("Chat") },
+                            selected = selectedTab == 0,
+                            onClick = {
+                                navController.navigate("chat") {
+                                    popUpTo("chat") { inclusive = true }
+                                    launchSingleTop = true
+                                }
+                            }
+                        )
+                        NavigationBarItem(
+                            icon = { Icon(Icons.Default.Share, "Mesh") },
+                            label = { Text("Mesh") },
+                            selected = selectedTab == 1,
+                            onClick = {
+                                navController.navigate("mesh") {
+                                    popUpTo("chat")
+                                    launchSingleTop = true
+                                }
+                            }
+                        )
+                        NavigationBarItem(
+                            icon = { Icon(Icons.Default.Phone, "Devices") },
+                            label = { Text("Devices") },
+                            selected = selectedTab == 2,
+                            onClick = {
+                                navController.navigate("devices") {
+                                    popUpTo("chat")
+                                    launchSingleTop = true
+                                }
+                            }
+                        )
+                        NavigationBarItem(
+                            icon = { Icon(Icons.Default.Settings, "Settings") },
+                            label = { Text("Settings") },
+                            selected = selectedTab == 3,
+                            onClick = {
+                                navController.navigate("settings") {
+                                    popUpTo("chat")
+                                    launchSingleTop = true
+                                }
+                            }
+                        )
+                    }
                 }
             }
         ) { padding ->
-            NavHost(navController, startDestination = "chat", Modifier.padding(padding)) {
-                composable("chat") { ChatScreen(activity) }
-                composable("mesh") { MeshScreen(activity) }
+            NavHost(
+                navController,
+                startDestination = "chat",
+                modifier = Modifier.padding(padding)
+            ) {
+                composable("chat") { ChatScreen(activity, navController) }
+                composable("mesh") { MeshScreen(activity, navController) }
                 composable("devices") { DevicesScreen(activity) }
                 composable("settings") { SettingsScreen(activity) }
+                composable(
+                    "conversation/{address}",
+                    arguments = listOf(navArgument("address") { type = NavType.StringType })
+                ) { backStackEntry ->
+                    val address = backStackEntry.arguments?.getString("address") ?: ""
+                    ConversationScreen(activity, navController, address)
+                }
             }
         }
     }

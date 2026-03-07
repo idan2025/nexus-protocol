@@ -255,7 +255,7 @@ Java_com_nexus_mesh_service_NexusNode_nativeSend(JNIEnv *env, jobject thiz,
     jsize len = env->GetArrayLength(data);
     jbyte *buf = env->GetByteArrayElements(data, nullptr);
 
-    nx_err_t err = nx_node_send(&g_node, &dst, (uint8_t *)buf, (size_t)len);
+    nx_err_t err = nx_node_send_raw(&g_node, &dst, (uint8_t *)buf, (size_t)len);
     env->ReleaseByteArrayElements(data, buf, JNI_ABORT);
 
     return (err == NX_OK) ? JNI_TRUE : JNI_FALSE;
