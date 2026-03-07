@@ -138,7 +138,7 @@ fun ConversationScreen(
                                     showRouteInfo = true
                                 }
                             )
-                            HorizontalDivider()
+                            Divider()
                             DropdownMenuItem(
                                 text = { Text("Clear Messages") },
                                 leadingIcon = {
@@ -360,7 +360,7 @@ fun ConversationScreen(
                         )
                     }
 
-                    HorizontalDivider()
+                    Divider()
 
                     // Stats
                     val msgCount = messages.size
