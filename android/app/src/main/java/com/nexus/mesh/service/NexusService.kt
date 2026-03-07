@@ -23,6 +23,10 @@ class NexusService : Service(), NexusNode.Callback {
         private const val NOTIFICATION_ID = 1
         private const val PREFS_NAME = "nexus_identity"
         private const val KEY_IDENTITY = "identity_bytes"
+        private const val PREFS_TCP = "nexus_tcp"
+        private const val KEY_TCP_ENABLED = "tcp_enabled"
+        private const val KEY_TCP_PORT = "tcp_listen_port"
+        private const val KEY_TCP_PEERS = "tcp_peers"
     }
 
     private val node = NexusNode()
@@ -42,6 +46,12 @@ class NexusService : Service(), NexusNode.Callback {
 
     private val _address = MutableStateFlow("--------")
     val address: StateFlow<String> = _address
+
+    private val _tcpActive = MutableStateFlow(false)
+    val tcpActive: StateFlow<Boolean> = _tcpActive
+
+    private val _udpActive = MutableStateFlow(false)
+    val udpActive: StateFlow<Boolean> = _udpActive
 
     inner class LocalBinder : Binder() {
         fun getService(): NexusService = this@NexusService
@@ -106,7 +116,40 @@ class NexusService : Service(), NexusNode.Callback {
             }
         }
 
+        // Auto-start TCP inet if previously enabled
+        val tcpPrefs = getSharedPreferences(PREFS_TCP, Context.MODE_PRIVATE)
+        if (tcpPrefs.getBoolean(KEY_TCP_ENABLED, false)) {
+            val port = tcpPrefs.getInt(KEY_TCP_PORT, 4242)
+            val peersStr = tcpPrefs.getString(KEY_TCP_PEERS, "") ?: ""
+            startTcpInetFromConfig(port, peersStr)
+        }
+
+        // Auto-start UDP multicast for LAN discovery
+        startUdpMulticast()
+
         Log.i(TAG, "Node started: ${_address.value}")
+    }
+
+    private fun startTcpInetFromConfig(port: Int, peersStr: String) {
+        val peerList = if (peersStr.isNotEmpty()) {
+            peersStr.split(",").mapNotNull { peer ->
+                val parts = peer.trim().split(":")
+                if (parts.size == 2) parts[0] to parts[1].toIntOrNull()
+                else null
+            }.filter { it.second != null }
+        } else emptyList()
+
+        val hosts = peerList.map { it.first }.toTypedArray()
+        val ports = peerList.map { it.second!! }.toIntArray()
+
+        val ok = node.startTcpInet(port, hosts, ports)
+        _tcpActive.value = ok
+        if (ok) {
+            Log.i(TAG, "TCP inet started (port=$port, peers=${peerList.size})")
+            updateTransportNotification()
+        } else {
+            Log.w(TAG, "TCP inet failed to start")
+        }
     }
 
     // --- NexusNode.Callback ---
@@ -160,7 +203,63 @@ class NexusService : Service(), NexusNode.Callback {
 
     fun getNodeAddress(): String = _address.value
 
+    // --- TCP Internet Transport ---
+
+    fun startTcpInet(listenPort: Int, peers: String): Boolean {
+        val tcpPrefs = getSharedPreferences(PREFS_TCP, Context.MODE_PRIVATE)
+        tcpPrefs.edit()
+            .putBoolean(KEY_TCP_ENABLED, true)
+            .putInt(KEY_TCP_PORT, listenPort)
+            .putString(KEY_TCP_PEERS, peers)
+            .apply()
+
+        startTcpInetFromConfig(listenPort, peers)
+        return _tcpActive.value
+    }
+
+    fun stopTcpInet() {
+        node.stopTcpInet()
+        _tcpActive.value = false
+
+        val tcpPrefs = getSharedPreferences(PREFS_TCP, Context.MODE_PRIVATE)
+        tcpPrefs.edit().putBoolean(KEY_TCP_ENABLED, false).apply()
+
+        updateTransportNotification()
+        Log.i(TAG, "TCP inet stopped")
+    }
+
+    fun getTcpConfig(): Pair<Int, String> {
+        val tcpPrefs = getSharedPreferences(PREFS_TCP, Context.MODE_PRIVATE)
+        return Pair(
+            tcpPrefs.getInt(KEY_TCP_PORT, 4242),
+            tcpPrefs.getString(KEY_TCP_PEERS, "") ?: ""
+        )
+    }
+
+    // --- UDP Multicast (LAN auto-discovery) ---
+
+    fun startUdpMulticast(): Boolean {
+        val ok = node.startUdpMulticast()
+        _udpActive.value = ok
+        if (ok) Log.i(TAG, "UDP multicast started")
+        else Log.w(TAG, "UDP multicast failed to start")
+        return ok
+    }
+
+    fun stopUdpMulticast() {
+        node.stopUdpMulticast()
+        _udpActive.value = false
+        Log.i(TAG, "UDP multicast stopped")
+    }
+
     // --- Helpers ---
+
+    private fun updateTransportNotification() {
+        val parts = mutableListOf("Node: ${_address.value}")
+        if (_tcpActive.value) parts.add("TCP")
+        if (_udpActive.value) parts.add("UDP")
+        updateNotification(parts.joinToString(" | "))
+    }
 
     private fun hexToBytes(hex: String): ByteArray? {
         if (hex.length != 8) return null

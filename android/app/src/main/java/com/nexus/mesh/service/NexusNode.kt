@@ -75,6 +75,35 @@ class NexusNode {
         if (isRunning) nativeAnnounce()
     }
 
+    // TCP Internet transport
+    fun startTcpInet(
+        listenPort: Int = 4242,
+        peerHosts: Array<String> = emptyArray(),
+        peerPorts: IntArray = IntArray(0),
+        reconnectMs: Int = 5000
+    ): Boolean {
+        return isRunning && nativeStartTcpInet(listenPort, peerHosts, peerPorts, reconnectMs)
+    }
+
+    fun stopTcpInet() {
+        if (isRunning) nativeStopTcpInet()
+    }
+
+    val isTcpInetActive: Boolean
+        get() = isRunning && nativeIsTcpInetActive()
+
+    // UDP Multicast (auto-discovery on all interfaces)
+    fun startUdpMulticast(): Boolean {
+        return isRunning && nativeStartUdpMulticast()
+    }
+
+    fun stopUdpMulticast() {
+        if (isRunning) nativeStopUdpMulticast()
+    }
+
+    val isUdpMulticastActive: Boolean
+        get() = isRunning && nativeIsUdpMulticastActive()
+
     // Native methods
     private external fun nativeInit(role: Int, callback: Callback): Boolean
     private external fun nativeInitWithIdentity(role: Int, identity: ByteArray, callback: Callback): Boolean
@@ -87,4 +116,10 @@ class NexusNode {
     private external fun nativeSendSession(dest: ByteArray, data: ByteArray): Boolean
     private external fun nativeAnnounce()
     private external fun nativeInjectPacket(packet: ByteArray)
+    private external fun nativeStartTcpInet(listenPort: Int, peerHosts: Array<String>, peerPorts: IntArray, reconnectMs: Int): Boolean
+    private external fun nativeStopTcpInet()
+    private external fun nativeIsTcpInetActive(): Boolean
+    private external fun nativeStartUdpMulticast(): Boolean
+    private external fun nativeStopUdpMulticast()
+    private external fun nativeIsUdpMulticastActive(): Boolean
 }

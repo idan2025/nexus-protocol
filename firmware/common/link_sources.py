@@ -27,6 +27,8 @@ c_sources = [
     "lib/vendor/monocypher/monocypher.h",
     "transports/lora/nexus_lora.c",
     "transports/lora/nexus_lora_asf.c",
+    "transports/tcp/nexus_tcp_inet.c",
+    "transports/udp/nexus_udp_multicast.c",
 ]
 
 # Detect platform from build flags

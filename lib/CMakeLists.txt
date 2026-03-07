@@ -17,11 +17,13 @@ add_library(nexus_objs OBJECT
     src/node.c
     ../transports/serial/nexus_serial.c
     ../transports/tcp/nexus_tcp.c
+    ../transports/tcp/nexus_tcp_inet.c
     ../transports/lora/nexus_lora.c
     ../transports/lora/nexus_lora_asf.c
     ../transports/ble/nexus_ble.c
     ../transports/wifi/nexus_halow.c
     ../transports/pipe/nexus_pipe.c
+    ../transports/udp/nexus_udp_multicast.c
 )
 set_target_properties(nexus_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(nexus_objs PUBLIC

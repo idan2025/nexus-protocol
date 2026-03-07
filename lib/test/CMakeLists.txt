@@ -18,6 +18,8 @@ set(TESTS
     test_asf
     test_stress
     test_stress_1k
+    test_tcp_inet
+    test_udp_mcast
 )
 
 foreach(test ${TESTS})

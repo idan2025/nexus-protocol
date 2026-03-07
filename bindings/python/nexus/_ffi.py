@@ -504,6 +504,14 @@ lib.nx_pipe_transport_link.argtypes = [
 ]
 lib.nx_pipe_transport_link.restype = None
 
+# TCP Internet transport
+lib.nx_tcp_inet_transport_create.argtypes = []
+lib.nx_tcp_inet_transport_create.restype = ctypes.POINTER(Transport)
+
+# UDP Multicast transport
+lib.nx_udp_mcast_transport_create.argtypes = []
+lib.nx_udp_mcast_transport_create.restype = ctypes.POINTER(Transport)
+
 # Node lifecycle
 lib.nx_node_init.argtypes = [
     ctypes.POINTER(NodeState),

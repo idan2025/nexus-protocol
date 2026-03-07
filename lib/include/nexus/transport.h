@@ -7,7 +7,7 @@
 #include "types.h"
 
 /* Maximum registered transports */
-#define NX_MAX_TRANSPORTS  8
+#define NX_MAX_TRANSPORTS  12
 
 /* Transport types */
 typedef enum {
@@ -17,6 +17,7 @@ typedef enum {
     NX_TRANSPORT_BLE    = 3,
     NX_TRANSPORT_WIFI   = 4,
     NX_TRANSPORT_PIPE   = 5,
+    NX_TRANSPORT_UDP    = 6,
 } nx_transport_type_t;
 
 /* Forward declaration */
@@ -89,6 +90,26 @@ typedef struct {
 /* Create a TCP transport instance. Caller must free with nx_transport_destroy. */
 nx_transport_t *nx_tcp_transport_create(void);
 
+/* ── TCP Internet Transport (Reticulum-style) ────────────────────────── */
+
+#define NX_TCP_INET_MAX_PEERS 16
+
+typedef struct {
+    const char *listen_host;       /* Bind address, NULL = "0.0.0.0" */
+    uint16_t    listen_port;       /* Server port, 0 = no server */
+
+    struct {
+        const char *host;
+        uint16_t    port;
+    } peers[NX_TCP_INET_MAX_PEERS]; /* Outbound peers to connect to */
+    int peer_count;
+
+    uint32_t    reconnect_interval_ms; /* Auto-reconnect delay (default 5000) */
+} nx_tcp_inet_config_t;
+
+/* Create a TCP Internet transport (multi-peer, auto-reconnect). */
+nx_transport_t *nx_tcp_inet_transport_create(void);
+
 /* ── LoRa Transport ──────────────────────────────────────────────────── */
 
 /* Create a LoRa transport instance.
@@ -110,5 +131,17 @@ nx_transport_t *nx_pipe_transport_create(void);
 
 /* Link two pipe transports so A's send goes to B's recv and vice versa. */
 void nx_pipe_transport_link(nx_transport_t *a, nx_transport_t *b);
+
+/* ── UDP Multicast Transport (AutoInterface) ─────────────────────────── */
+
+typedef struct {
+    const char *group;   /* Multicast group (default "224.0.77.88") */
+    uint16_t    port;    /* Port (default 4243) */
+} nx_udp_mcast_config_t;
+
+/* Create a UDP multicast transport.
+ * Joins multicast on ALL network interfaces for zero-config LAN discovery.
+ * Periodically rescans interfaces to pick up new ones (hotplug, VPN, etc). */
+nx_transport_t *nx_udp_mcast_transport_create(void);
 
 #endif /* NEXUS_TRANSPORT_H */

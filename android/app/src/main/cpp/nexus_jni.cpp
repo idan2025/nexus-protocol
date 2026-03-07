@@ -23,6 +23,8 @@ extern "C" {
 static nx_node_t g_node;
 static bool g_running = false;
 static JavaVM *g_jvm = nullptr;
+static nx_transport_t *g_tcp_inet = nullptr;
+static nx_transport_t *g_udp_mcast = nullptr;
 
 /* Callback references */
 static jobject g_callback_obj = nullptr;
@@ -315,6 +317,156 @@ Java_com_nexus_mesh_service_NexusNode_nativeInjectPacket(JNIEnv *env,
      * a pipe transport registered at init time. */
     /* TODO: implement BLE-to-pipe bridge */
     (void)env; (void)packet;
+}
+
+/*
+ * TCP Internet transport -- connect to remote NEXUS nodes over the network.
+ *
+ * listenPort: port to listen on (0 = no server)
+ * peerHosts: array of "host" strings for outbound peers
+ * peerPorts: array of port numbers for outbound peers
+ * reconnectMs: auto-reconnect interval in ms
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeStartTcpInet(JNIEnv *env,
+                                                          jobject thiz,
+                                                          jint listenPort,
+                                                          jobjectArray peerHosts,
+                                                          jintArray peerPorts,
+                                                          jint reconnectMs)
+{
+    (void)thiz;
+    if (!g_running) return JNI_FALSE;
+    if (g_tcp_inet) return JNI_TRUE; /* Already running */
+
+    g_tcp_inet = nx_tcp_inet_transport_create();
+    if (!g_tcp_inet) return JNI_FALSE;
+
+    nx_tcp_inet_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.listen_port = (uint16_t)listenPort;
+    cfg.listen_host = "0.0.0.0";
+    cfg.reconnect_interval_ms = (uint32_t)(reconnectMs > 0 ? reconnectMs : 5000);
+
+    /* Copy peer info from Java arrays */
+    int peer_count = 0;
+    static char peer_hosts_buf[NX_TCP_INET_MAX_PEERS][64];
+
+    if (peerHosts && peerPorts) {
+        peer_count = env->GetArrayLength(peerHosts);
+        if (peer_count > NX_TCP_INET_MAX_PEERS)
+            peer_count = NX_TCP_INET_MAX_PEERS;
+
+        jint *ports = env->GetIntArrayElements(peerPorts, nullptr);
+        for (int i = 0; i < peer_count; i++) {
+            jstring jhost = (jstring)env->GetObjectArrayElement(peerHosts, i);
+            const char *host = env->GetStringUTFChars(jhost, nullptr);
+            strncpy(peer_hosts_buf[i], host, sizeof(peer_hosts_buf[i]) - 1);
+            peer_hosts_buf[i][sizeof(peer_hosts_buf[i]) - 1] = '\0';
+            env->ReleaseStringUTFChars(jhost, host);
+
+            cfg.peers[i].host = peer_hosts_buf[i];
+            cfg.peers[i].port = (uint16_t)ports[i];
+        }
+        env->ReleaseIntArrayElements(peerPorts, ports, JNI_ABORT);
+    }
+    cfg.peer_count = peer_count;
+
+    nx_err_t err = g_tcp_inet->ops->init(g_tcp_inet, &cfg);
+    if (err != NX_OK) {
+        LOGE("TCP inet init failed: %d", err);
+        nx_platform_free(g_tcp_inet);
+        g_tcp_inet = nullptr;
+        return JNI_FALSE;
+    }
+
+    err = nx_transport_register(g_tcp_inet);
+    if (err != NX_OK) {
+        LOGE("TCP inet register failed: %d", err);
+        g_tcp_inet->ops->destroy(g_tcp_inet);
+        nx_platform_free(g_tcp_inet);
+        g_tcp_inet = nullptr;
+        return JNI_FALSE;
+    }
+
+    LOGI("TCP inet started (listen:%d, peers:%d)", listenPort, peer_count);
+    return JNI_TRUE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeStopTcpInet(JNIEnv *env,
+                                                         jobject thiz)
+{
+    (void)env; (void)thiz;
+    if (g_tcp_inet) {
+        g_tcp_inet->ops->destroy(g_tcp_inet);
+        nx_platform_free(g_tcp_inet);
+        g_tcp_inet = nullptr;
+        LOGI("TCP inet stopped");
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeIsTcpInetActive(JNIEnv *env,
+                                                              jobject thiz)
+{
+    (void)env; (void)thiz;
+    return (g_tcp_inet && g_tcp_inet->active) ? JNI_TRUE : JNI_FALSE;
+}
+
+/* ── UDP Multicast (auto-discovery on all interfaces) ────────────────── */
+
+JNIEXPORT jboolean JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeStartUdpMulticast(JNIEnv *env,
+                                                               jobject thiz)
+{
+    (void)env; (void)thiz;
+    if (!g_running) return JNI_FALSE;
+    if (g_udp_mcast) return JNI_TRUE;
+
+    g_udp_mcast = nx_udp_mcast_transport_create();
+    if (!g_udp_mcast) return JNI_FALSE;
+
+    nx_udp_mcast_config_t cfg = { .group = nullptr, .port = 0 };
+    nx_err_t err = g_udp_mcast->ops->init(g_udp_mcast, &cfg);
+    if (err != NX_OK) {
+        LOGE("UDP multicast init failed: %d", err);
+        nx_platform_free(g_udp_mcast);
+        g_udp_mcast = nullptr;
+        return JNI_FALSE;
+    }
+
+    err = nx_transport_register(g_udp_mcast);
+    if (err != NX_OK) {
+        g_udp_mcast->ops->destroy(g_udp_mcast);
+        nx_platform_free(g_udp_mcast);
+        g_udp_mcast = nullptr;
+        return JNI_FALSE;
+    }
+
+    LOGI("UDP multicast started on all interfaces");
+    return JNI_TRUE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeStopUdpMulticast(JNIEnv *env,
+                                                              jobject thiz)
+{
+    (void)env; (void)thiz;
+    if (g_udp_mcast) {
+        g_udp_mcast->ops->destroy(g_udp_mcast);
+        nx_platform_free(g_udp_mcast);
+        g_udp_mcast = nullptr;
+        LOGI("UDP multicast stopped");
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeIsUdpMulticastActive(JNIEnv *env,
+                                                                   jobject thiz)
+{
+    (void)env; (void)thiz;
+    return (g_udp_mcast && g_udp_mcast->active) ? JNI_TRUE : JNI_FALSE;
 }
 
 } /* extern "C" */
