@@ -12,6 +12,7 @@ extern "C" {
 #include "nexus/node.h"
 #include "nexus/identity.h"
 #include "nexus/transport.h"
+#include "nexus/platform.h"
 }
 
 #define TAG "NexusJNI"
