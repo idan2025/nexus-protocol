@@ -297,9 +297,9 @@ static void test_gateway_no_echo(void)
     PASS();
 }
 
-static void test_non_gateway_no_bridge(void)
+static void test_relay_bridges_like_gateway(void)
 {
-    TEST("RELAY node sends on all transports (no bridge)");
+    TEST("RELAY node bridges across transports (no echo)");
     gw_fixture_t f;
     gw_fixture_init(&f, NX_ROLE_RELAY);
 
@@ -309,15 +309,17 @@ static void test_non_gateway_no_bridge(void)
                       (const uint8_t *)"test", 4);
     f.alice_transport.active = false;
 
-    /* RELAY gateway polls -- should forward on ALL transports (incl. ingress) */
+    /* RELAY node polls -- Reticulum-style: bridge to other transports,
+     * skip ingress (same behavior as GATEWAY) */
     f.gw_transport_a.active = true;
     f.gw_transport_b.active = true;
     f.gw_to_a.has_data = false;
     nx_node_poll(&f.gateway, 0);
 
-    /* Both transports should have data (RELAY sends on all) */
-    ASSERT(f.gw_to_b.has_data, "sent on B");
-    ASSERT(f.gw_to_a.has_data, "sent on A (relay, not gateway)");
+    /* Transport B should have data (bridged) */
+    ASSERT(f.gw_to_b.has_data, "bridged to B");
+    /* Transport A should NOT have data (no echo back on ingress) */
+    ASSERT(!f.gw_to_a.has_data, "no echo on A");
 
     gw_fixture_cleanup(&f);
     PASS();
@@ -534,7 +536,7 @@ int main(void)
     /* Gateway tests */
     test_gateway_forward();
     test_gateway_no_echo();
-    test_non_gateway_no_bridge();
+    test_relay_bridges_like_gateway();
 
     /* Group node tests */
     test_group_send_recv();

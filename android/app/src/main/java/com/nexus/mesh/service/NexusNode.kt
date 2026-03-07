@@ -25,7 +25,7 @@ class NexusNode {
     var isRunning = false
         private set
 
-    fun init(role: Int = ROLE_LEAF, callback: Callback): Boolean {
+    fun init(role: Int = ROLE_RELAY, callback: Callback): Boolean {
         val ok = nativeInit(role, callback)
         isRunning = ok
         if (ok) Log.i(TAG, "Node initialized, addr=${getAddressHex()}")

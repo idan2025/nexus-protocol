@@ -85,9 +85,9 @@ class NexusService : Service(), NexusNode.Callback {
 
         val ok = if (savedBytes != null) {
             val bytes = android.util.Base64.decode(savedBytes, android.util.Base64.DEFAULT)
-            node.initWithIdentity(NexusNode.ROLE_LEAF, bytes, this)
+            node.initWithIdentity(NexusNode.ROLE_RELAY, bytes, this)
         } else {
-            node.init(NexusNode.ROLE_LEAF, this)
+            node.init(NexusNode.ROLE_RELAY, this)
         }
 
         if (!ok) {

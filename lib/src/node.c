@@ -131,7 +131,8 @@ static nx_err_t transmit_bridge(const nx_packet_t *pkt, int exclude_idx)
 
 /* ── Internal: handle an incoming announcement ───────────────────────── */
 
-static void handle_announce(nx_node_t *node, const nx_packet_t *pkt)
+static void handle_announce(nx_node_t *node, const nx_packet_t *pkt,
+                             int ingress_transport)
 {
     nx_announce_t ann;
     if (nx_announce_parse(pkt->payload, pkt->header.payload_len, &ann) != NX_OK)
@@ -145,7 +146,7 @@ static void handle_announce(nx_node_t *node, const nx_packet_t *pkt)
     nx_neighbor_update(&node->route_table,
                        &ann.short_addr, &ann.full_addr,
                        ann.sign_pubkey, ann.x25519_pubkey,
-                       ann.role, 0, now);
+                       ann.role, ingress_transport, now);
 
     /* Also install a direct route to this neighbor */
     nx_route_update(&node->route_table,
@@ -410,12 +411,9 @@ static void handle_data(nx_node_t *node, const nx_packet_t *pkt,
 
         if (route || nx_packet_flag_rtype(pkt->header.flags) == NX_RTYPE_FLOOD
             || nx_packet_flag_rtype(pkt->header.flags) == NX_RTYPE_DOMAIN) {
-            /* GATEWAY: bridge cross-transport (exclude ingress) */
-            if (node->config.role >= NX_ROLE_GATEWAY) {
-                (void)transmit_bridge(&fwd, ingress_transport);
-            } else {
-                (void)transmit_all(&fwd);
-            }
+            /* Reticulum-style: any relay node bridges across transports,
+             * forwarding on all interfaces except the one it arrived on */
+            (void)transmit_bridge(&fwd, ingress_transport);
         } else if (node->config.role >= NX_ROLE_ANCHOR) {
             /* ANCHOR: store for offline destination */
             (void)nx_anchor_store(&node->anchor, pkt, nx_platform_time_ms());
@@ -439,7 +437,7 @@ static void dispatch_packet(nx_node_t *node, const nx_packet_t *pkt,
 
     switch (ptype) {
     case NX_PTYPE_ANNOUNCE:
-        handle_announce(node, pkt);
+        handle_announce(node, pkt, ingress_transport);
         break;
     case NX_PTYPE_ROUTE:
         handle_route(node, pkt);
@@ -452,7 +450,8 @@ static void dispatch_packet(nx_node_t *node, const nx_packet_t *pkt,
         break;
     }
 
-    /* If this is a flooded packet and we relay, forward with decremented TTL */
+    /* If this is a flooded packet and we relay, forward with decremented TTL.
+     * Reticulum-style: bridge across all transports except ingress. */
     if (ptype == NX_PTYPE_ANNOUNCE || ptype == NX_PTYPE_ROUTE) {
         if (node->config.role >= NX_ROLE_RELAY &&
             nx_packet_flag_rtype(pkt->header.flags) == NX_RTYPE_FLOOD &&
@@ -460,12 +459,7 @@ static void dispatch_packet(nx_node_t *node, const nx_packet_t *pkt,
             nx_packet_t fwd = *pkt;
             fwd.header.hop_count++;
             fwd.header.ttl--;
-            /* GATEWAY: bridge cross-transport for flood forwarding too */
-            if (node->config.role >= NX_ROLE_GATEWAY) {
-                (void)transmit_bridge(&fwd, ingress_transport);
-            } else {
-                (void)transmit_all(&fwd);
-            }
+            (void)transmit_bridge(&fwd, ingress_transport);
         }
     }
 }
