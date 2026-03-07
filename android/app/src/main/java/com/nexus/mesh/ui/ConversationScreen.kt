@@ -88,7 +88,8 @@ fun ConversationScreen(
                             if (neighbor != null) {
                                 val roleName = when (neighbor.role) {
                                     0 -> "Leaf"; 1 -> "Relay"; 2 -> "Gateway"
-                                    3 -> "Anchor"; 4 -> "Sentinel"; else -> "Unknown"
+                                    3 -> "Anchor"; 4 -> "Sentinel"
+                                    5 -> "Pillar"; 6 -> "Vault"; else -> "Unknown"
                                 }
                                 Text(
                                     "Direct neighbor ($roleName)",

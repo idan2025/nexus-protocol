@@ -94,6 +94,8 @@ fun MeshScreen(activity: MainActivity, navController: NavController) {
                         2 -> "GATEWAY"
                         3 -> "ANCHOR"
                         4 -> "SENTINEL"
+                        5 -> "PILLAR"
+                        6 -> "VAULT"
                         else -> "ROLE=${neighbor.role}"
                     }
                     val nickname = nicknames[neighbor.addr]

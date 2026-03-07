@@ -26,6 +26,13 @@ class NexusService : Service(), NexusNode.Callback {
         private const val KEY_TCP_PEERS = "tcp_peers"
         private const val PREFS_NICKNAMES = "nexus_nicknames"
         private const val KEY_MY_NAME = "my_name"
+        private const val PREFS_PILLARS = "nexus_pillars"
+        private const val KEY_PILLAR_LIST = "pillar_list"
+        private const val KEY_PILLARS_ENABLED = "pillars_enabled"
+        // Default Pillar nodes -- community-run public NEXUS relays.
+        // Users connect outbound to these (no port forwarding needed).
+        // Format: "host:port" comma-separated.
+        val DEFAULT_PILLARS = ""  // No defaults yet -- users add their own or community provides
     }
 
     private val node = NexusNode()
@@ -76,6 +83,15 @@ class NexusService : Service(), NexusNode.Callback {
 
     private val _myName = MutableStateFlow("")
     val myName: StateFlow<String> = _myName
+
+    private val _pillarsEnabled = MutableStateFlow(true)
+    val pillarsEnabled: StateFlow<Boolean> = _pillarsEnabled
+
+    private val _pillarList = MutableStateFlow("")
+    val pillarList: StateFlow<String> = _pillarList
+
+    private val _pillarConnected = MutableStateFlow(false)
+    val pillarConnected: StateFlow<Boolean> = _pillarConnected
 
     private var nextMsgId = 1L
 
@@ -151,7 +167,61 @@ class NexusService : Service(), NexusNode.Callback {
 
         startUdpMulticast()
 
+        // Auto-connect to Pillar nodes for internet connectivity
+        connectToPillars()
+
         Log.i(TAG, "Node started: ${_address.value}")
+    }
+
+    private fun connectToPillars() {
+        val prefs = getSharedPreferences(PREFS_PILLARS, Context.MODE_PRIVATE)
+        val enabled = prefs.getBoolean(KEY_PILLARS_ENABLED, true)
+        _pillarsEnabled.value = enabled
+        val savedPillars = prefs.getString(KEY_PILLAR_LIST, DEFAULT_PILLARS) ?: ""
+        _pillarList.value = savedPillars
+
+        if (!enabled || savedPillars.isBlank()) {
+            Log.i(TAG, "Pillars: disabled or no pillars configured")
+            return
+        }
+
+        // If TCP is already active (manual config), don't override
+        if (_tcpActive.value) {
+            Log.i(TAG, "Pillars: TCP already active, skipping auto-connect")
+            _pillarConnected.value = true
+            return
+        }
+
+        // Connect to pillars (outbound only, listen port 0 = no server)
+        val ok = node.startTcpInet(0, parsePillarHosts(savedPillars), parsePillarPorts(savedPillars))
+        _pillarConnected.value = ok
+        _tcpActive.value = ok
+        if (ok) {
+            Log.i(TAG, "Pillars: connected to ${countPillars(savedPillars)} pillar(s)")
+            updateTransportNotification()
+        } else {
+            Log.w(TAG, "Pillars: failed to connect")
+        }
+    }
+
+    private fun parsePillarHosts(pillars: String): Array<String> {
+        return pillars.split(",").mapNotNull { p ->
+            val parts = p.trim().split(":")
+            if (parts.size == 2 && parts[1].toIntOrNull() != null) parts[0].trim()
+            else null
+        }.toTypedArray()
+    }
+
+    private fun parsePillarPorts(pillars: String): IntArray {
+        return pillars.split(",").mapNotNull { p ->
+            val parts = p.trim().split(":")
+            if (parts.size == 2) parts[1].trim().toIntOrNull()
+            else null
+        }.toIntArray()
+    }
+
+    private fun countPillars(pillars: String): Int {
+        return pillars.split(",").count { it.trim().contains(":") }
     }
 
     private fun startTcpInetFromConfig(port: Int, peersStr: String) {
@@ -360,6 +430,48 @@ class NexusService : Service(), NexusNode.Callback {
         multicastLock?.release()
         updateTransportNotification()
         Log.i(TAG, "UDP multicast stopped")
+    }
+
+    // --- Pillar management ---
+
+    fun getPillarConfig(): Pair<Boolean, String> {
+        return Pair(_pillarsEnabled.value, _pillarList.value)
+    }
+
+    fun setPillars(enabled: Boolean, pillars: String) {
+        val prefs = getSharedPreferences(PREFS_PILLARS, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putBoolean(KEY_PILLARS_ENABLED, enabled)
+            .putString(KEY_PILLAR_LIST, pillars.trim())
+            .apply()
+        _pillarsEnabled.value = enabled
+        _pillarList.value = pillars.trim()
+
+        // Restart TCP connection with new pillar list
+        if (_tcpActive.value && _pillarConnected.value) {
+            node.stopTcpInet()
+            _tcpActive.value = false
+            _pillarConnected.value = false
+        }
+        if (enabled && pillars.isNotBlank()) {
+            connectToPillars()
+        }
+    }
+
+    fun addPillar(hostPort: String) {
+        val current = _pillarList.value
+        val newList = if (current.isBlank()) hostPort.trim()
+                      else "$current, ${hostPort.trim()}"
+        setPillars(true, newList)
+    }
+
+    fun removePillar(hostPort: String) {
+        val current = _pillarList.value
+        val newList = current.split(",")
+            .map { it.trim() }
+            .filter { it != hostPort.trim() }
+            .joinToString(", ")
+        setPillars(_pillarsEnabled.value, newList)
     }
 
     // --- Nicknames ---

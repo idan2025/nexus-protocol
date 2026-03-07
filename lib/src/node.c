@@ -47,6 +47,7 @@ nx_err_t nx_node_init_with_identity(nx_node_t *node,
     nx_route_init(&node->route_table);
     nx_frag_init(&node->frag_buffer);
     nx_anchor_init(&node->anchor);
+    nx_anchor_configure_for_role(&node->anchor, node->config.role);
     nx_session_store_init(&node->sessions);
     nx_group_store_init(&node->groups);
     node->next_seq_id = 0;
@@ -158,8 +159,8 @@ static void handle_announce(nx_node_t *node, const nx_packet_t *pkt,
                                  node->config.user_ctx);
     }
 
-    /* ANCHOR: deliver any stored messages for this neighbor */
-    if (node->config.role >= NX_ROLE_ANCHOR) {
+    /* All RELAY+ nodes: deliver any stored messages for this neighbor */
+    if (node->config.role >= NX_ROLE_RELAY && node->anchor.max_slots > 0) {
         nx_packet_t stored[NX_ANCHOR_MAX_PER_DEST];
         int n_stored = nx_anchor_retrieve(&node->anchor, &ann.short_addr,
                                           stored, NX_ANCHOR_MAX_PER_DEST);
@@ -414,8 +415,8 @@ static void handle_data(nx_node_t *node, const nx_packet_t *pkt,
             /* Reticulum-style: any relay node bridges across transports,
              * forwarding on all interfaces except the one it arrived on */
             (void)transmit_bridge(&fwd, ingress_transport);
-        } else if (node->config.role >= NX_ROLE_ANCHOR) {
-            /* ANCHOR: store for offline destination */
+        } else if (node->anchor.max_slots > 0) {
+            /* Store for offline destination (all RELAY+ with storage) */
             (void)nx_anchor_store(&node->anchor, pkt, nx_platform_time_ms());
         }
     }
@@ -501,7 +502,7 @@ nx_err_t nx_node_poll(nx_node_t *node, uint32_t poll_timeout_ms)
     /* Expire stale entries */
     nx_route_expire(&node->route_table, now);
     nx_frag_expire(&node->frag_buffer, now);
-    if (node->config.role >= NX_ROLE_ANCHOR)
+    if (node->anchor.max_slots > 0)
         nx_anchor_expire(&node->anchor, now);
 
     return NX_OK;

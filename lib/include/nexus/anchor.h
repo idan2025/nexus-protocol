@@ -1,14 +1,18 @@
 /*
- * NEXUS Protocol -- ANCHOR Store-and-Forward Mailbox
+ * NEXUS Protocol -- Store-and-Forward Mailbox
  *
- * ANCHOR nodes store messages destined for offline nodes and deliver
+ * All RELAY+ nodes store messages destined for offline nodes and deliver
  * them when the destination comes back online (detected via announcement).
  *
- * Each stored message is a complete packet (header + payload) kept
- * in a ring buffer. Messages expire after a configurable TTL.
+ * Storage tiers:
+ *   RELAY/GATEWAY:  NX_ANCHOR_RELAY_STORED (8 slots, 30min TTL)
+ *   ANCHOR:         NX_ANCHOR_MAX_STORED (32 slots, 1hr TTL)
+ *   VAULT:          NX_ANCHOR_VAULT_STORED (256 slots, 24hr TTL)
  *
- * Memory budget (nRF52840):
- *   32 slots * 271 bytes (NX_MAX_PACKET) = ~8.5KB
+ * Memory budget:
+ *   RELAY:  8 * 271B  =  ~2.1KB (fits any MCU)
+ *   ANCHOR: 32 * 271B =  ~8.5KB (fits nRF52840)
+ *   VAULT:  256 * 271B = ~68KB  (Linux/Android only)
  */
 #ifndef NEXUS_ANCHOR_H
 #define NEXUS_ANCHOR_H
@@ -16,9 +20,18 @@
 #include "types.h"
 
 /* ── Constants ───────────────────────────────────────────────────────── */
+
+/* Tier sizes -- the actual anchor struct uses MAX for static allocation.
+ * Nodes use a "live slots" limit based on their role. */
+#define NX_ANCHOR_RELAY_STORED   8
 #define NX_ANCHOR_MAX_STORED    32
+#define NX_ANCHOR_VAULT_STORED 256
 #define NX_ANCHOR_MAX_PER_DEST   8    /* Max messages per destination */
-#define NX_ANCHOR_MSG_TTL_MS  3600000 /* 1 hour default */
+
+/* TTL defaults per tier */
+#define NX_ANCHOR_RELAY_TTL_MS   1800000  /* 30 minutes */
+#define NX_ANCHOR_MSG_TTL_MS     3600000  /* 1 hour (ANCHOR default) */
+#define NX_ANCHOR_VAULT_TTL_MS  86400000  /* 24 hours */
 
 /* ── Stored Message ──────────────────────────────────────────────────── */
 
@@ -34,12 +47,17 @@ typedef struct {
 typedef struct {
     nx_anchor_msg_t  msgs[NX_ANCHOR_MAX_STORED];
     uint32_t         msg_ttl_ms;
+    int              max_slots;   /* Effective limit based on role tier */
 } nx_anchor_t;
 
 /* ── API ─────────────────────────────────────────────────────────────── */
 
-/* Initialize the anchor mailbox. */
+/* Initialize the anchor mailbox with default (ANCHOR-tier) settings. */
 void nx_anchor_init(nx_anchor_t *a);
+
+/* Configure anchor for a specific role tier.
+ * Call after nx_anchor_init(). Sets max_slots and TTL. */
+void nx_anchor_configure_for_role(nx_anchor_t *a, nx_role_t role);
 
 /* Set custom message TTL (default: NX_ANCHOR_MSG_TTL_MS). */
 void nx_anchor_set_ttl(nx_anchor_t *a, uint32_t ttl_ms);

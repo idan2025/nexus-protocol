@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
@@ -16,11 +17,17 @@ fun SettingsScreen(activity: MainActivity) {
     val tcpActive by service?.tcpActive?.collectAsState() ?: remember { mutableStateOf(false) }
     val udpActive by service?.udpActive?.collectAsState() ?: remember { mutableStateOf(false) }
     val myName by service?.myName?.collectAsState() ?: remember { mutableStateOf("") }
+    val pillarsEnabled by service?.pillarsEnabled?.collectAsState() ?: remember { mutableStateOf(true) }
+    val pillarList by service?.pillarList?.collectAsState() ?: remember { mutableStateOf("") }
+    val pillarConnected by service?.pillarConnected?.collectAsState() ?: remember { mutableStateOf(false) }
 
     val tcpConfig = service?.getTcpConfig()
     var tcpPort by remember { mutableStateOf(tcpConfig?.first?.toString() ?: "4242") }
     var tcpPeers by remember { mutableStateOf(tcpConfig?.second ?: "") }
     var editName by remember(myName) { mutableStateOf(myName) }
+    var editPillars by remember(pillarList) { mutableStateOf(pillarList) }
+    var showAddPillar by remember { mutableStateOf(false) }
+    var newPillar by remember { mutableStateOf("") }
 
     Scaffold(
         topBar = {
@@ -80,22 +87,87 @@ fun SettingsScreen(activity: MainActivity) {
                 }
             }
 
-            // TCP Internet Transport
+            // Pillar Nodes (Internet Connectivity)
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Pillar Nodes", style = MaterialTheme.typography.titleMedium)
+                        StatusBadge(active = pillarConnected)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Pillars are public NEXUS relay nodes on the internet. " +
+                        "Connect outbound to them for global mesh access -- no port forwarding needed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Auto-connect to Pillars")
+                        Switch(
+                            checked = pillarsEnabled,
+                            onCheckedChange = { enabled ->
+                                service?.setPillars(enabled, editPillars)
+                            }
+                        )
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = editPillars,
+                        onValueChange = { editPillars = it },
+                        label = { Text("Pillar addresses (host:port, comma separated)") },
+                        placeholder = { Text("e.g. pillar.example.com:4242, 1.2.3.4:4242") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = false,
+                        maxLines = 4
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Button(
+                            onClick = { service?.setPillars(pillarsEnabled, editPillars) },
+                            enabled = editPillars != pillarList
+                        ) {
+                            Text("Save Pillars")
+                        }
+                    }
+                }
+            }
+
+            // TCP Internet Transport (Advanced)
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("TCP Internet", style = MaterialTheme.typography.titleMedium)
+                        Text("TCP (Advanced)", style = MaterialTheme.typography.titleMedium)
                         StatusBadge(active = tcpActive)
                     }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Manual TCP configuration. Use this to run your own Pillar node or connect directly to specific peers.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Spacer(Modifier.height(12.dp))
 
                     OutlinedTextField(
                         value = tcpPort,
                         onValueChange = { tcpPort = it.filter { c -> c.isDigit() } },
-                        label = { Text("Listen Port") },
+                        label = { Text("Listen Port (0 = client only)") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -151,7 +223,7 @@ fun SettingsScreen(activity: MainActivity) {
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Auto-discovers NEXUS nodes on all local network interfaces (WiFi, Ethernet, VPN) via UDP multicast.",
+                        "Auto-discovers NEXUS nodes on local network via UDP multicast.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -198,6 +270,20 @@ fun SettingsScreen(activity: MainActivity) {
                     )
                     Text(
                         "Transports: LoRa, BLE, TCP, UDP Multicast, WiFi HaLow",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Node Roles",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Text(
+                        "Leaf: endpoint only\n" +
+                        "Relay: forwards + stores 8 msgs (30min)\n" +
+                        "Anchor: stores 32 msgs (1hr)\n" +
+                        "Pillar: public internet relay\n" +
+                        "Vault: stores 256 msgs (24hr)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

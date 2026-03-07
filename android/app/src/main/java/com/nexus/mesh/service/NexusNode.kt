@@ -14,6 +14,11 @@ class NexusNode {
         private const val TAG = "NexusNode"
         const val ROLE_LEAF = 0
         const val ROLE_RELAY = 1
+        const val ROLE_GATEWAY = 2
+        const val ROLE_ANCHOR = 3
+        const val ROLE_SENTINEL = 4
+        const val ROLE_PILLAR = 5
+        const val ROLE_VAULT = 6
     }
 
     interface Callback {

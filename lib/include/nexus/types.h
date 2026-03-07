@@ -49,10 +49,12 @@ typedef enum {
 /* ── Node Roles ──────────────────────────────────────────────────────── */
 typedef enum {
     NX_ROLE_LEAF     = 0,  /* Never relays */
-    NX_ROLE_RELAY    = 1,  /* Forwarding only */
-    NX_ROLE_GATEWAY  = 2,  /* Cross-transport bridge */
-    NX_ROLE_ANCHOR   = 3,  /* Store-and-forward */
+    NX_ROLE_RELAY    = 1,  /* Forwarding + basic store-and-forward */
+    NX_ROLE_GATEWAY  = 2,  /* Cross-transport bridge (legacy, same as RELAY) */
+    NX_ROLE_ANCHOR   = 3,  /* Store-and-forward (small buffer) */
     NX_ROLE_SENTINEL = 4,  /* All capabilities */
+    NX_ROLE_PILLAR   = 5,  /* Public internet relay (accepts TCP connections) */
+    NX_ROLE_VAULT    = 6,  /* Enhanced store-and-forward (large buffer, long TTL) */
 } nx_role_t;
 
 /* ── Packet Type (2 bits in flags) ───────────────────────────────────── */
