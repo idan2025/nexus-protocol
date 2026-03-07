@@ -8,6 +8,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 
@@ -17,6 +18,8 @@ fun MeshScreen(activity: MainActivity, navController: NavController) {
     val service = activity.getService()
     val address by service?.address?.collectAsState() ?: remember { mutableStateOf("--------") }
     val neighbors by service?.neighbors?.collectAsState() ?: remember { mutableStateOf(emptyList()) }
+    val nicknames by service?.nicknames?.collectAsState() ?: remember { mutableStateOf(emptyMap()) }
+    val myName by service?.myName?.collectAsState() ?: remember { mutableStateOf("") }
 
     Scaffold(
         topBar = {
@@ -36,6 +39,16 @@ fun MeshScreen(activity: MainActivity, navController: NavController) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("This Node", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(8.dp))
+                        if (myName.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Name")
+                                Text(myName, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
@@ -83,6 +96,13 @@ fun MeshScreen(activity: MainActivity, navController: NavController) {
                         4 -> "SENTINEL"
                         else -> "ROLE=${neighbor.role}"
                     }
+                    val nickname = nicknames[neighbor.addr]
+                    val displayName = nickname ?: neighbor.addr
+                    val initials = if (nickname != null) {
+                        nickname.take(2).uppercase()
+                    } else {
+                        neighbor.addr.take(2)
+                    }
 
                     Card(
                         modifier = Modifier
@@ -105,7 +125,7 @@ fun MeshScreen(activity: MainActivity, navController: NavController) {
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Text(
-                                        neighbor.addr.take(2),
+                                        initials,
                                         style = MaterialTheme.typography.titleSmall,
                                         color = MaterialTheme.colorScheme.onSecondaryContainer
                                     )
@@ -116,15 +136,25 @@ fun MeshScreen(activity: MainActivity, navController: NavController) {
 
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    neighbor.addr,
+                                    displayName,
                                     style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.primary
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
-                                Text(
-                                    "Tap to chat",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                if (nickname != null) {
+                                    Text(
+                                        neighbor.addr,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
+                                    Text(
+                                        "Tap to chat",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
 
                             Surface(

@@ -1,11 +1,13 @@
 package com.nexus.mesh.ui
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -16,7 +18,7 @@ import androidx.navigation.NavController
 import java.text.SimpleDateFormat
 import java.util.*
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(activity: MainActivity, navController: NavController) {
     val service = activity.getService()
@@ -24,14 +26,19 @@ fun ChatScreen(activity: MainActivity, navController: NavController) {
         ?: remember { mutableStateOf(emptyMap()) }
     val address by service?.address?.collectAsState()
         ?: remember { mutableStateOf("--------") }
+    val nicknames by service?.nicknames?.collectAsState()
+        ?: remember { mutableStateOf(emptyMap()) }
+    val myName by service?.myName?.collectAsState()
+        ?: remember { mutableStateOf("") }
 
     var showNewChat by remember { mutableStateOf(false) }
     var newChatAddr by remember { mutableStateOf("") }
+    var deleteTarget by remember { mutableStateOf<String?>(null) }
     val dateFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
-    // Sort conversations by last message timestamp (most recent first)
     val sortedPeers = remember(conversations) {
         conversations.entries
+            .filter { it.value.isNotEmpty() }
             .sortedByDescending { it.value.lastOrNull()?.timestamp ?: 0L }
             .map { it.key }
     }
@@ -41,9 +48,9 @@ fun ChatScreen(activity: MainActivity, navController: NavController) {
             TopAppBar(
                 title = {
                     Column {
-                        Text("NEXUS Chat")
+                        Text(if (myName.isNotEmpty()) myName else "NEXUS Chat")
                         Text(
-                            "You: $address",
+                            address,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -52,9 +59,7 @@ fun ChatScreen(activity: MainActivity, navController: NavController) {
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showNewChat = true }
-            ) {
+            FloatingActionButton(onClick = { showNewChat = true }) {
                 Icon(Icons.Default.Add, contentDescription = "New Chat")
             }
         }
@@ -91,14 +96,27 @@ fun ChatScreen(activity: MainActivity, navController: NavController) {
                     items(sortedPeers) { peerAddr ->
                         val messages = conversations[peerAddr] ?: emptyList()
                         val lastMsg = messages.lastOrNull()
+                        val nickname = nicknames[peerAddr]
+                        val displayName = nickname ?: peerAddr
+                        val initials = if (nickname != null) {
+                            nickname.take(2).uppercase()
+                        } else {
+                            peerAddr.take(2)
+                        }
+                        val msgCount = messages.size
 
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 4.dp)
-                                .clickable {
-                                    navController.navigate("conversation/$peerAddr")
-                                }
+                                .combinedClickable(
+                                    onClick = {
+                                        navController.navigate("conversation/$peerAddr")
+                                    },
+                                    onLongClick = {
+                                        deleteTarget = peerAddr
+                                    }
+                                )
                         ) {
                             Row(
                                 modifier = Modifier
@@ -106,7 +124,6 @@ fun ChatScreen(activity: MainActivity, navController: NavController) {
                                     .padding(16.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Avatar circle with first 2 chars
                                 Surface(
                                     modifier = Modifier.size(48.dp),
                                     shape = MaterialTheme.shapes.extraLarge,
@@ -114,7 +131,7 @@ fun ChatScreen(activity: MainActivity, navController: NavController) {
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Text(
-                                            peerAddr.take(2),
+                                            initials,
                                             style = MaterialTheme.typography.titleMedium,
                                             color = MaterialTheme.colorScheme.onPrimaryContainer
                                         )
@@ -128,14 +145,32 @@ fun ChatScreen(activity: MainActivity, navController: NavController) {
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Text(
-                                            peerAddr,
-                                            style = MaterialTheme.typography.titleSmall,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                        if (lastMsg != null) {
+                                        Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                dateFormat.format(Date(lastMsg.timestamp)),
+                                                displayName,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (nickname != null) {
+                                                Text(
+                                                    peerAddr,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            if (lastMsg != null) {
+                                                Text(
+                                                    dateFormat.format(Date(lastMsg.timestamp)),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            Text(
+                                                "$msgCount msgs",
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -190,6 +225,38 @@ fun ChatScreen(activity: MainActivity, navController: NavController) {
             },
             dismissButton = {
                 TextButton(onClick = { showNewChat = false; newChatAddr = "" }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Delete conversation dialog
+    if (deleteTarget != null) {
+        val targetAddr = deleteTarget!!
+        val targetName = nicknames[targetAddr] ?: targetAddr
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            icon = { Icon(Icons.Default.Delete, contentDescription = null) },
+            title = { Text("Delete Conversation") },
+            text = {
+                Text("Delete conversation with $targetName?\nThis cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        service?.deleteConversation(targetAddr)
+                        deleteTarget = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
                     Text("Cancel")
                 }
             }

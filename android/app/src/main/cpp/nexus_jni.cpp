@@ -415,6 +415,75 @@ Java_com_nexus_mesh_service_NexusNode_nativeIsTcpInetActive(JNIEnv *env,
     return (g_tcp_inet && g_tcp_inet->active) ? JNI_TRUE : JNI_FALSE;
 }
 
+/* ── Route / Neighbor info queries ───────────────────────────────────── */
+
+/*
+ * Get route info for a destination address.
+ * Returns int array: [hop_count, via_transport, next_hop_b0..b3] or null.
+ */
+JNIEXPORT jintArray JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeGetRouteInfo(JNIEnv *env,
+                                                          jobject thiz,
+                                                          jbyteArray dest)
+{
+    (void)thiz;
+    if (!g_running) return nullptr;
+
+    nx_addr_short_t dst;
+    env->GetByteArrayRegion(dest, 0, 4, (jbyte *)dst.bytes);
+
+    const nx_route_table_t *rt = nx_node_route_table(&g_node);
+
+    /* Check if it's a direct neighbor first */
+    const nx_neighbor_t *nb = nx_neighbor_find(rt, &dst);
+    if (nb) {
+        /* Direct neighbor: hop_count=1, transport=0, next_hop=self */
+        jintArray result = env->NewIntArray(6);
+        jint vals[6] = { 1, 0,
+            (jint)(uint8_t)nb->addr.bytes[0], (jint)(uint8_t)nb->addr.bytes[1],
+            (jint)(uint8_t)nb->addr.bytes[2], (jint)(uint8_t)nb->addr.bytes[3] };
+        env->SetIntArrayRegion(result, 0, 6, vals);
+        return result;
+    }
+
+    /* Check route table */
+    const nx_route_t *route = nx_route_lookup(rt, &dst);
+    if (route) {
+        jintArray result = env->NewIntArray(6);
+        jint vals[6] = {
+            (jint)route->hop_count, (jint)route->via_transport,
+            (jint)(uint8_t)route->next_hop.bytes[0],
+            (jint)(uint8_t)route->next_hop.bytes[1],
+            (jint)(uint8_t)route->next_hop.bytes[2],
+            (jint)(uint8_t)route->next_hop.bytes[3]
+        };
+        env->SetIntArrayRegion(result, 0, 6, vals);
+        return result;
+    }
+
+    return nullptr; /* No route known */
+}
+
+/*
+ * Check if an address is a direct neighbor.
+ * Returns role (>=0) or -1 if not a neighbor.
+ */
+JNIEXPORT jint JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeIsNeighbor(JNIEnv *env,
+                                                        jobject thiz,
+                                                        jbyteArray addr)
+{
+    (void)thiz;
+    if (!g_running) return -1;
+
+    nx_addr_short_t a;
+    env->GetByteArrayRegion(addr, 0, 4, (jbyte *)a.bytes);
+
+    const nx_route_table_t *rt = nx_node_route_table(&g_node);
+    const nx_neighbor_t *nb = nx_neighbor_find(rt, &a);
+    return nb ? (jint)nb->role : -1;
+}
+
 /* ── UDP Multicast (auto-discovery on all interfaces) ────────────────── */
 
 JNIEXPORT jboolean JNICALL

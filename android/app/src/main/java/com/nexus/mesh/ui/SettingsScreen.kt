@@ -15,10 +15,12 @@ fun SettingsScreen(activity: MainActivity) {
     val address by service?.address?.collectAsState() ?: remember { mutableStateOf("--------") }
     val tcpActive by service?.tcpActive?.collectAsState() ?: remember { mutableStateOf(false) }
     val udpActive by service?.udpActive?.collectAsState() ?: remember { mutableStateOf(false) }
+    val myName by service?.myName?.collectAsState() ?: remember { mutableStateOf("") }
 
     val tcpConfig = service?.getTcpConfig()
     var tcpPort by remember { mutableStateOf(tcpConfig?.first?.toString() ?: "4242") }
     var tcpPeers by remember { mutableStateOf(tcpConfig?.second ?: "") }
+    var editName by remember(myName) { mutableStateOf(myName) }
 
     Scaffold(
         topBar = {
@@ -44,6 +46,36 @@ fun SettingsScreen(activity: MainActivity) {
                     ) {
                         Text("Short Address")
                         Text(address, color = MaterialTheme.colorScheme.primary)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = editName,
+                        onValueChange = { editName = it },
+                        label = { Text("Your Name") },
+                        placeholder = { Text("e.g. Alice, Bob") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        if (myName.isNotEmpty()) {
+                            TextButton(onClick = {
+                                editName = ""
+                                service?.setMyName("")
+                            }) {
+                                Text("Clear")
+                            }
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Button(
+                            onClick = { service?.setMyName(editName) },
+                            enabled = editName != myName
+                        ) {
+                            Text("Save Name")
+                        }
                     }
                 }
             }
@@ -172,7 +204,6 @@ fun SettingsScreen(activity: MainActivity) {
                 }
             }
 
-            // Bottom spacer for scroll comfort
             Spacer(Modifier.height(16.dp))
         }
     }

@@ -24,6 +24,8 @@ class NexusService : Service(), NexusNode.Callback {
         private const val KEY_TCP_ENABLED = "tcp_enabled"
         private const val KEY_TCP_PORT = "tcp_listen_port"
         private const val KEY_TCP_PEERS = "tcp_peers"
+        private const val PREFS_NICKNAMES = "nexus_nicknames"
+        private const val KEY_MY_NAME = "my_name"
     }
 
     private val node = NexusNode()
@@ -35,13 +37,22 @@ class NexusService : Service(), NexusNode.Callback {
     // --- Data models ---
 
     data class ChatMessage(
+        val id: Long,
         val peerAddr: String,
         val text: String,
         val timestamp: Long,
-        val isOutgoing: Boolean
+        val isOutgoing: Boolean,
+        val isDirect: Boolean = true  // true if peer is direct neighbor
     )
 
     data class Neighbor(val addr: String, val role: Int)
+
+    data class RouteInfo(
+        val hopCount: Int,
+        val viaTransport: Int,
+        val nextHop: String,
+        val isDirect: Boolean
+    )
 
     // --- Observable state ---
 
@@ -59,6 +70,14 @@ class NexusService : Service(), NexusNode.Callback {
 
     private val _udpActive = MutableStateFlow(false)
     val udpActive: StateFlow<Boolean> = _udpActive
+
+    private val _nicknames = MutableStateFlow<Map<String, String>>(emptyMap())
+    val nicknames: StateFlow<Map<String, String>> = _nicknames
+
+    private val _myName = MutableStateFlow("")
+    val myName: StateFlow<String> = _myName
+
+    private var nextMsgId = 1L
 
     inner class LocalBinder : Binder() {
         fun getService(): NexusService = this@NexusService
@@ -106,6 +125,7 @@ class NexusService : Service(), NexusNode.Callback {
         }
 
         _address.value = node.getAddressHex()
+        loadNicknames()
         updateNotification("Node: ${_address.value}")
 
         pollJob = scope.launch {
@@ -163,7 +183,11 @@ class NexusService : Service(), NexusNode.Callback {
         Log.i(TAG, "Data from $srcHex: ${data.size} bytes")
 
         val text = String(data, Charsets.UTF_8)
-        addMessage(srcHex, ChatMessage(srcHex, text, System.currentTimeMillis(), false))
+        val isDirect = node.isNeighbor(src) >= 0
+        addMessage(srcHex, ChatMessage(
+            nextMsgId++, srcHex, text, System.currentTimeMillis(),
+            isOutgoing = false, isDirect = isDirect
+        ))
         showMessageNotification(srcHex, text)
     }
 
@@ -182,7 +206,11 @@ class NexusService : Service(), NexusNode.Callback {
         Log.i(TAG, "Session msg from $srcHex: ${data.size} bytes")
 
         val text = String(data, Charsets.UTF_8)
-        addMessage(srcHex, ChatMessage(srcHex, text, System.currentTimeMillis(), false))
+        val isDirect = node.isNeighbor(src) >= 0
+        addMessage(srcHex, ChatMessage(
+            nextMsgId++, srcHex, text, System.currentTimeMillis(),
+            isOutgoing = false, isDirect = isDirect
+        ))
         showMessageNotification(srcHex, text)
     }
 
@@ -200,7 +228,11 @@ class NexusService : Service(), NexusNode.Callback {
         val destBytes = hexToBytes(dest) ?: return false
         val ok = node.send(destBytes, text.toByteArray(Charsets.UTF_8))
         if (ok) {
-            addMessage(dest, ChatMessage(dest, text, System.currentTimeMillis(), true))
+            val isDirect = node.isNeighbor(destBytes) >= 0
+            addMessage(dest, ChatMessage(
+                nextMsgId++, dest, text, System.currentTimeMillis(),
+                isOutgoing = true, isDirect = isDirect
+            ))
         }
         return ok
     }
@@ -216,6 +248,55 @@ class NexusService : Service(), NexusNode.Callback {
     }
 
     fun getNodeAddress(): String = _address.value
+
+    // --- Delete operations ---
+
+    fun deleteConversation(peerAddr: String) {
+        val current = _conversations.value.toMutableMap()
+        current.remove(peerAddr)
+        _conversations.value = current
+    }
+
+    fun deleteMessage(peerAddr: String, msgId: Long) {
+        val current = _conversations.value.toMutableMap()
+        val messages = current[peerAddr] ?: return
+        val filtered = messages.filter { it.id != msgId }
+        if (filtered.isEmpty()) {
+            current.remove(peerAddr)
+        } else {
+            current[peerAddr] = filtered
+        }
+        _conversations.value = current
+    }
+
+    fun clearConversation(peerAddr: String) {
+        val current = _conversations.value.toMutableMap()
+        current[peerAddr] = emptyList()
+        _conversations.value = current
+    }
+
+    // --- Route info ---
+
+    fun getRouteInfo(addr: String): RouteInfo? {
+        val destBytes = hexToBytes(addr) ?: return null
+        val info = node.getRouteInfo(destBytes) ?: return null
+        // info = [hop_count, via_transport, nh_b0, nh_b1, nh_b2, nh_b3]
+        val nextHop = "%02X%02X%02X%02X".format(
+            info[2] and 0xFF, info[3] and 0xFF,
+            info[4] and 0xFF, info[5] and 0xFF
+        )
+        return RouteInfo(
+            hopCount = info[0],
+            viaTransport = info[1],
+            nextHop = nextHop,
+            isDirect = info[0] <= 1
+        )
+    }
+
+    fun isPeerNeighbor(addr: String): Boolean {
+        val bytes = hexToBytes(addr) ?: return false
+        return node.isNeighbor(bytes) >= 0
+    }
 
     // --- TCP Internet Transport ---
 
@@ -281,6 +362,54 @@ class NexusService : Service(), NexusNode.Callback {
         Log.i(TAG, "UDP multicast stopped")
     }
 
+    // --- Nicknames ---
+
+    fun getDisplayName(addr: String): String {
+        return _nicknames.value[addr] ?: addr
+    }
+
+    fun setNickname(addr: String, name: String) {
+        val current = _nicknames.value.toMutableMap()
+        if (name.isBlank()) {
+            current.remove(addr)
+        } else {
+            current[addr] = name.trim()
+        }
+        _nicknames.value = current
+        saveNicknames()
+    }
+
+    fun setMyName(name: String) {
+        _myName.value = name.trim()
+        val prefs = getSharedPreferences(PREFS_NICKNAMES, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_MY_NAME, name.trim()).apply()
+    }
+
+    private fun loadNicknames() {
+        val prefs = getSharedPreferences(PREFS_NICKNAMES, Context.MODE_PRIVATE)
+        _myName.value = prefs.getString(KEY_MY_NAME, "") ?: ""
+        val all = prefs.all
+        val nicks = mutableMapOf<String, String>()
+        for ((key, value) in all) {
+            if (key != KEY_MY_NAME && value is String) {
+                nicks[key] = value
+            }
+        }
+        _nicknames.value = nicks
+    }
+
+    private fun saveNicknames() {
+        val prefs = getSharedPreferences(PREFS_NICKNAMES, Context.MODE_PRIVATE)
+        val editor = prefs.edit()
+        val myName = prefs.getString(KEY_MY_NAME, "") ?: ""
+        editor.clear()
+        editor.putString(KEY_MY_NAME, myName)
+        for ((addr, name) in _nicknames.value) {
+            editor.putString(addr, name)
+        }
+        editor.apply()
+    }
+
     // --- Helpers ---
 
     private fun updateTransportNotification() {
@@ -323,8 +452,9 @@ class NexusService : Service(), NexusNode.Callback {
     }
 
     private fun showMessageNotification(from: String, text: String) {
+        val displayName = getDisplayName(from)
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Message from $from")
+            .setContentTitle("Message from $displayName")
             .setContentText(text.take(100))
             .setSmallIcon(R.drawable.ic_mesh)
             .setAutoCancel(true)

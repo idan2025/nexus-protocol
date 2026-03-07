@@ -104,6 +104,15 @@ class NexusNode {
     val isUdpMulticastActive: Boolean
         get() = isRunning && nativeIsUdpMulticastActive()
 
+    // Route/neighbor info
+    fun getRouteInfo(dest: ByteArray): IntArray? {
+        return if (isRunning) nativeGetRouteInfo(dest) else null
+    }
+
+    fun isNeighbor(addr: ByteArray): Int {
+        return if (isRunning) nativeIsNeighbor(addr) else -1
+    }
+
     // Native methods
     private external fun nativeInit(role: Int, callback: Callback): Boolean
     private external fun nativeInitWithIdentity(role: Int, identity: ByteArray, callback: Callback): Boolean
@@ -122,4 +131,6 @@ class NexusNode {
     private external fun nativeStartUdpMulticast(): Boolean
     private external fun nativeStopUdpMulticast()
     private external fun nativeIsUdpMulticastActive(): Boolean
+    private external fun nativeGetRouteInfo(dest: ByteArray): IntArray?
+    private external fun nativeIsNeighbor(addr: ByteArray): Int
 }
