@@ -8,6 +8,13 @@
  * Every interface is used: Ethernet, WiFi, VPN, USB, bridges.
  * Packets received on any transport are bridged to all others.
  *
+ * Interactive commands (type while running):
+ *   send AABBCCDD hello world    Send text to node AABBCCDD
+ *   announce                     Re-announce this node
+ *   status                       Show neighbors, routes, transports
+ *   help                         Show command help
+ *   quit                         Shutdown
+ *
  * Usage:
  *   nexusd [-l port] [-p host:port] [-i identity_file] [-r role] [-nv]
  *
@@ -27,10 +34,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <signal.h>
 #include <unistd.h>
 #include <getopt.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <sys/stat.h>
 
 /* ── Configuration ───────────────────────────────────────────────────── */
@@ -103,23 +113,53 @@ static int save_identity(const char *path, const nx_identity_t *id)
     return (n == sizeof(nx_identity_t)) ? 0 : -1;
 }
 
+/* ── Hex helpers ─────────────────────────────────────────────────────── */
+
+static int hex_to_bytes(const char *hex, uint8_t *out, size_t out_len)
+{
+    size_t hex_len = strlen(hex);
+    if (hex_len != out_len * 2) return -1;
+    for (size_t i = 0; i < out_len; i++) {
+        unsigned int val;
+        if (sscanf(hex + i * 2, "%2x", &val) != 1) return -1;
+        out[i] = (uint8_t)val;
+    }
+    return 0;
+}
+
 /* ── Callbacks ───────────────────────────────────────────────────────── */
 
 static void on_data(const nx_addr_short_t *src,
                     const uint8_t *data, size_t len, void *user)
 {
     (void)user;
-    printf("[DATA] From %02X%02X%02X%02X (%zu bytes)\n",
-           src->bytes[0], src->bytes[1],
-           src->bytes[2], src->bytes[3], len);
+    /* Try to display as text if all printable */
+    int printable = 1;
+    for (size_t i = 0; i < len; i++) {
+        if (data[i] < 0x20 && data[i] != '\n' && data[i] != '\r' && data[i] != '\t') {
+            printable = 0;
+            break;
+        }
+    }
 
-    if (g_verbose && len > 0) {
-        printf("  ");
-        for (size_t i = 0; i < len && i < 64; i++)
-            printf("%02X ", data[i]);
-        if (len > 64) printf("...");
+    if (printable && len > 0) {
+        printf("[MSG] %02X%02X%02X%02X: %.*s\n",
+               src->bytes[0], src->bytes[1],
+               src->bytes[2], src->bytes[3],
+               (int)len, (const char *)data);
+    } else {
+        printf("[DATA] From %02X%02X%02X%02X (%zu bytes)",
+               src->bytes[0], src->bytes[1],
+               src->bytes[2], src->bytes[3], len);
+        if (g_verbose && len > 0) {
+            printf("\n  ");
+            for (size_t i = 0; i < len && i < 64; i++)
+                printf("%02X ", data[i]);
+            if (len > 64) printf("...");
+        }
         printf("\n");
     }
+    fflush(stdout);
 }
 
 static void on_neighbor(const nx_addr_short_t *addr,
@@ -131,15 +171,147 @@ static void on_neighbor(const nx_addr_short_t *addr,
     printf("[NEIGHBOR] %02X%02X%02X%02X role=%s\n",
            addr->bytes[0], addr->bytes[1],
            addr->bytes[2], addr->bytes[3], rname);
+    fflush(stdout);
 }
 
 static void on_session(const nx_addr_short_t *src,
                        const uint8_t *data, size_t len, void *user)
 {
-    (void)user; (void)data;
-    printf("[SESSION] From %02X%02X%02X%02X (%zu bytes)\n",
-           src->bytes[0], src->bytes[1],
-           src->bytes[2], src->bytes[3], len);
+    (void)user;
+    int printable = 1;
+    for (size_t i = 0; i < len; i++) {
+        if (data[i] < 0x20 && data[i] != '\n' && data[i] != '\r' && data[i] != '\t') {
+            printable = 0;
+            break;
+        }
+    }
+
+    if (printable && len > 0) {
+        printf("[SESSION] %02X%02X%02X%02X: %.*s\n",
+               src->bytes[0], src->bytes[1],
+               src->bytes[2], src->bytes[3],
+               (int)len, (const char *)data);
+    } else {
+        printf("[SESSION] From %02X%02X%02X%02X (%zu bytes)\n",
+               src->bytes[0], src->bytes[1],
+               src->bytes[2], src->bytes[3], len);
+    }
+    fflush(stdout);
+}
+
+/* ── Interactive commands ────────────────────────────────────────────── */
+
+static void print_commands(void)
+{
+    printf("Commands:\n"
+           "  send AABBCCDD message    Send text message to node\n"
+           "  announce                 Re-announce this node\n"
+           "  status                   Show neighbors, routes, transports\n"
+           "  help                     Show this help\n"
+           "  quit                     Shutdown\n");
+    fflush(stdout);
+}
+
+static void process_command(const char *line)
+{
+    /* Skip leading whitespace */
+    while (*line == ' ' || *line == '\t') line++;
+    if (*line == '\0' || *line == '\n') return;
+
+    if (strncmp(line, "send ", 5) == 0) {
+        const char *args = line + 5;
+        while (*args == ' ') args++;
+
+        /* Parse destination: 8 hex chars */
+        if (strlen(args) < 9) {
+            printf("Usage: send AABBCCDD message text\n");
+            fflush(stdout);
+            return;
+        }
+
+        char hex[9];
+        memcpy(hex, args, 8);
+        hex[8] = '\0';
+
+        nx_addr_short_t dst;
+        if (hex_to_bytes(hex, dst.bytes, 4) != 0) {
+            printf("Invalid address: %s (expected 8 hex chars)\n", hex);
+            fflush(stdout);
+            return;
+        }
+
+        const char *msg = args + 8;
+        while (*msg == ' ') msg++;
+        if (*msg == '\0') {
+            printf("No message body\n");
+            fflush(stdout);
+            return;
+        }
+
+        size_t msg_len = strlen(msg);
+        /* Strip trailing newline */
+        while (msg_len > 0 && (msg[msg_len-1] == '\n' || msg[msg_len-1] == '\r'))
+            msg_len--;
+
+        if (msg_len == 0) {
+            printf("No message body\n");
+            fflush(stdout);
+            return;
+        }
+
+        nx_err_t err = nx_node_send(&g_node, &dst, (const uint8_t *)msg, msg_len);
+        if (err == NX_OK) {
+            printf("[SENT] -> %02X%02X%02X%02X: %.*s\n",
+                   dst.bytes[0], dst.bytes[1], dst.bytes[2], dst.bytes[3],
+                   (int)msg_len, msg);
+        } else {
+            printf("[SEND FAILED] error=%d\n", err);
+        }
+
+    } else if (strncmp(line, "announce", 8) == 0) {
+        nx_node_announce(&g_node);
+        printf("[ANNOUNCE] Sent\n");
+
+    } else if (strncmp(line, "status", 6) == 0) {
+        const nx_identity_t *nid = nx_node_identity(&g_node);
+        const nx_route_table_t *rt = nx_node_route_table(&g_node);
+
+        int n_neighbors = 0, n_routes = 0;
+        for (int i = 0; i < NX_MAX_NEIGHBORS; i++)
+            if (rt->neighbors[i].valid) n_neighbors++;
+        for (int i = 0; i < NX_MAX_ROUTES; i++)
+            if (rt->routes[i].valid) n_routes++;
+
+        printf("Node: %02X%02X%02X%02X\n",
+               nid->short_addr.bytes[0], nid->short_addr.bytes[1],
+               nid->short_addr.bytes[2], nid->short_addr.bytes[3]);
+        printf("  neighbors=%d routes=%d transports=%d\n",
+               n_neighbors, n_routes, nx_transport_count());
+
+        if (n_neighbors > 0) {
+            const char *role_names[] = {"LEAF", "RELAY", "GATEWAY", "ANCHOR", "SENTINEL"};
+            printf("  Neighbors:\n");
+            for (int i = 0; i < NX_MAX_NEIGHBORS; i++) {
+                if (!rt->neighbors[i].valid) continue;
+                const nx_addr_short_t *a = &rt->neighbors[i].addr;
+                int r = rt->neighbors[i].role;
+                const char *rn = (r >= 0 && r <= 4) ? role_names[r] : "?";
+                printf("    %02X%02X%02X%02X role=%s\n",
+                       a->bytes[0], a->bytes[1], a->bytes[2], a->bytes[3], rn);
+            }
+        }
+
+    } else if (strncmp(line, "help", 4) == 0) {
+        print_commands();
+
+    } else if (strncmp(line, "quit", 4) == 0 || strncmp(line, "exit", 4) == 0) {
+        g_running = 0;
+
+    } else {
+        printf("Unknown command. Type 'help' for commands.\n");
+    }
+
+    fflush(stdout);
 }
 
 /* ── Usage ───────────────────────────────────────────────────────────── */
@@ -161,6 +333,12 @@ static void print_usage(const char *prog)
         "  -n             Disable UDP multicast (TCP only)\n"
         "  -v             Verbose output\n"
         "  -h             Show this help\n"
+        "\n"
+        "Interactive commands (while running):\n"
+        "  send AABBCCDD message    Send text to a node\n"
+        "  announce                 Re-announce this node\n"
+        "  status                   Show node status\n"
+        "  quit                     Shutdown\n"
         "\n"
         "Examples:\n"
         "  %s                                    Zero-config LAN discovery\n"
@@ -344,15 +522,40 @@ int main(int argc, char **argv)
            role_names[cfg.role]);
 
     nx_node_announce(&g_node);
-    printf("Ready. Press Ctrl+C to stop.\n");
+    printf("Ready. Type 'help' for commands, Ctrl+C to stop.\n");
+    fflush(stdout);
+
+    /* ── Set stdin non-blocking ──────────────────────────────────────── */
+
+    int stdin_fd = fileno(stdin);
+    int flags = fcntl(stdin_fd, F_GETFL, 0);
+    fcntl(stdin_fd, F_SETFL, flags | O_NONBLOCK);
 
     /* ── Event loop ──────────────────────────────────────────────────── */
 
     uint64_t last_status = nx_platform_time_ms();
+    char cmd_buf[512];
+    int cmd_pos = 0;
 
     while (g_running) {
-        nx_node_poll(&g_node, 50);
+        nx_node_poll(&g_node, 20);
 
+        /* Check stdin for commands (non-blocking) */
+        struct pollfd pfd = { .fd = stdin_fd, .events = POLLIN };
+        if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
+            char c;
+            while (read(stdin_fd, &c, 1) == 1) {
+                if (c == '\n') {
+                    cmd_buf[cmd_pos] = '\0';
+                    process_command(cmd_buf);
+                    cmd_pos = 0;
+                } else if (cmd_pos < (int)sizeof(cmd_buf) - 1) {
+                    cmd_buf[cmd_pos++] = c;
+                }
+            }
+        }
+
+        /* Periodic status in verbose mode */
         uint64_t now = nx_platform_time_ms();
         if (cfg.verbose && now - last_status >= 60000) {
             last_status = now;
@@ -364,6 +567,7 @@ int main(int argc, char **argv)
                 if (rt->routes[i].valid) n_routes++;
             printf("[STATUS] neighbors=%d routes=%d transports=%d\n",
                    n_neighbors, n_routes, nx_transport_count());
+            fflush(stdout);
         }
     }
 

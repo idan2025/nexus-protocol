@@ -60,8 +60,9 @@ fun MeshScreen(activity: MainActivity) {
                                 when (neighbor.role) {
                                     0 -> "LEAF"
                                     1 -> "RELAY"
-                                    2 -> "ANCHOR"
-                                    3 -> "GATEWAY"
+                                    2 -> "GATEWAY"
+                                    3 -> "ANCHOR"
+                                    4 -> "SENTINEL"
                                     else -> "ROLE=${neighbor.role}"
                                 }
                             )

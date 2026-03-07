@@ -3,6 +3,7 @@ package com.nexus.mesh.service
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.IBinder
 import android.util.Log
@@ -33,6 +34,7 @@ class NexusService : Service(), NexusNode.Callback {
     private val binder = LocalBinder()
     private var pollJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     // Observable state
     data class Message(val src: String, val data: ByteArray, val timestamp: Long)
@@ -68,6 +70,9 @@ class NexusService : Service(), NexusNode.Callback {
 
     override fun onDestroy() {
         pollJob?.cancel()
+        node.stopTcpInet()
+        node.stopUdpMulticast()
+        multicastLock?.release()
         node.stop()
         scope.cancel()
         super.onDestroy()
@@ -239,16 +244,33 @@ class NexusService : Service(), NexusNode.Callback {
     // --- UDP Multicast (LAN auto-discovery) ---
 
     fun startUdpMulticast(): Boolean {
+        // Android blocks multicast by default to save battery.
+        // We must acquire a MulticastLock before we can receive.
+        if (multicastLock == null) {
+            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            multicastLock = wifi?.createMulticastLock("nexus_mcast")?.apply {
+                setReferenceCounted(false)
+            }
+        }
+        multicastLock?.acquire()
+
         val ok = node.startUdpMulticast()
         _udpActive.value = ok
-        if (ok) Log.i(TAG, "UDP multicast started")
-        else Log.w(TAG, "UDP multicast failed to start")
+        if (ok) {
+            Log.i(TAG, "UDP multicast started")
+            updateTransportNotification()
+        } else {
+            Log.w(TAG, "UDP multicast failed to start")
+            multicastLock?.release()
+        }
         return ok
     }
 
     fun stopUdpMulticast() {
         node.stopUdpMulticast()
         _udpActive.value = false
+        multicastLock?.release()
+        updateTransportNotification()
         Log.i(TAG, "UDP multicast stopped")
     }
 
