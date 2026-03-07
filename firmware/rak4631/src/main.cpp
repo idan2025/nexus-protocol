@@ -21,6 +21,7 @@ extern "C" {
 }
 
 #include "radiolib_hal.h"
+#include "anchor_store.h"
 
 /* ── Pin definitions (RAK4631 WisBlock) ───────────────────────────────── */
 
@@ -38,6 +39,7 @@ SX1262 radio = new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
 static nx_node_t node;
 static uint32_t msg_count = 0;
 static uint32_t neighbor_count = 0;
+static int last_anchor_count = 0;
 
 /* ── Flash identity storage (nRF52 InternalFS) ────────────────────────── */
 
@@ -166,6 +168,13 @@ void setup()
                   id->short_addr.bytes[2], id->short_addr.bytes[3],
                   new_identity ? "(new)" : "(stored)");
 
+    /* Load stored messages from flash */
+    if (nx_anchor_store_load(&node.anchor) == NX_OK) {
+        int count = nx_anchor_count(&node.anchor);
+        Serial.printf("[NEXUS] Loaded %d stored messages from flash\n", count);
+        last_anchor_count = count;
+    }
+
     /* Initial announcement */
     nx_node_announce(&node);
 
@@ -181,16 +190,25 @@ void loop()
 {
     nx_node_poll(&node, 10);
 
+    /* Persist anchor mailbox when contents change */
+    int cur_anchor = nx_anchor_count(&node.anchor);
+    if (cur_anchor != last_anchor_count) {
+        nx_anchor_store_save(&node.anchor);
+        Serial.printf("[ANCHOR] Saved %d messages to flash\n", cur_anchor);
+        last_anchor_count = cur_anchor;
+    }
+
     uint32_t now = millis();
     if (now - last_status_ms > 30000) {
         last_status_ms = now;
 
         const nx_identity_t *id = nx_node_identity(&node);
-        Serial.printf("[STATUS] %02X%02X%02X%02X neighbors=%lu msgs=%lu\n",
+        Serial.printf("[STATUS] %02X%02X%02X%02X neighbors=%lu msgs=%lu stored=%d\n",
                       id->short_addr.bytes[0], id->short_addr.bytes[1],
                       id->short_addr.bytes[2], id->short_addr.bytes[3],
                       (unsigned long)neighbor_count,
-                      (unsigned long)msg_count);
+                      (unsigned long)msg_count,
+                      nx_anchor_count(&node.anchor));
 
         /* Blink LED */
         digitalWrite(LED_BLUE, HIGH);

@@ -26,6 +26,7 @@ extern "C" {
 #include "radiolib_hal.h"
 #include "ble_bridge.h"
 #include "identity_store.h"
+#include "anchor_store.h"
 
 /* ── Pin definitions (Heltec V3) ──────────────────────────────────────── */
 
@@ -52,6 +53,7 @@ static char ble_name[20];
 /* Stats */
 static uint32_t msg_count = 0;
 static uint32_t neighbor_count = 0;
+static int last_anchor_count = 0;
 
 /* ── OLED Display (SSD1306 via I2C, minimal driver) ───────────────────── */
 
@@ -257,6 +259,13 @@ void setup()
                   id->short_addr.bytes[2], id->short_addr.bytes[3],
                   new_identity ? "(new)" : "(stored)");
 
+    /* Load stored messages from flash */
+    if (nx_anchor_store_load(&node.anchor) == NX_OK) {
+        int count = nx_anchor_count(&node.anchor);
+        Serial.printf("[NEXUS] Loaded %d stored messages from flash\n", count);
+        last_anchor_count = count;
+    }
+
     /* BLE bridge for phone connectivity */
     nx_ble_bridge_init(ble_name);
     nx_ble_bridge_start();
@@ -307,17 +316,26 @@ void loop()
         }
     }
 
+    /* Persist anchor mailbox when contents change */
+    int cur_anchor = nx_anchor_count(&node.anchor);
+    if (cur_anchor != last_anchor_count) {
+        nx_anchor_store_save(&node.anchor);
+        Serial.printf("[ANCHOR] Saved %d messages to flash\n", cur_anchor);
+        last_anchor_count = cur_anchor;
+    }
+
     /* Periodic status output */
     uint32_t now = millis();
     if (now - last_status_ms > 30000) {
         last_status_ms = now;
 
         const nx_identity_t *id = nx_node_identity(&node);
-        Serial.printf("[STATUS] %02X%02X%02X%02X neighbors=%lu msgs=%lu BLE=%s\n",
+        Serial.printf("[STATUS] %02X%02X%02X%02X neighbors=%lu msgs=%lu stored=%d BLE=%s\n",
                       id->short_addr.bytes[0], id->short_addr.bytes[1],
                       id->short_addr.bytes[2], id->short_addr.bytes[3],
                       (unsigned long)neighbor_count,
                       (unsigned long)msg_count,
+                      nx_anchor_count(&node.anchor),
                       nx_ble_bridge_connected() ? "yes" : "no");
 
         char l1[32], l2[32], l3[32], l4[32];
