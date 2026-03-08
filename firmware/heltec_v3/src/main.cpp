@@ -4,13 +4,16 @@
  * Full NEXUS mesh node with:
  * - SX1262 LoRa radio (via RadioLib HAL bridge)
  * - BLE bridge for phone app connectivity
+ * - BLE config protocol (Meshtastic-style settings over BLE)
  * - Identity persistence in NVS
  * - Interactive OLED display with button navigation
  * - Store-and-forward persistence in flash
+ * - Configurable screen timeout + deep sleep on 10s hold
  */
 #include <Arduino.h>
 #include <RadioLib.h>
 #include <U8x8lib.h>
+#include <esp_sleep.h>
 
 /* NEXUS C API */
 extern "C" {
@@ -26,8 +29,9 @@ extern "C" {
 #include "ble_bridge.h"
 #include "identity_store.h"
 #include "anchor_store.h"
+#include "settings_store.h"
 
-/* ── Pin definitions (Heltec V3) ──────────────────────────────────────── */
+/* -- Pin definitions (Heltec V3) ---------------------------------------- */
 
 #define LORA_SS     8
 #define LORA_DIO1   14
@@ -41,18 +45,20 @@ extern "C" {
 #define BTN_PRG     0   /* PRG button (active low, internal pullup) */
 #define LED_PIN     35
 
-/* ── Display ─────────────────────────────────────────────────────────── */
+/* -- Display ------------------------------------------------------------- */
 
 /* U8x8 text-mode driver: 16 chars x 8 lines, no framebuffer needed */
 U8X8_SSD1306_128X64_NONAME_HW_I2C u8x8(OLED_RST, OLED_SCL, OLED_SDA);
 static bool oled_ok = false;
 
-/* ── Globals ─────────────────────────────────────────────────────────── */
+/* -- Globals ------------------------------------------------------------- */
 
 SX1262 radio = new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
 static nx_node_t node;
 static nx_identity_t stored_identity;
+static nx_settings_t settings;
+static nx_lora_radio_t *g_lora_radio = NULL; /* for runtime reconfiguration */
 static char ble_name[20];
 
 /* Stats */
@@ -60,7 +66,7 @@ static uint32_t rx_count = 0;
 static uint32_t neighbor_count = 0;
 static int last_anchor_count = 0;
 
-/* ── UI State ────────────────────────────────────────────────────────── */
+/* -- UI State ------------------------------------------------------------ */
 
 enum UIScreen {
     SCREEN_STATUS,
@@ -81,10 +87,30 @@ static bool btn_down = false;
 static uint32_t btn_press_ms = 0;
 static bool btn_long_fired = false;
 
+/* Screen auto-off */
+static uint32_t last_activity_ms = 0;
+static bool screen_off = false;
+
 #define BTN_DEBOUNCE_MS   50
 #define BTN_LONG_MS      1000
+#define BTN_SHUTDOWN_MS  10000
 
-/* ── Helpers ─────────────────────────────────────────────────────────── */
+/* -- BLE Config Protocol ------------------------------------------------- */
+
+/* Magic destination address for config commands (not a valid mesh addr) */
+static const uint8_t CFG_MAGIC[4] = {0xFF, 0xFF, 0xFF, 0xCF};
+
+/* Config commands (phone -> device) */
+#define CFG_CMD_GET_CONFIG   0x01
+#define CFG_CMD_SET_RADIO    0x02  /* [freq(4)][bw(4)][sf(1)][cr(1)][pwr(1)] */
+#define CFG_CMD_SET_SCREEN   0x03  /* [timeout_ms(4)] */
+#define CFG_CMD_SET_ROLE     0x04  /* [role(1)] */
+#define CFG_CMD_REBOOT       0x05
+
+/* Config response (device -> phone): CMD | 0x80 */
+#define CFG_RESP_FLAG        0x80
+
+/* -- Helpers ------------------------------------------------------------- */
 
 static const char* role_name(int role)
 {
@@ -142,7 +168,7 @@ static void draw_line(int row, const char *fmt, ...)
     u8x8.drawString(0, row, buf);
 }
 
-/* ── Screen: Status ──────────────────────────────────────────────────── */
+/* -- Screen: Status ------------------------------------------------------ */
 
 static void draw_status()
 {
@@ -173,7 +199,7 @@ static void draw_status()
               nx_ble_bridge_connected() ? 'Y' : 'N');
 }
 
-/* ── Screen: Neighbors ───────────────────────────────────────────────── */
+/* -- Screen: Neighbors --------------------------------------------------- */
 
 static void draw_neighbors()
 {
@@ -221,7 +247,7 @@ static void draw_neighbors()
     }
 }
 
-/* ── Screen: Mailbox ─────────────────────────────────────────────────── */
+/* -- Screen: Mailbox ----------------------------------------------------- */
 
 static void draw_mailbox()
 {
@@ -284,11 +310,11 @@ static void draw_mailbox()
     draw_line(7, "[PRG] next");
 }
 
-/* ── Screen dispatch ─────────────────────────────────────────────────── */
+/* -- Screen dispatch ----------------------------------------------------- */
 
 static void draw_screen()
 {
-    if (!oled_ok) return;
+    if (!oled_ok || screen_off) return;
 
     switch (ui_screen) {
     case SCREEN_STATUS:    draw_status(); break;
@@ -298,7 +324,26 @@ static void draw_screen()
     }
 }
 
-/* ── Button handler ──────────────────────────────────────────────────── */
+/* -- Screen timeout ------------------------------------------------------ */
+
+static void screen_wake()
+{
+    if (!oled_ok || !screen_off) return;
+    screen_off = false;
+    u8x8.setPowerSave(0);
+    ui_dirty = true;
+    Serial.println("[OLED] Screen on");
+}
+
+static void screen_sleep()
+{
+    if (!oled_ok || screen_off) return;
+    screen_off = true;
+    u8x8.setPowerSave(1);
+    Serial.println("[OLED] Screen off (timeout)");
+}
+
+/* -- Button handler ------------------------------------------------------ */
 
 static void button_update()
 {
@@ -310,11 +355,46 @@ static void button_update()
         btn_down = true;
         btn_press_ms = now;
         btn_long_fired = false;
-    } else if (pressed && btn_down && !btn_long_fired) {
-        /* Held — check for long press */
-        if (now - btn_press_ms > BTN_LONG_MS) {
+        last_activity_ms = now;
+
+        /* Wake screen on any press (consume this press for wake only) */
+        if (screen_off) {
+            screen_wake();
+            btn_long_fired = true; /* suppress further actions for this press */
+        }
+    } else if (pressed && btn_down) {
+        /* Held -- check for long press thresholds */
+        uint32_t held = now - btn_press_ms;
+
+        if (held > BTN_SHUTDOWN_MS) {
+            /* 10s hold: deep sleep / shutdown */
+            Serial.println("[BTN] Shutting down...");
+            nx_anchor_store_save(&node.anchor);
+            nx_settings_save(&settings);
+            nx_node_stop(&node);
+
+            if (oled_ok) {
+                if (screen_off) {
+                    screen_off = false;
+                    u8x8.setPowerSave(0);
+                }
+                u8x8.clear();
+                draw_header("SHUTTING DOWN");
+                draw_line(3, "  Hold released");
+                draw_line(4, "  to wake up");
+                delay(1500);
+                u8x8.clear();
+                u8x8.setPowerSave(1);
+            }
+
+            digitalWrite(LED_PIN, LOW);
+            /* ESP32 deep sleep -- wakes on PRG button (GPIO0 LOW) */
+            esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_PRG, 0);
+            esp_deep_sleep_start();
+
+        } else if (held > BTN_LONG_MS && !btn_long_fired) {
             btn_long_fired = true;
-            /* Long press action: send announcement */
+            /* 1s hold: send announcement */
             nx_node_announce(&node);
             Serial.println("[BTN] Announce sent");
 
@@ -329,14 +409,15 @@ static void button_update()
         /* Released */
         btn_down = false;
         if (!btn_long_fired && (now - btn_press_ms > BTN_DEBOUNCE_MS)) {
-            /* Short press */
+            /* Short press: cycle screens */
+            last_activity_ms = now;
             if (ui_screen == SCREEN_NEIGHBORS) {
                 int count = nx_neighbor_count(&node.route_table);
                 if (ui_scroll + 6 < count) {
                     /* Scroll to next page of neighbors */
                     ui_scroll += 6;
                 } else {
-                    /* Past last page — next screen */
+                    /* Past last page -- next screen */
                     ui_scroll = 0;
                     ui_screen = (UIScreen)((int)ui_screen + 1);
                     if ((int)ui_screen >= SCREEN_COUNT)
@@ -353,7 +434,7 @@ static void button_update()
     }
 }
 
-/* ── Callbacks ───────────────────────────────────────────────────────── */
+/* -- Callbacks ----------------------------------------------------------- */
 
 static void on_data(const nx_addr_short_t *src,
                     const uint8_t *data, size_t len, void *user)
@@ -410,7 +491,139 @@ static void on_session(const nx_addr_short_t *src,
     }
 }
 
-/* ── Serial commands ─────────────────────────────────────────────────── */
+/* -- BLE Config Protocol Handler ----------------------------------------- */
+
+static void send_config_response()
+{
+    /* Response: [MAGIC(4)][0x81][freq(4)][bw(4)][sf][cr][pwr][timeout(4)][role][addr(4)] = 25B */
+    uint8_t resp[25];
+    memcpy(resp, CFG_MAGIC, 4);
+    resp[4] = CFG_CMD_GET_CONFIG | CFG_RESP_FLAG;
+
+    const nx_lora_config_t *lc = &settings.lora_config;
+    /* Little-endian encoding */
+    resp[5]  = (uint8_t)(lc->frequency_hz);
+    resp[6]  = (uint8_t)(lc->frequency_hz >> 8);
+    resp[7]  = (uint8_t)(lc->frequency_hz >> 16);
+    resp[8]  = (uint8_t)(lc->frequency_hz >> 24);
+    resp[9]  = (uint8_t)(lc->bandwidth_hz);
+    resp[10] = (uint8_t)(lc->bandwidth_hz >> 8);
+    resp[11] = (uint8_t)(lc->bandwidth_hz >> 16);
+    resp[12] = (uint8_t)(lc->bandwidth_hz >> 24);
+    resp[13] = lc->spreading_factor;
+    resp[14] = lc->coding_rate;
+    resp[15] = (uint8_t)lc->tx_power_dbm;
+    resp[16] = (uint8_t)(settings.screen_timeout_ms);
+    resp[17] = (uint8_t)(settings.screen_timeout_ms >> 8);
+    resp[18] = (uint8_t)(settings.screen_timeout_ms >> 16);
+    resp[19] = (uint8_t)(settings.screen_timeout_ms >> 24);
+    resp[20] = settings.node_role;
+
+    const nx_identity_t *id = nx_node_identity(&node);
+    memcpy(&resp[21], id->short_addr.bytes, 4);
+
+    /* Send config response directly -- bridge adds NUS [LEN_HI][LEN_LO] framing */
+    nx_ble_bridge_send(resp, sizeof(resp));
+}
+
+static void handle_ble_config(const uint8_t *payload, size_t len)
+{
+    /* payload starts after the 4-byte magic: [CMD][params...] */
+    if (len < 1) return;
+
+    uint8_t cmd = payload[0];
+
+    switch (cmd) {
+    case CFG_CMD_GET_CONFIG:
+        Serial.println("[CFG] GET_CONFIG");
+        send_config_response();
+        break;
+
+    case CFG_CMD_SET_RADIO:
+        if (len < 12) break; /* need cmd(1) + freq(4) + bw(4) + sf(1) + cr(1) + pwr(1) */
+        {
+            uint32_t freq = (uint32_t)payload[1] |
+                            ((uint32_t)payload[2] << 8) |
+                            ((uint32_t)payload[3] << 16) |
+                            ((uint32_t)payload[4] << 24);
+            uint32_t bw   = (uint32_t)payload[5] |
+                            ((uint32_t)payload[6] << 8) |
+                            ((uint32_t)payload[7] << 16) |
+                            ((uint32_t)payload[8] << 24);
+            uint8_t sf    = payload[9];
+            uint8_t cr    = payload[10];
+            int8_t pwr    = (int8_t)payload[11];
+
+            /* Validate */
+            if (freq < 137000000 || freq > 1020000000) break;
+            if (sf < 7 || sf > 12) break;
+            if (cr < 5 || cr > 8) break;
+            if (pwr < 2 || pwr > 22) break;
+
+            settings.lora_config.frequency_hz = freq;
+            settings.lora_config.bandwidth_hz = bw;
+            settings.lora_config.spreading_factor = sf;
+            settings.lora_config.coding_rate = cr;
+            settings.lora_config.tx_power_dbm = pwr;
+
+            /* Apply to radio */
+            if (g_lora_radio && g_lora_radio->ops->reconfigure) {
+                nx_err_t err = g_lora_radio->ops->reconfigure(
+                    g_lora_radio, &settings.lora_config);
+                Serial.printf("[CFG] SET_RADIO freq=%lu bw=%lu sf=%d cr=%d pwr=%d -> %s\n",
+                              (unsigned long)freq, (unsigned long)bw,
+                              sf, cr, pwr,
+                              err == NX_OK ? "OK" : "FAIL");
+            }
+
+            nx_settings_save(&settings);
+            send_config_response();
+        }
+        break;
+
+    case CFG_CMD_SET_SCREEN:
+        if (len < 5) break; /* cmd(1) + timeout(4) */
+        {
+            uint32_t timeout = (uint32_t)payload[1] |
+                               ((uint32_t)payload[2] << 8) |
+                               ((uint32_t)payload[3] << 16) |
+                               ((uint32_t)payload[4] << 24);
+            settings.screen_timeout_ms = timeout;
+            nx_settings_save(&settings);
+            Serial.printf("[CFG] SET_SCREEN timeout=%lu ms\n",
+                          (unsigned long)timeout);
+            send_config_response();
+        }
+        break;
+
+    case CFG_CMD_SET_ROLE:
+        if (len < 2) break; /* cmd(1) + role(1) */
+        {
+            uint8_t role = payload[1];
+            if (role > 6) break;
+            settings.node_role = role;
+            nx_settings_save(&settings);
+            Serial.printf("[CFG] SET_ROLE role=%d (%s)\n",
+                          role, role_name(role));
+            send_config_response();
+        }
+        break;
+
+    case CFG_CMD_REBOOT:
+        Serial.println("[CFG] REBOOT");
+        nx_anchor_store_save(&node.anchor);
+        nx_settings_save(&settings);
+        delay(500);
+        ESP.restart();
+        break;
+
+    default:
+        Serial.printf("[CFG] Unknown cmd 0x%02X\n", cmd);
+        break;
+    }
+}
+
+/* -- Serial commands ----------------------------------------------------- */
 
 static void process_serial_command(const char *line)
 {
@@ -442,12 +655,29 @@ static void process_serial_command(const char *line)
         Serial.printf("[MAILBOX] %d/%d slots used, TTL=%lus\n",
                       count, node.anchor.max_slots,
                       (unsigned long)(node.anchor.msg_ttl_ms / 1000));
+    } else if (strcmp(line, "RADIO") == 0) {
+        Serial.printf("[RADIO] freq=%lu bw=%lu sf=%d cr=%d pwr=%d\n",
+                      (unsigned long)settings.lora_config.frequency_hz,
+                      (unsigned long)settings.lora_config.bandwidth_hz,
+                      settings.lora_config.spreading_factor,
+                      settings.lora_config.coding_rate,
+                      settings.lora_config.tx_power_dbm);
+    } else if (strcmp(line, "SETTINGS") == 0) {
+        Serial.printf("[SETTINGS] screen_timeout=%lu role=%d(%s)\n",
+                      (unsigned long)settings.screen_timeout_ms,
+                      settings.node_role, role_name(settings.node_role));
+        Serial.printf("[SETTINGS] freq=%lu bw=%lu sf=%d cr=%d pwr=%d\n",
+                      (unsigned long)settings.lora_config.frequency_hz,
+                      (unsigned long)settings.lora_config.bandwidth_hz,
+                      settings.lora_config.spreading_factor,
+                      settings.lora_config.coding_rate,
+                      settings.lora_config.tx_power_dbm);
     } else if (strcmp(line, "HELP") == 0) {
-        Serial.println("Commands: STATUS ANNOUNCE NEIGHBORS MAILBOX HELP");
+        Serial.println("Commands: STATUS ANNOUNCE NEIGHBORS MAILBOX RADIO SETTINGS HELP");
     }
 }
 
-/* ── Setup ───────────────────────────────────────────────────────────── */
+/* -- Setup --------------------------------------------------------------- */
 
 void setup()
 {
@@ -459,6 +689,20 @@ void setup()
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
     pinMode(BTN_PRG, INPUT_PULLUP);
+
+    /* Load settings (or use defaults on first boot) */
+    if (nx_settings_load(&settings) != NX_OK) {
+        Serial.println("[NEXUS] First boot - using default settings");
+        nx_settings_t defaults = NX_SETTINGS_DEFAULT;
+        memcpy(&settings, &defaults, sizeof(settings));
+        nx_settings_save(&settings);
+    } else {
+        Serial.printf("[NEXUS] Settings loaded: freq=%lu sf=%d role=%d timeout=%lu\n",
+                      (unsigned long)settings.lora_config.frequency_hz,
+                      settings.lora_config.spreading_factor,
+                      settings.node_role,
+                      (unsigned long)settings.screen_timeout_ms);
+    }
 
     /* OLED display */
     oled_ok = u8x8.begin();
@@ -481,17 +725,27 @@ void setup()
     /* Transport registry */
     nx_transport_registry_init();
 
-    /* LoRa radio via RadioLib HAL */
-    nx_lora_config_t lora_cfg = NX_LORA_CONFIG_DEFAULT;
-    nx_transport_t *lora_t = nx_radiolib_transport_setup(&radio, &lora_cfg);
-    if (!lora_t) {
-        Serial.println("[NEXUS] LoRa transport setup failed!");
+    /* LoRa radio via RadioLib HAL -- keep radio pointer for reconfiguration */
+    g_lora_radio = nx_radiolib_create(&radio);
+    if (!g_lora_radio || g_lora_radio->ops->init(g_lora_radio, &settings.lora_config) != NX_OK) {
+        Serial.println("[NEXUS] LoRa radio init failed!");
         if (oled_ok) {
             u8x8.clear();
             draw_header("!! ERROR !!");
             draw_line(3, " LoRa FAILED");
             draw_line(5, " Check wiring");
         }
+        while (1) delay(1000);
+    }
+
+    /* Create and register LoRa transport */
+    nx_transport_t *lora_t = nx_lora_transport_create();
+    if (!lora_t || lora_t->ops->init(lora_t, &g_lora_radio) != NX_OK) {
+        Serial.println("[NEXUS] LoRa transport init failed!");
+        while (1) delay(1000);
+    }
+    if (nx_transport_register(lora_t) != NX_OK) {
+        Serial.println("[NEXUS] LoRa transport register failed!");
         while (1) delay(1000);
     }
     Serial.println("[NEXUS] LoRa transport OK");
@@ -509,7 +763,7 @@ void setup()
 
     /* Node config */
     nx_node_config_t cfg = {
-        .role              = NX_ROLE_RELAY,
+        .role              = (nx_role_t)settings.node_role,
         .default_ttl       = 7,
         .beacon_interval_ms = 30000,
         .on_data           = on_data,
@@ -552,7 +806,7 @@ void setup()
     nx_node_announce(&node);
 
     Serial.println("[NEXUS] Ready - press PRG to cycle screens, hold for announce");
-    Serial.println("[NEXUS] Serial commands: STATUS ANNOUNCE NEIGHBORS MAILBOX HELP");
+    Serial.println("[NEXUS] Serial commands: STATUS ANNOUNCE NEIGHBORS MAILBOX RADIO SETTINGS HELP");
     digitalWrite(LED_PIN, HIGH);
 
     /* Clear splash and draw initial screen */
@@ -563,9 +817,10 @@ void setup()
     }
     ui_dirty = false;
     ui_last_draw_ms = millis();
+    last_activity_ms = millis();
 }
 
-/* ── Main Loop ───────────────────────────────────────────────────────── */
+/* -- Main Loop ----------------------------------------------------------- */
 
 static uint32_t last_status_ms = 0;
 
@@ -579,7 +834,11 @@ void loop()
         size_t ble_len = 0;
 
         while (nx_ble_bridge_recv(ble_buf, sizeof(ble_buf), &ble_len) == NX_OK) {
-            if (ble_len > 4) {
+            /* Check for config magic prefix */
+            if (ble_len >= 5 && memcmp(ble_buf, CFG_MAGIC, 4) == 0) {
+                handle_ble_config(&ble_buf[4], ble_len - 4);
+            } else if (ble_len > 4) {
+                /* Normal mesh packet: [dest(4)][data...] */
                 nx_addr_short_t dest;
                 memcpy(dest.bytes, ble_buf, 4);
                 nx_node_send(&node, &dest, &ble_buf[4], ble_len - 4);
@@ -617,9 +876,16 @@ void loop()
         }
     }
 
-    /* Update display */
+    /* Screen timeout */
     uint32_t now = millis();
-    if (ui_dirty || (now - ui_last_draw_ms > UI_REFRESH_MS)) {
+    if (oled_ok && !screen_off && settings.screen_timeout_ms > 0) {
+        if (now - last_activity_ms > settings.screen_timeout_ms) {
+            screen_sleep();
+        }
+    }
+
+    /* Update display */
+    if (!screen_off && (ui_dirty || (now - ui_last_draw_ms > UI_REFRESH_MS))) {
         draw_screen();
         ui_dirty = false;
         ui_last_draw_ms = now;

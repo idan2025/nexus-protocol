@@ -12,6 +12,7 @@ import java.util.UUID
 /**
  * BLE transport -- connects to NEXUS ESP32 devices via Nordic UART Service.
  * Receives LoRa-bridged packets and sends outgoing packets to the radio.
+ * Supports config protocol for Meshtastic-style remote settings.
  */
 class BleTransport(private val context: Context) {
     companion object {
@@ -22,12 +23,39 @@ class BleTransport(private val context: Context) {
         val NUS_RX_UUID: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e") // write to device
         val NUS_TX_UUID: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e") // notify from device
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+        // Config protocol magic prefix
+        val CFG_MAGIC = byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xCF.toByte())
+
+        // Config commands
+        const val CFG_CMD_GET_CONFIG: Byte = 0x01
+        const val CFG_CMD_SET_RADIO: Byte = 0x02
+        const val CFG_CMD_SET_SCREEN: Byte = 0x03
+        const val CFG_CMD_SET_ROLE: Byte = 0x04
+        const val CFG_CMD_REBOOT: Byte = 0x05
+        const val CFG_RESP_FLAG: Int = 0x80
     }
+
+    /** Parsed config received from device */
+    data class NodeConfig(
+        val frequencyHz: Long,
+        val bandwidthHz: Long,
+        val spreadingFactor: Int,
+        val codingRate: Int,
+        val txPowerDbm: Int,
+        val screenTimeoutMs: Long,
+        val nodeRole: Int,
+        val nodeAddr: String
+    )
 
     data class ScannedDevice(val name: String, val address: String, val rssi: Int)
 
     interface PacketListener {
         fun onPacketReceived(data: ByteArray)
+    }
+
+    interface ConfigListener {
+        fun onConfigReceived(config: NodeConfig)
     }
 
     private val _devices = MutableStateFlow<List<ScannedDevice>>(emptyList())
@@ -39,12 +67,17 @@ class BleTransport(private val context: Context) {
     private val _connectedDevice = MutableStateFlow<String?>(null)
     val connectedDevice: StateFlow<String?> = _connectedDevice
 
+    private val _nodeConfig = MutableStateFlow<NodeConfig?>(null)
+    val nodeConfig: StateFlow<NodeConfig?> = _nodeConfig
+
     private var scanner: BluetoothLeScanner? = null
     private var gatt: BluetoothGatt? = null
     private var rxChar: BluetoothGattCharacteristic? = null
     private var listener: PacketListener? = null
+    private var configListener: ConfigListener? = null
 
     fun setPacketListener(l: PacketListener) { listener = l }
+    fun setConfigListener(l: ConfigListener) { configListener = l }
 
     // --- Scanning ---
 
@@ -101,6 +134,7 @@ class BleTransport(private val context: Context) {
         rxChar = null
         _connected.value = false
         _connectedDevice.value = null
+        _nodeConfig.value = null
     }
 
     fun send(data: ByteArray): Boolean {
@@ -118,6 +152,107 @@ class BleTransport(private val context: Context) {
         return g.writeCharacteristic(char)
     }
 
+    // --- Config Protocol ---
+
+    /** Request current config from device */
+    fun requestConfig() {
+        val payload = ByteArray(5)
+        System.arraycopy(CFG_MAGIC, 0, payload, 0, 4)
+        payload[4] = CFG_CMD_GET_CONFIG
+        send(payload)
+        Log.i(TAG, "Config request sent")
+    }
+
+    /** Set radio parameters on device */
+    fun setRadioConfig(frequencyHz: Long, bandwidthHz: Long,
+                       spreadingFactor: Int, codingRate: Int, txPowerDbm: Int) {
+        val payload = ByteArray(16) // magic(4) + cmd(1) + freq(4) + bw(4) + sf(1) + cr(1) + pwr(1)
+        System.arraycopy(CFG_MAGIC, 0, payload, 0, 4)
+        payload[4] = CFG_CMD_SET_RADIO
+        putLeU32(payload, 5, frequencyHz)
+        putLeU32(payload, 9, bandwidthHz)
+        payload[13] = spreadingFactor.toByte()
+        payload[14] = codingRate.toByte()
+        payload[15] = txPowerDbm.toByte()
+        send(payload)
+        Log.i(TAG, "Set radio: freq=$frequencyHz bw=$bandwidthHz sf=$spreadingFactor cr=$codingRate pwr=$txPowerDbm")
+    }
+
+    /** Set screen timeout on device */
+    fun setScreenTimeout(timeoutMs: Long) {
+        val payload = ByteArray(9) // magic(4) + cmd(1) + timeout(4)
+        System.arraycopy(CFG_MAGIC, 0, payload, 0, 4)
+        payload[4] = CFG_CMD_SET_SCREEN
+        putLeU32(payload, 5, timeoutMs)
+        send(payload)
+        Log.i(TAG, "Set screen timeout: $timeoutMs ms")
+    }
+
+    /** Set node role on device */
+    fun setNodeRole(role: Int) {
+        val payload = ByteArray(6) // magic(4) + cmd(1) + role(1)
+        System.arraycopy(CFG_MAGIC, 0, payload, 0, 4)
+        payload[4] = CFG_CMD_SET_ROLE
+        payload[5] = role.toByte()
+        send(payload)
+        Log.i(TAG, "Set role: $role")
+    }
+
+    /** Reboot the device */
+    fun rebootDevice() {
+        val payload = ByteArray(5) // magic(4) + cmd(1)
+        System.arraycopy(CFG_MAGIC, 0, payload, 0, 4)
+        payload[4] = CFG_CMD_REBOOT
+        send(payload)
+        Log.i(TAG, "Reboot command sent")
+    }
+
+    private fun putLeU32(buf: ByteArray, offset: Int, value: Long) {
+        buf[offset]     = (value and 0xFF).toByte()
+        buf[offset + 1] = ((value shr 8) and 0xFF).toByte()
+        buf[offset + 2] = ((value shr 16) and 0xFF).toByte()
+        buf[offset + 3] = ((value shr 24) and 0xFF).toByte()
+    }
+
+    private fun getLeU32(buf: ByteArray, offset: Int): Long {
+        return (buf[offset].toLong() and 0xFF) or
+               ((buf[offset + 1].toLong() and 0xFF) shl 8) or
+               ((buf[offset + 2].toLong() and 0xFF) shl 16) or
+               ((buf[offset + 3].toLong() and 0xFF) shl 24)
+    }
+
+    private fun parseConfigResponse(data: ByteArray) {
+        // Response after NUS framing stripped: [MAGIC(4)][0x81][freq(4)][bw(4)][sf][cr][pwr][timeout(4)][role][addr(4)] = 25 bytes
+        if (data.size < 25) return
+        if (data[0] != CFG_MAGIC[0] || data[1] != CFG_MAGIC[1] ||
+            data[2] != CFG_MAGIC[2] || data[3] != CFG_MAGIC[3]) return
+
+        val cmd = data[4].toInt() and 0xFF
+        if (cmd != (CFG_CMD_GET_CONFIG.toInt() or CFG_RESP_FLAG)) return
+
+        // Offsets into data: [4]=cmd, [5..8]=freq, [9..12]=bw, [13]=sf, [14]=cr, [15]=pwr, [16..19]=timeout, [20]=role, [21..24]=addr
+        if (data.size < 25) return
+
+        val config = NodeConfig(
+            frequencyHz = getLeU32(data, 5),
+            bandwidthHz = getLeU32(data, 9),
+            spreadingFactor = data[13].toInt() and 0xFF,
+            codingRate = data[14].toInt() and 0xFF,
+            txPowerDbm = data[15].toInt(), // signed
+            screenTimeoutMs = getLeU32(data, 16),
+            nodeRole = data[20].toInt() and 0xFF,
+            nodeAddr = String.format("%02X%02X%02X%02X",
+                data[21].toInt() and 0xFF,
+                data[22].toInt() and 0xFF,
+                data[23].toInt() and 0xFF,
+                data[24].toInt() and 0xFF)
+        )
+
+        _nodeConfig.value = config
+        configListener?.onConfigReceived(config)
+        Log.i(TAG, "Config received: $config")
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
@@ -127,6 +262,7 @@ class BleTransport(private val context: Context) {
                 Log.i(TAG, "Disconnected")
                 _connected.value = false
                 _connectedDevice.value = null
+                _nodeConfig.value = null
                 rxChar = null
             }
         }
@@ -161,6 +297,11 @@ class BleTransport(private val context: Context) {
             _connected.value = true
             _connectedDevice.value = g.device.name ?: g.device.address
             Log.i(TAG, "NUS service ready")
+
+            // Auto-request config on connect
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                requestConfig()
+            }, 500)
         }
 
         override fun onCharacteristicChanged(
@@ -175,7 +316,15 @@ class BleTransport(private val context: Context) {
                 if (pktLen + 2 > frame.size) return
 
                 val packet = frame.copyOfRange(2, 2 + pktLen)
-                listener?.onPacketReceived(packet)
+
+                // Check if this is a config response
+                if (packet.size >= 5 &&
+                    packet[0] == CFG_MAGIC[0] && packet[1] == CFG_MAGIC[1] &&
+                    packet[2] == CFG_MAGIC[2] && packet[3] == CFG_MAGIC[3]) {
+                    parseConfigResponse(packet)
+                } else {
+                    listener?.onPacketReceived(packet)
+                }
             }
         }
     }
