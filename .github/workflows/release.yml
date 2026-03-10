@@ -76,7 +76,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [heltec_v3, rak4631]
+        target: [heltec_v3, rak4631, xiao_esp32s3, xiao_nrf52840]
     steps:
       - uses: actions/checkout@v4
 
@@ -112,17 +112,57 @@ jobs:
             curl -sL https://raw.githubusercontent.com/RAKWireless/WisBlock/master/PlatformIO/RAK4630/WisCore_RAK4631_Board/variant.cpp -o "$VARIANTS_DIR/WisCore_RAK4631_Board/variant.cpp"
           fi
 
+      - name: Install XIAO nRF52840 board support
+        if: matrix.target == 'xiao_nrf52840'
+        run: |
+          # Install the nordicnrf52 platform
+          pio pkg install -g -p nordicnrf52
+          pio pkg install -g -t framework-arduinoadafruitnrf52 2>/dev/null || true
+          # Copy board definition
+          BOARDS_DIR=$(find ~/.platformio/platforms/nordicnrf52*/boards -maxdepth 0 2>/dev/null | head -1)
+          if [ -n "$BOARDS_DIR" ]; then
+            cp firmware/xiao_nrf52840/boards/seeed_xiao_nrf52840.json "$BOARDS_DIR/"
+          fi
+          # Install variant files for XIAO nRF52840
+          VARIANTS_DIR=$(find ~/.platformio/packages/framework-arduinoadafruitnrf52*/variants -maxdepth 0 2>/dev/null | head -1)
+          if [ -z "$VARIANTS_DIR" ]; then
+            VARIANTS_DIR=$(find ~/.platformio -path "*/framework-arduinoadafruitnrf52/variants" -maxdepth 5 2>/dev/null | head -1)
+          fi
+          echo "Variants dir: $VARIANTS_DIR"
+          if [ -n "$VARIANTS_DIR" ]; then
+            # Check if variant already exists in BSP
+            if [ ! -d "$VARIANTS_DIR/Seeed_XIAO_nRF52840" ]; then
+              mkdir -p "$VARIANTS_DIR/Seeed_XIAO_nRF52840"
+              curl -sL https://raw.githubusercontent.com/Seeed-Studio/Adafruit_nRF52_Arduino/master/variants/Seeed_XIAO_nRF52840/variant.h -o "$VARIANTS_DIR/Seeed_XIAO_nRF52840/variant.h"
+              curl -sL https://raw.githubusercontent.com/Seeed-Studio/Adafruit_nRF52_Arduino/master/variants/Seeed_XIAO_nRF52840/variant.cpp -o "$VARIANTS_DIR/Seeed_XIAO_nRF52840/variant.cpp"
+            fi
+          fi
+
       - name: Build firmware
         run: cd firmware/${{ matrix.target }} && pio run
+
+      - name: Rename firmware binaries
+        run: |
+          # Rename output files to include target name so they don't collide
+          BUILD_DIR="firmware/${{ matrix.target }}/.pio/build"
+          find "$BUILD_DIR" -name 'firmware.bin' -exec sh -c \
+            'cp "$1" "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.bin"' _ {} \;
+          find "$BUILD_DIR" -name 'firmware.elf' -exec sh -c \
+            'cp "$1" "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.elf"' _ {} \;
+          find "$BUILD_DIR" -name 'firmware.hex' -exec sh -c \
+            'cp "$1" "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.hex"' _ {} \;
+          find "$BUILD_DIR" -name 'firmware.uf2' -exec sh -c \
+            'cp "$1" "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.uf2"' _ {} \;
+          ls -la firmware/${{ matrix.target }}/nexus-* 2>/dev/null || true
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ matrix.target }}
-          path: firmware/${{ matrix.target }}/.pio/build/**/firmware.*
+          path: firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.*
 
   create-release:
-    needs: [build-linux, build-android]
+    needs: [build-linux, build-android, build-firmware]
     if: always() && needs.build-linux.result == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -138,8 +178,10 @@ jobs:
           mkdir -p release-files
           cp artifacts/nexus-linux-x64/nexus-linux-x64.tar.gz release-files/ 2>/dev/null || true
           find artifacts/nexus-mesh-android -name '*.apk' -exec cp {} release-files/ \; 2>/dev/null || true
-          find artifacts/firmware-heltec_v3 -name 'firmware.*' -exec cp {} release-files/ \; 2>/dev/null || true
-          find artifacts/firmware-rak4631 -name 'firmware.*' -exec cp {} release-files/ \; 2>/dev/null || true
+          # Firmware binaries (already renamed with target name)
+          for target in heltec_v3 rak4631 xiao_esp32s3 xiao_nrf52840; do
+            find "artifacts/firmware-${target}" -name "nexus-${target}.*" -exec cp {} release-files/ \; 2>/dev/null || true
+          done
           ls -la release-files/
 
       - name: Create release
