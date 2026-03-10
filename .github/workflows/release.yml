@@ -141,10 +141,32 @@ jobs:
       - name: Build firmware
         run: cd firmware/${{ matrix.target }} && pio run
 
+      - name: Create merged binary for web flasher (ESP32 targets)
+        if: matrix.target == 'heltec_v3' || matrix.target == 'xiao_esp32s3'
+        run: |
+          pip install esptool
+          ENV_DIR=$(ls -d firmware/${{ matrix.target }}/.pio/build/*/ 2>/dev/null | head -1)
+          if [ -z "$ENV_DIR" ]; then
+            ENV_DIR="firmware/${{ matrix.target }}/.pio/build/${{ matrix.target }}"
+          fi
+          echo "Build dir: $ENV_DIR"
+          ls -la "$ENV_DIR/"*.bin 2>/dev/null || true
+          if [ -f "$ENV_DIR/firmware.bin" ] && [ -f "$ENV_DIR/bootloader.bin" ] && [ -f "$ENV_DIR/partitions.bin" ]; then
+            python3 -m esptool --chip esp32s3 merge_bin \
+              -o "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}-webflash.bin" \
+              --flash_mode dio --flash_freq 80m --flash_size 8MB \
+              0x0 "$ENV_DIR/bootloader.bin" \
+              0x8000 "$ENV_DIR/partitions.bin" \
+              0x10000 "$ENV_DIR/firmware.bin"
+            echo "Created merged webflash binary"
+          else
+            echo "WARNING: Missing bootloader/partitions, copying firmware.bin as webflash"
+            cp "$ENV_DIR/firmware.bin" "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}-webflash.bin"
+          fi
+
       - name: Convert hex to UF2 (nRF52 targets)
         if: matrix.target == 'rak4631' || matrix.target == 'xiao_nrf52840'
         run: |
-          # Download uf2conv.py from Microsoft UF2 repo
           curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py -o uf2conv.py
           curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o uf2families.json
           BUILD_DIR="firmware/${{ matrix.target }}/.pio/build"
@@ -157,13 +179,12 @@ jobs:
       - name: Collect firmware binaries
         run: |
           BUILD_DIR="firmware/${{ matrix.target }}/.pio/build"
-          # ESP32 targets: .bin is the flashable format
+          # ESP32: app .bin + merged webflash .bin
           find "$BUILD_DIR" -name 'firmware.bin' -exec cp {} \
             "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.bin" \;
-          # nRF52 targets: .uf2 is the flashable format (drag-and-drop)
+          # nRF52: .uf2 (drag-and-drop) + .hex (J-Link)
           find "$BUILD_DIR" -name 'firmware.uf2' -exec cp {} \
             "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.uf2" \;
-          # Also include .hex for nRF52 (nrfjprog/J-Link flashing)
           find "$BUILD_DIR" -name 'firmware.hex' -exec cp {} \
             "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.hex" \;
           ls -la firmware/${{ matrix.target }}/nexus-* 2>/dev/null || true
@@ -172,7 +193,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ matrix.target }}
-          path: firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.*
+          path: firmware/${{ matrix.target }}/nexus-${{ matrix.target }}*
 
   create-release:
     needs: [build-linux, build-android, build-firmware]
@@ -191,9 +212,9 @@ jobs:
           mkdir -p release-files
           cp artifacts/nexus-linux-x64/nexus-linux-x64.tar.gz release-files/ 2>/dev/null || true
           find artifacts/nexus-mesh-android -name '*.apk' -exec cp {} release-files/ \; 2>/dev/null || true
-          # Firmware binaries (already renamed with target name)
+          # Firmware binaries (app .bin, webflash .bin, .uf2, .hex)
           for target in heltec_v3 rak4631 xiao_esp32s3 xiao_nrf52840; do
-            find "artifacts/firmware-${target}" -name "nexus-${target}.*" -exec cp {} release-files/ \; 2>/dev/null || true
+            find "artifacts/firmware-${target}" -name "nexus-${target}*" -exec cp {} release-files/ \; 2>/dev/null || true
           done
           ls -la release-files/
 

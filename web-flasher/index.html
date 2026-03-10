@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEXUS Protocol - Web Flasher</title>
+<script
+  type="module"
+  src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-hover: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent-hover: #79c0ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --purple: #bc8cff;
+    --red: #f85149;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  .header {
+    text-align: center;
+    padding: 3rem 1rem 2rem;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #0d1117 0%, #111820 100%);
+  }
+
+  .header h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 0.5rem;
+  }
+
+  .header h1 span { color: var(--accent); }
+
+  .header p {
+    color: var(--text-dim);
+    font-size: 1.1rem;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  .version-badge {
+    display: inline-block;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 2rem;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.85rem;
+    color: var(--green);
+    margin-top: 1rem;
+  }
+
+  .version-badge a {
+    color: var(--green);
+    text-decoration: none;
+  }
+
+  .version-badge a:hover { text-decoration: underline; }
+
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1rem;
+  }
+
+  .section-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 1rem;
+    padding-left: 0.25rem;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2.5rem;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .card:hover {
+    border-color: var(--accent);
+    background: var(--surface-hover);
+  }
+
+  .card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 0.75rem;
+  }
+
+  .card-head h3 {
+    font-size: 1.15rem;
+    font-weight: 600;
+  }
+
+  .chip-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.2rem 0.5rem;
+    border-radius: 1rem;
+    white-space: nowrap;
+  }
+
+  .chip-esp32 { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .chip-nrf52 { background: rgba(188,140,255,0.15); color: var(--purple); }
+
+  .card-mcu {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    margin-bottom: 0.75rem;
+  }
+
+  .features {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .feat {
+    font-size: 0.75rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 0.3rem;
+    background: rgba(255,255,255,0.06);
+    color: var(--text-dim);
+  }
+
+  .feat-lora { color: var(--orange); background: rgba(210,153,34,0.12); }
+  .feat-ble { color: var(--accent); background: rgba(88,166,255,0.1); }
+  .feat-wifi { color: var(--green); background: rgba(63,185,80,0.12); }
+  .feat-oled { color: var(--text); background: rgba(255,255,255,0.08); }
+
+  .card-actions { margin-top: auto; }
+
+  /* ESP Web Tools button styling */
+  esp-web-install-button {
+    display: block;
+  }
+
+  esp-web-install-button button,
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    justify-content: center;
+    padding: 0.6rem 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+    text-decoration: none;
+  }
+
+  esp-web-install-button button:hover,
+  .btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  .btn-uf2 {
+    background: rgba(188,140,255,0.1);
+    border-color: rgba(188,140,255,0.3);
+  }
+
+  .btn-uf2:hover {
+    background: var(--purple);
+    border-color: var(--purple);
+  }
+
+  .instructions {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    margin-bottom: 2.5rem;
+  }
+
+  .instructions h3 {
+    font-size: 1rem;
+    margin-bottom: 1rem;
+    color: var(--text);
+  }
+
+  .instructions ol {
+    padding-left: 1.5rem;
+    color: var(--text-dim);
+  }
+
+  .instructions li {
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+  }
+
+  .instructions code {
+    background: rgba(255,255,255,0.08);
+    padding: 0.15rem 0.4rem;
+    border-radius: 0.25rem;
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+
+  .tab-bar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .tab {
+    padding: 0.4rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .tab.active {
+    background: rgba(88,166,255,0.12);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .tab:hover:not(.active) {
+    border-color: var(--text-dim);
+    color: var(--text);
+  }
+
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  .browser-warning {
+    background: rgba(248,81,73,0.1);
+    border: 1px solid rgba(248,81,73,0.3);
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 2rem;
+    font-size: 0.9rem;
+    color: var(--red);
+    display: none;
+  }
+
+  .browser-warning.show { display: block; }
+
+  .footer {
+    text-align: center;
+    padding: 2rem 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 0.85rem;
+  }
+
+  .footer a { color: var(--accent); text-decoration: none; }
+  .footer a:hover { text-decoration: underline; }
+
+  .icon {
+    width: 1.1em;
+    height: 1.1em;
+    vertical-align: -0.15em;
+  }
+
+  @media (max-width: 640px) {
+    .header h1 { font-size: 1.5rem; }
+    .grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span>NEXUS</span> Protocol</h1>
+  <p>Flash mesh node firmware directly from your browser. No tools required.</p>
+  <div class="version-badge" id="version-badge">Loading...</div>
+</div>
+
+<div class="container">
+
+  <div class="browser-warning" id="browser-warning">
+    Web Serial is not supported in this browser. Please use <strong>Chrome</strong>,
+    <strong>Edge</strong>, or <strong>Opera</strong> on desktop to flash ESP32 devices.
+    nRF52 UF2 downloads work in any browser.
+  </div>
+
+  <!-- ESP32 Section -->
+  <div class="section-label">ESP32 Devices &mdash; Flash via Web Serial</div>
+  <div class="grid">
+
+    <div class="card">
+      <div class="card-head">
+        <h3>Heltec V3</h3>
+        <span class="chip-badge chip-esp32">ESP32-S3</span>
+      </div>
+      <div class="card-mcu">Heltec WiFi LoRa 32 V3</div>
+      <div class="features">
+        <span class="feat feat-lora">SX1262 LoRa</span>
+        <span class="feat feat-ble">BLE</span>
+        <span class="feat feat-wifi">WiFi</span>
+        <span class="feat feat-oled">OLED Display</span>
+      </div>
+      <div class="card-actions">
+        <esp-web-install-button id="btn-heltec">
+          <button slot="activate">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Install Firmware
+          </button>
+          <span slot="unsupported">
+            <a class="btn" id="dl-heltec" href="#">Download .bin</a>
+          </span>
+          <span slot="not-allowed">
+            <a class="btn" id="dl-heltec2" href="#">Download .bin</a>
+          </span>
+        </esp-web-install-button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>XIAO ESP32S3</h3>
+        <span class="chip-badge chip-esp32">ESP32-S3</span>
+      </div>
+      <div class="card-mcu">Seeed XIAO ESP32S3 + WIO-SX1262</div>
+      <div class="features">
+        <span class="feat feat-lora">SX1262 LoRa</span>
+        <span class="feat feat-ble">BLE</span>
+        <span class="feat feat-wifi">WiFi</span>
+        <span class="feat">Headless</span>
+      </div>
+      <div class="card-actions">
+        <esp-web-install-button id="btn-xiao-esp">
+          <button slot="activate">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Install Firmware
+          </button>
+          <span slot="unsupported">
+            <a class="btn" id="dl-xiao-esp" href="#">Download .bin</a>
+          </span>
+          <span slot="not-allowed">
+            <a class="btn" id="dl-xiao-esp2" href="#">Download .bin</a>
+          </span>
+        </esp-web-install-button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- nRF52 Section -->
+  <div class="section-label">nRF52 Devices &mdash; UF2 Drag-and-Drop</div>
+  <div class="grid">
+
+    <div class="card">
+      <div class="card-head">
+        <h3>RAK4631</h3>
+        <span class="chip-badge chip-nrf52">nRF52840</span>
+      </div>
+      <div class="card-mcu">RAKwireless WisBlock Core</div>
+      <div class="features">
+        <span class="feat feat-lora">SX1262 LoRa</span>
+        <span class="feat">Store &amp; Forward</span>
+      </div>
+      <div class="card-actions">
+        <a class="btn btn-uf2" id="dl-rak4631" href="#">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download UF2
+        </a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>XIAO nRF52840</h3>
+        <span class="chip-badge chip-nrf52">nRF52840</span>
+      </div>
+      <div class="card-mcu">Seeed XIAO nRF52840 + WIO-SX1262</div>
+      <div class="features">
+        <span class="feat feat-lora">SX1262 LoRa</span>
+        <span class="feat feat-ble">BLE</span>
+        <span class="feat">Headless</span>
+      </div>
+      <div class="card-actions">
+        <a class="btn btn-uf2" id="dl-xiao-nrf" href="#">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download UF2
+        </a>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Flashing Instructions -->
+  <div class="section-label">Flashing Instructions</div>
+
+  <div class="tab-bar">
+    <button class="tab active" data-tab="esp32-tab">ESP32 (Web Serial)</button>
+    <button class="tab" data-tab="nrf52-tab">nRF52 (UF2)</button>
+    <button class="tab" data-tab="manual-tab">Manual (CLI)</button>
+  </div>
+
+  <div class="tab-content active" id="esp32-tab">
+    <div class="instructions">
+      <h3>Flash ESP32 via Browser</h3>
+      <ol>
+        <li>Connect your device via <strong>USB</strong></li>
+        <li>Click <strong>Install Firmware</strong> on the card above</li>
+        <li>Select the serial port in the browser popup</li>
+        <li>Wait for the flash to complete (~30 seconds)</li>
+        <li>The device will reboot and start automatically</li>
+      </ol>
+      <p style="margin-top:1rem; font-size:0.85rem; color:var(--text-dim)">
+        Requires Chrome, Edge, or Opera. If your device isn't detected,
+        install <a href="https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers" style="color:var(--accent)">CP2102 drivers</a>
+        or hold <code>BOOT</code> while plugging in USB.
+      </p>
+    </div>
+  </div>
+
+  <div class="tab-content" id="nrf52-tab">
+    <div class="instructions">
+      <h3>Flash nRF52 via UF2</h3>
+      <ol>
+        <li>Click <strong>Download UF2</strong> on the card above</li>
+        <li>Connect your device via USB</li>
+        <li><strong>Double-tap</strong> the <code>RESET</code> button quickly</li>
+        <li>A USB drive named <code>XIAO-SENSE</code> or <code>RAK4631</code> appears</li>
+        <li>Drag and drop the <code>.uf2</code> file onto the drive</li>
+        <li>The device reboots and starts automatically</li>
+      </ol>
+      <p style="margin-top:1rem; font-size:0.85rem; color:var(--text-dim)">
+        Works in any browser / OS. The UF2 bootloader is pre-installed on all
+        Adafruit-based nRF52840 boards. No drivers needed.
+      </p>
+    </div>
+  </div>
+
+  <div class="tab-content" id="manual-tab">
+    <div class="instructions">
+      <h3>Flash via Command Line</h3>
+      <ol>
+        <li>Install <a href="https://platformio.org/install/cli" style="color:var(--accent)">PlatformIO CLI</a></li>
+        <li>Clone the repository:
+          <code>git clone https://github.com/idan2025/nexus-protocol.git</code>
+        </li>
+        <li>Navigate to your target: <code>cd firmware/&lt;target&gt;</code></li>
+        <li>Build and flash: <code>pio run -t upload</code></li>
+      </ol>
+      <p style="margin-top:1rem; font-size:0.85rem; color:var(--text-dim)">
+        Targets: <code>heltec_v3</code>, <code>xiao_esp32s3</code>,
+        <code>rak4631</code>, <code>xiao_nrf52840</code>
+      </p>
+    </div>
+  </div>
+
+</div>
+
+<div class="footer">
+  <p>
+    <a href="https://github.com/idan2025/nexus-protocol">GitHub</a> &middot;
+    <a href="https://github.com/idan2025/nexus-protocol/releases">All Releases</a>
+  </p>
+  <p style="margin-top:0.5rem">NEXUS Protocol &mdash; Encrypted LoRa Mesh</p>
+</div>
+
+<script>
+const REPO = 'idan2025/nexus-protocol';
+
+const DOWNLOAD_LINKS = {
+  'dl-heltec':     'nexus-heltec_v3.bin',
+  'dl-heltec2':    'nexus-heltec_v3.bin',
+  'dl-xiao-esp':   'nexus-xiao_esp32s3.bin',
+  'dl-xiao-esp2':  'nexus-xiao_esp32s3.bin',
+  'dl-rak4631':    'nexus-rak4631.uf2',
+  'dl-xiao-nrf':   'nexus-xiao_nrf52840.uf2',
+};
+
+const ESP_TARGETS = [
+  {
+    buttonId: 'btn-heltec',
+    name: 'NEXUS - Heltec V3',
+    chipFamily: 'ESP32-S3',
+    file: 'nexus-heltec_v3-webflash.bin',
+  },
+  {
+    buttonId: 'btn-xiao-esp',
+    name: 'NEXUS - XIAO ESP32S3',
+    chipFamily: 'ESP32-S3',
+    file: 'nexus-xiao_esp32s3-webflash.bin',
+  },
+];
+
+function makeManifestUrl(target, tag, base) {
+  const manifest = {
+    name: target.name,
+    version: tag,
+    new_install_prompt_erase: true,
+    builds: [{
+      chipFamily: target.chipFamily,
+      parts: [{ path: `${base}/${target.file}`, offset: 0 }]
+    }]
+  };
+  const blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+  return URL.createObjectURL(blob);
+}
+
+async function loadRelease() {
+  let tag = 'latest';
+  let base = `https://github.com/${REPO}/releases/latest/download`;
+
+  try {
+    const resp = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
+    if (resp.ok) {
+      const data = await resp.json();
+      tag = data.tag_name;
+      base = `https://github.com/${REPO}/releases/download/${tag}`;
+
+      document.getElementById('version-badge').innerHTML =
+        `<a href="${data.html_url}" target="_blank">${tag}</a>`;
+    } else {
+      throw new Error(resp.status);
+    }
+  } catch (e) {
+    document.getElementById('version-badge').textContent = 'release info unavailable';
+  }
+
+  // Set ESP Web Tools manifest URLs (dynamic blob URLs)
+  for (const target of ESP_TARGETS) {
+    const btn = document.getElementById(target.buttonId);
+    if (btn) {
+      btn.setAttribute('manifest', makeManifestUrl(target, tag, base));
+    }
+  }
+
+  // Set download links
+  for (const [id, file] of Object.entries(DOWNLOAD_LINKS)) {
+    const el = document.getElementById(id);
+    if (el) el.href = `${base}/${file}`;
+  }
+}
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.tab).classList.add('active');
+  });
+});
+
+// Browser check
+if (!('serial' in navigator)) {
+  document.getElementById('browser-warning').classList.add('show');
+}
+
+loadRelease();
+</script>
+</body>
+</html>
