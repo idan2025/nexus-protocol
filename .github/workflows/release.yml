@@ -141,18 +141,31 @@ jobs:
       - name: Build firmware
         run: cd firmware/${{ matrix.target }} && pio run
 
-      - name: Rename firmware binaries
+      - name: Convert hex to UF2 (nRF52 targets)
+        if: matrix.target == 'rak4631' || matrix.target == 'xiao_nrf52840'
         run: |
-          # Rename output files to include target name so they don't collide
+          # Download uf2conv.py from Microsoft UF2 repo
+          curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py -o uf2conv.py
+          curl -sL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o uf2families.json
           BUILD_DIR="firmware/${{ matrix.target }}/.pio/build"
-          find "$BUILD_DIR" -name 'firmware.bin' -exec sh -c \
-            'cp "$1" "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.bin"' _ {} \;
-          find "$BUILD_DIR" -name 'firmware.elf' -exec sh -c \
-            'cp "$1" "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.elf"' _ {} \;
-          find "$BUILD_DIR" -name 'firmware.hex' -exec sh -c \
-            'cp "$1" "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.hex"' _ {} \;
-          find "$BUILD_DIR" -name 'firmware.uf2' -exec sh -c \
-            'cp "$1" "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.uf2"' _ {} \;
+          HEX_FILE=$(find "$BUILD_DIR" -name 'firmware.hex' | head -1)
+          if [ -n "$HEX_FILE" ]; then
+            python3 uf2conv.py "$HEX_FILE" -c -f 0xADA52840 -o "${HEX_FILE%.hex}.uf2"
+            echo "Converted $HEX_FILE to UF2"
+          fi
+
+      - name: Collect firmware binaries
+        run: |
+          BUILD_DIR="firmware/${{ matrix.target }}/.pio/build"
+          # ESP32 targets: .bin is the flashable format
+          find "$BUILD_DIR" -name 'firmware.bin' -exec cp {} \
+            "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.bin" \;
+          # nRF52 targets: .uf2 is the flashable format (drag-and-drop)
+          find "$BUILD_DIR" -name 'firmware.uf2' -exec cp {} \
+            "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.uf2" \;
+          # Also include .hex for nRF52 (nrfjprog/J-Link flashing)
+          find "$BUILD_DIR" -name 'firmware.hex' -exec cp {} \
+            "firmware/${{ matrix.target }}/nexus-${{ matrix.target }}.hex" \;
           ls -la firmware/${{ matrix.target }}/nexus-* 2>/dev/null || true
 
       - name: Upload firmware
