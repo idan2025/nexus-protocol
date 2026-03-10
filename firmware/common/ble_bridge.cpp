@@ -288,9 +288,6 @@ void nx_ble_bridge_init(const char *device_name)
     Bluefruit.setTxPower(4);   /* +4 dBm */
     Bluefruit.setName(device_name);
 
-    /* Request higher MTU for larger packets */
-    Bluefruit.Periph.setMtu(247);
-
     /* Connection callbacks */
     Bluefruit.Periph.setConnectCallback(connect_callback);
     Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
