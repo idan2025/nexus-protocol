@@ -14,9 +14,10 @@
 | 5 | Groups + Domains + Gateway | **DONE** |
 | 6 | Python Bindings + CLI | **DONE** |
 | 7 | Advanced Features | **DONE** |
-| 8 | Android App + Production Firmware | Pending |
+| 8 | Android App + Production Firmware | **DONE** |
+| 9 | Messenger Feature Parity | **DONE** |
 
-**Total**: 67 source files, ~13200 lines of code, 17/17 C test suites + 17/17 Python tests passing
+**Total**: 75+ source files, ~15500+ lines of code, 20/20 C test suites + 43/43 Python tests passing
 
 ---
 
@@ -623,3 +624,43 @@ ctest --output-on-failure
 cd bindings/python/tests
 PYTHONPATH=.. python3 -m unittest discover -v
 ```
+
+---
+
+## Phase 9: Messenger Feature Parity -- COMPLETE
+
+**Goal**: Persistent storage, delivery receipts, rich media, QR codes, and group chat UI.
+
+### Sub-Phase 9a: C Library Enhancements
+- **Propagation flag enforcement**: `handle_data()` in node.c checks NX_MSG_FLAG_PROPAGATE and stores to anchor even when route exists
+- **Message signatures**: `nx_msg_sign()` / `nx_msg_verify()` with Ed25519 (NX_FIELD_SIGNATURE=0x12, 67B TLV)
+- **Read receipt builder**: `nx_msg_build_read()` parallel to ACK builder
+- **Tests**: 7 new C tests (signature roundtrip, tampered, wrong key, unsigned, propagate flag, read receipt, buffer overflow)
+- **Python**: sign/verify via ctypes, FieldType.SIGNATURE, 5 new Python tests
+
+### Sub-Phase 9b: Android Room Database
+- Room entities: MessageEntity, ConversationEntity, ContactEntity
+- DAOs with Flow queries for reactive UI
+- MessageRepository wraps DAOs, handles conversation upsert
+- Replaces in-memory conversations with persistent SQLite
+- Nickname migration from SharedPreferences to Room
+
+### Sub-Phase 9c: Delivery Receipts + NXM Integration
+- Kotlin NXM parser/builder (NxmTypes, NxmParser, NxmBuilder)
+- NexusService dispatches by NXM type: TEXT (auto-ACK), ACK (→DELIVERED), READ (→READ)
+- Delivery status indicators in chat bubbles (hourglass/check/double-check/blue/X)
+- `message.c` added to Android CMakeLists.txt (was missing)
+
+### Sub-Phase 9d: Rich Media + QR + Location
+- QR code generation/scanning via ZXing (nexus:// URL format)
+- Location sharing with osmdroid MapView
+- MediaBubble composable for IMAGE/FILE/VOICE_NOTE types
+- CAMERA permission in manifest
+
+### Sub-Phase 9e: Group Chat Management UI
+- JNI: 5 group methods + on_group callback wired to C library
+- Room: GroupEntity, GroupMemberEntity, GroupDao (DB version 2)
+- GroupConversationScreen: group chat with sender name per bubble
+- GroupInfoScreen: member list, add member dialog
+- ChatScreen: group section with create/delete dialogs
+- NexusService: createGroup, sendGroupMessage, deleteGroup, onGroup handler

@@ -9,7 +9,10 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.nexus.mesh.R
+import com.nexus.mesh.data.*
+import com.nexus.mesh.nxm.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -26,13 +29,11 @@ class NexusService : Service(), NexusNode.Callback {
         private const val KEY_TCP_PEERS = "tcp_peers"
         private const val PREFS_NICKNAMES = "nexus_nicknames"
         private const val KEY_MY_NAME = "my_name"
+        private const val KEY_NICKNAMES_MIGRATED = "nicknames_migrated_to_room"
         private const val PREFS_PILLARS = "nexus_pillars"
         private const val KEY_PILLAR_LIST = "pillar_list"
         private const val KEY_PILLARS_ENABLED = "pillars_enabled"
-        // Default Pillar nodes -- community-run public NEXUS relays.
-        // Users connect outbound to these (no port forwarding needed).
-        // Format: "host:port" comma-separated.
-        val DEFAULT_PILLARS = ""  // No defaults yet -- users add their own or community provides
+        val DEFAULT_PILLARS = ""
     }
 
     private val node = NexusNode()
@@ -41,16 +42,12 @@ class NexusService : Service(), NexusNode.Callback {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var multicastLock: WifiManager.MulticastLock? = null
 
-    // --- Data models ---
+    // Room DB
+    private lateinit var db: NexusDatabase
+    lateinit var repository: MessageRepository
+        private set
 
-    data class ChatMessage(
-        val id: Long,
-        val peerAddr: String,
-        val text: String,
-        val timestamp: Long,
-        val isOutgoing: Boolean,
-        val isDirect: Boolean = true  // true if peer is direct neighbor
-    )
+    // --- Data models (kept for backward compat with UI references) ---
 
     data class Neighbor(val addr: String, val role: Int)
 
@@ -62,9 +59,6 @@ class NexusService : Service(), NexusNode.Callback {
     )
 
     // --- Observable state ---
-
-    private val _conversations = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
-    val conversations: StateFlow<Map<String, List<ChatMessage>>> = _conversations
 
     private val _neighbors = MutableStateFlow<List<Neighbor>>(emptyList())
     val neighbors: StateFlow<List<Neighbor>> = _neighbors
@@ -78,9 +72,6 @@ class NexusService : Service(), NexusNode.Callback {
     private val _udpActive = MutableStateFlow(false)
     val udpActive: StateFlow<Boolean> = _udpActive
 
-    private val _nicknames = MutableStateFlow<Map<String, String>>(emptyMap())
-    val nicknames: StateFlow<Map<String, String>> = _nicknames
-
     private val _myName = MutableStateFlow("")
     val myName: StateFlow<String> = _myName
 
@@ -93,8 +84,6 @@ class NexusService : Service(), NexusNode.Callback {
     private val _pillarConnected = MutableStateFlow(false)
     val pillarConnected: StateFlow<Boolean> = _pillarConnected
 
-    private var nextMsgId = 1L
-
     inner class LocalBinder : Binder() {
         fun getService(): NexusService = this@NexusService
     }
@@ -103,6 +92,11 @@ class NexusService : Service(), NexusNode.Callback {
 
     override fun onCreate() {
         super.onCreate()
+
+        // Init Room DB
+        db = NexusDatabase.getInstance(this)
+        repository = MessageRepository(db)
+
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Starting..."))
         startNode()
@@ -141,7 +135,8 @@ class NexusService : Service(), NexusNode.Callback {
         }
 
         _address.value = node.getAddressHex()
-        loadNicknames()
+        loadMyName()
+        migrateNicknames()
         updateNotification("Node: ${_address.value}")
 
         pollJob = scope.launch {
@@ -166,11 +161,25 @@ class NexusService : Service(), NexusNode.Callback {
         }
 
         startUdpMulticast()
-
-        // Auto-connect to Pillar nodes for internet connectivity
         connectToPillars()
 
         Log.i(TAG, "Node started: ${_address.value}")
+    }
+
+    private fun migrateNicknames() {
+        val prefs = getSharedPreferences(PREFS_NICKNAMES, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_NICKNAMES_MIGRATED, false)) return
+
+        scope.launch {
+            val all = prefs.all
+            for ((key, value) in all) {
+                if (key != KEY_MY_NAME && key != KEY_NICKNAMES_MIGRATED && value is String) {
+                    repository.setNickname(key, value)
+                }
+            }
+            prefs.edit().putBoolean(KEY_NICKNAMES_MIGRATED, true).apply()
+            Log.i(TAG, "Migrated ${all.size} nicknames to Room")
+        }
     }
 
     private fun connectToPillars() {
@@ -185,14 +194,12 @@ class NexusService : Service(), NexusNode.Callback {
             return
         }
 
-        // If TCP is already active (manual config), don't override
         if (_tcpActive.value) {
             Log.i(TAG, "Pillars: TCP already active, skipping auto-connect")
             _pillarConnected.value = true
             return
         }
 
-        // Connect to pillars (outbound only, listen port 0 = no server)
         val ok = node.startTcpInet(0, parsePillarHosts(savedPillars), parsePillarPorts(savedPillars))
         _pillarConnected.value = ok
         _tcpActive.value = ok
@@ -248,16 +255,65 @@ class NexusService : Service(), NexusNode.Callback {
 
     // --- NexusNode.Callback ---
 
+    override fun onGroup(groupId: ByteArray, src: ByteArray, data: ByteArray) {
+        val groupIdHex = groupId.joinToString("") { "%02X".format(it) }
+        val srcHex = src.joinToString("") { "%02X".format(it) }
+        Log.i(TAG, "Group msg in $groupIdHex from $srcHex: ${data.size} bytes")
+
+        // Try to parse as NXM
+        if (NxmParser.isNxm(data)) {
+            val nxm = NxmParser.parse(data)
+            if (nxm != null) {
+                val text = nxm.text ?: return
+                scope.launch {
+                    repository.ensureGroup(groupIdHex)
+                    repository.insertGroupMessage(MessageEntity(
+                        peerAddr = srcHex,
+                        text = text,
+                        timestamp = System.currentTimeMillis(),
+                        isOutgoing = false,
+                        isDirect = false,
+                        nxmMsgId = nxm.msgIdHex,
+                        messageType = MessageType.TEXT,
+                        groupId = groupIdHex
+                    ))
+                }
+                showMessageNotification("Group $groupIdHex", "$srcHex: $text")
+                return
+            }
+        }
+
+        // Fallback: raw text
+        val text = String(data, Charsets.UTF_8)
+        scope.launch {
+            repository.ensureGroup(groupIdHex)
+            repository.insertGroupMessage(MessageEntity(
+                peerAddr = srcHex,
+                text = text,
+                timestamp = System.currentTimeMillis(),
+                isOutgoing = false,
+                isDirect = false,
+                groupId = groupIdHex
+            ))
+        }
+        showMessageNotification("Group $groupIdHex", "$srcHex: $text")
+    }
+
     override fun onData(src: ByteArray, data: ByteArray) {
         val srcHex = src.joinToString("") { "%02X".format(it) }
         Log.i(TAG, "Data from $srcHex: ${data.size} bytes")
 
         val text = String(data, Charsets.UTF_8)
         val isDirect = node.isNeighbor(src) >= 0
-        addMessage(srcHex, ChatMessage(
-            nextMsgId++, srcHex, text, System.currentTimeMillis(),
-            isOutgoing = false, isDirect = isDirect
-        ))
+        scope.launch {
+            repository.insertMessage(MessageEntity(
+                peerAddr = srcHex,
+                text = text,
+                timestamp = System.currentTimeMillis(),
+                isOutgoing = false,
+                isDirect = isDirect
+            ))
+        }
         showMessageNotification(srcHex, text)
     }
 
@@ -275,34 +331,226 @@ class NexusService : Service(), NexusNode.Callback {
         val srcHex = src.joinToString("") { "%02X".format(it) }
         Log.i(TAG, "Session msg from $srcHex: ${data.size} bytes")
 
-        val text = String(data, Charsets.UTF_8)
         val isDirect = node.isNeighbor(src) >= 0
-        addMessage(srcHex, ChatMessage(
-            nextMsgId++, srcHex, text, System.currentTimeMillis(),
-            isOutgoing = false, isDirect = isDirect
-        ))
+
+        // Try to parse as NXM
+        if (NxmParser.isNxm(data)) {
+            val nxm = NxmParser.parse(data)
+            if (nxm != null) {
+                handleNxmMessage(srcHex, src, nxm, isDirect)
+                return
+            }
+        }
+
+        // Fallback: treat as raw text for backward compat
+        val text = String(data, Charsets.UTF_8)
+        scope.launch {
+            repository.insertMessage(MessageEntity(
+                peerAddr = srcHex,
+                text = text,
+                timestamp = System.currentTimeMillis(),
+                isOutgoing = false,
+                isDirect = isDirect
+            ))
+        }
         showMessageNotification(srcHex, text)
     }
 
-    // --- Conversation management ---
-
-    private fun addMessage(peerAddr: String, msg: ChatMessage) {
-        val current = _conversations.value.toMutableMap()
-        current[peerAddr] = (current[peerAddr] ?: emptyList()) + msg
-        _conversations.value = current
+    private fun handleNxmMessage(srcHex: String, src: ByteArray,
+                                  nxm: NxmMessage, isDirect: Boolean) {
+        when (nxm.type) {
+            NxmType.TEXT -> {
+                val text = nxm.text ?: return
+                val msgIdHex = nxm.msgIdHex
+                scope.launch {
+                    repository.insertMessage(MessageEntity(
+                        peerAddr = srcHex,
+                        text = text,
+                        timestamp = System.currentTimeMillis(),
+                        isOutgoing = false,
+                        isDirect = isDirect,
+                        nxmMsgId = msgIdHex,
+                        messageType = MessageType.TEXT
+                    ))
+                    // Auto-send ACK back
+                    val msgId = nxm.msgId
+                    if (msgId != null) {
+                        val ack = NxmBuilder.buildAck(msgId)
+                        node.sendSession(src, ack)
+                    }
+                }
+                showMessageNotification(srcHex, text)
+            }
+            NxmType.ACK -> {
+                // Update delivery status to DELIVERED
+                val msgIdHex = nxm.msgIdHex ?: return
+                scope.launch {
+                    repository.updateDeliveryStatus(msgIdHex, DeliveryStatus.DELIVERED)
+                }
+                Log.i(TAG, "ACK received for $msgIdHex")
+            }
+            NxmType.READ -> {
+                // Update delivery status to READ
+                val msgIdHex = nxm.msgIdHex ?: return
+                scope.launch {
+                    repository.updateDeliveryStatus(msgIdHex, DeliveryStatus.READ)
+                }
+                Log.i(TAG, "READ receipt for $msgIdHex")
+            }
+            NxmType.LOCATION -> {
+                val latField = nxm.findField(NxmFieldType.LATITUDE)
+                val lonField = nxm.findField(NxmFieldType.LONGITUDE)
+                if (latField != null && lonField != null) {
+                    val lat = java.nio.ByteBuffer.wrap(latField.data)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt() / 1e7
+                    val lon = java.nio.ByteBuffer.wrap(lonField.data)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt() / 1e7
+                    scope.launch {
+                        repository.insertMessage(MessageEntity(
+                            peerAddr = srcHex,
+                            text = "Location: %.5f, %.5f".format(lat, lon),
+                            timestamp = System.currentTimeMillis(),
+                            isOutgoing = false,
+                            isDirect = isDirect,
+                            nxmMsgId = nxm.msgIdHex,
+                            messageType = MessageType.LOCATION,
+                            latitude = lat,
+                            longitude = lon
+                        ))
+                    }
+                    showMessageNotification(srcHex, "Shared a location")
+                }
+            }
+            NxmType.IMAGE, NxmType.FILE -> {
+                val fname = nxm.filename ?: "file"
+                val fdata = nxm.filedata
+                val msgType = if (nxm.type == NxmType.IMAGE) MessageType.IMAGE else MessageType.FILE
+                scope.launch {
+                    var mediaPath: String? = null
+                    if (fdata != null) {
+                        val dir = getExternalFilesDir("nexus_media")
+                        if (dir != null) {
+                            dir.mkdirs()
+                            val f = java.io.File(dir, "${System.currentTimeMillis()}_$fname")
+                            f.writeBytes(fdata)
+                            mediaPath = f.absolutePath
+                        }
+                    }
+                    repository.insertMessage(MessageEntity(
+                        peerAddr = srcHex,
+                        text = if (nxm.type == NxmType.IMAGE) "Image: $fname" else "File: $fname",
+                        timestamp = System.currentTimeMillis(),
+                        isOutgoing = false,
+                        isDirect = isDirect,
+                        nxmMsgId = nxm.msgIdHex,
+                        messageType = msgType,
+                        mediaPath = mediaPath,
+                        fileName = fname,
+                        mimeType = nxm.mimetype
+                    ))
+                }
+                showMessageNotification(srcHex, if (nxm.type == NxmType.IMAGE) "Sent an image" else "Sent a file")
+            }
+            NxmType.VOICE_NOTE -> {
+                val fdata = nxm.filedata
+                val durField = nxm.findField(NxmFieldType.DURATION)
+                val durSec = if (durField != null && durField.data.size >= 2) {
+                    java.nio.ByteBuffer.wrap(durField.data).order(java.nio.ByteOrder.LITTLE_ENDIAN).getShort().toInt()
+                } else 0
+                scope.launch {
+                    var mediaPath: String? = null
+                    if (fdata != null) {
+                        val dir = getExternalFilesDir("nexus_media")
+                        if (dir != null) {
+                            dir.mkdirs()
+                            val f = java.io.File(dir, "${System.currentTimeMillis()}_voice")
+                            f.writeBytes(fdata)
+                            mediaPath = f.absolutePath
+                        }
+                    }
+                    repository.insertMessage(MessageEntity(
+                        peerAddr = srcHex,
+                        text = "Voice note (${durSec}s)",
+                        timestamp = System.currentTimeMillis(),
+                        isOutgoing = false,
+                        isDirect = isDirect,
+                        nxmMsgId = nxm.msgIdHex,
+                        messageType = MessageType.VOICE_NOTE,
+                        mediaPath = mediaPath,
+                        duration = durSec
+                    ))
+                }
+                showMessageNotification(srcHex, "Sent a voice note")
+            }
+            NxmType.NICKNAME -> {
+                val name = nxm.nickname
+                if (name != null) {
+                    scope.launch {
+                        repository.setNickname(srcHex, name)
+                    }
+                }
+            }
+            else -> {
+                // Unhandled NXM type -- log and ignore
+                Log.w(TAG, "Unhandled NXM type: ${nxm.type}")
+            }
+        }
     }
 
-    // --- Public API for UI ---
+    // --- Public API: Messages ---
+
+    fun getMessages(peerAddr: String): Flow<List<MessageEntity>> =
+        repository.getMessages(peerAddr)
+
+    fun getConversations(): Flow<List<ConversationEntity>> =
+        repository.getConversations()
 
     fun sendMessage(dest: String, text: String): Boolean {
         val destBytes = hexToBytes(dest) ?: return false
-        val ok = node.send(destBytes, text.toByteArray(Charsets.UTF_8))
+
+        // Build NXM TEXT message
+        val msgId = NxmBuilder.generateMsgId()
+        val nxmData = NxmBuilder.buildText(text, msgId = msgId)
+        val msgIdHex = msgId.joinToString("") { "%02X".format(it) }
+
+        // Send via session (encrypted) first, fallback to raw
+        val ok = node.sendSession(destBytes, nxmData) || node.send(destBytes, nxmData)
         if (ok) {
             val isDirect = node.isNeighbor(destBytes) >= 0
-            addMessage(dest, ChatMessage(
-                nextMsgId++, dest, text, System.currentTimeMillis(),
-                isOutgoing = true, isDirect = isDirect
-            ))
+            scope.launch {
+                repository.insertMessage(MessageEntity(
+                    peerAddr = dest,
+                    text = text,
+                    timestamp = System.currentTimeMillis(),
+                    isOutgoing = true,
+                    isDirect = isDirect,
+                    deliveryStatus = DeliveryStatus.SENT,
+                    nxmMsgId = msgIdHex,
+                    messageType = MessageType.TEXT
+                ))
+            }
+        }
+        return ok
+    }
+
+    fun sendLocation(dest: String, lat: Double, lon: Double): Boolean {
+        val destBytes = hexToBytes(dest) ?: return false
+        val nxmData = NxmBuilder.buildLocation(lat, lon)
+        val ok = node.sendSession(destBytes, nxmData) || node.send(destBytes, nxmData)
+        if (ok) {
+            scope.launch {
+                repository.insertMessage(MessageEntity(
+                    peerAddr = dest,
+                    text = "Location: %.5f, %.5f".format(lat, lon),
+                    timestamp = System.currentTimeMillis(),
+                    isOutgoing = true,
+                    isDirect = node.isNeighbor(destBytes) >= 0,
+                    deliveryStatus = DeliveryStatus.SENT,
+                    messageType = MessageType.LOCATION,
+                    latitude = lat,
+                    longitude = lon
+                ))
+            }
         }
         return ok
     }
@@ -322,27 +570,81 @@ class NexusService : Service(), NexusNode.Callback {
     // --- Delete operations ---
 
     fun deleteConversation(peerAddr: String) {
-        val current = _conversations.value.toMutableMap()
-        current.remove(peerAddr)
-        _conversations.value = current
+        scope.launch { repository.deleteConversation(peerAddr) }
     }
 
     fun deleteMessage(peerAddr: String, msgId: Long) {
-        val current = _conversations.value.toMutableMap()
-        val messages = current[peerAddr] ?: return
-        val filtered = messages.filter { it.id != msgId }
-        if (filtered.isEmpty()) {
-            current.remove(peerAddr)
-        } else {
-            current[peerAddr] = filtered
-        }
-        _conversations.value = current
+        scope.launch { repository.deleteMessage(msgId) }
     }
 
     fun clearConversation(peerAddr: String) {
-        val current = _conversations.value.toMutableMap()
-        current[peerAddr] = emptyList()
-        _conversations.value = current
+        scope.launch { repository.clearMessages(peerAddr) }
+    }
+
+    // --- Group operations ---
+
+    fun getGroups(): Flow<List<com.nexus.mesh.data.GroupEntity>> =
+        repository.getGroups()
+
+    fun getGroupMessages(groupId: String): Flow<List<MessageEntity>> =
+        repository.getGroupMessages(groupId)
+
+    fun createGroup(groupIdHex: String, name: String?): Boolean {
+        val groupIdBytes = hexToBytes(groupIdHex) ?: return false
+        // Generate random 32-byte group key
+        val key = ByteArray(32)
+        java.security.SecureRandom().nextBytes(key)
+        val ok = node.groupCreate(groupIdBytes, key)
+        if (ok) {
+            scope.launch {
+                repository.ensureGroup(groupIdHex, name)
+            }
+        }
+        return ok
+    }
+
+    fun addGroupMember(groupIdHex: String, memberAddrHex: String): Boolean {
+        val groupIdBytes = hexToBytes(groupIdHex) ?: return false
+        val memberBytes = hexToBytes(memberAddrHex) ?: return false
+        val ok = node.groupAddMember(groupIdBytes, memberBytes)
+        if (ok) {
+            scope.launch {
+                repository.addGroupMember(groupIdHex, memberAddrHex)
+            }
+        }
+        return ok
+    }
+
+    fun sendGroupMessage(groupIdHex: String, text: String): Boolean {
+        val groupIdBytes = hexToBytes(groupIdHex) ?: return false
+        val msgId = NxmBuilder.generateMsgId()
+        val nxmData = NxmBuilder.buildText(text, msgId = msgId)
+        val msgIdHex = msgId.joinToString("") { "%02X".format(it) }
+        val ok = node.groupSend(groupIdBytes, nxmData)
+        if (ok) {
+            scope.launch {
+                repository.insertGroupMessage(MessageEntity(
+                    peerAddr = _address.value,
+                    text = text,
+                    timestamp = System.currentTimeMillis(),
+                    isOutgoing = true,
+                    isDirect = false,
+                    deliveryStatus = DeliveryStatus.SENT,
+                    nxmMsgId = msgIdHex,
+                    messageType = MessageType.TEXT,
+                    groupId = groupIdHex
+                ))
+            }
+        }
+        return ok
+    }
+
+    fun deleteGroup(groupIdHex: String) {
+        scope.launch { repository.deleteGroup(groupIdHex) }
+    }
+
+    fun setGroupName(groupIdHex: String, name: String?) {
+        scope.launch { repository.setGroupName(groupIdHex, name) }
     }
 
     // --- Route info ---
@@ -350,7 +652,6 @@ class NexusService : Service(), NexusNode.Callback {
     fun getRouteInfo(addr: String): RouteInfo? {
         val destBytes = hexToBytes(addr) ?: return null
         val info = node.getRouteInfo(destBytes) ?: return null
-        // info = [hop_count, via_transport, nh_b0, nh_b1, nh_b2, nh_b3]
         val nextHop = "%02X%02X%02X%02X".format(
             info[2] and 0xFF, info[3] and 0xFF,
             info[4] and 0xFF, info[5] and 0xFF
@@ -447,7 +748,6 @@ class NexusService : Service(), NexusNode.Callback {
         _pillarsEnabled.value = enabled
         _pillarList.value = pillars.trim()
 
-        // Restart TCP connection with new pillar list
         if (_tcpActive.value && _pillarConnected.value) {
             node.stopTcpInet()
             _tcpActive.value = false
@@ -474,21 +774,18 @@ class NexusService : Service(), NexusNode.Callback {
         setPillars(_pillarsEnabled.value, newList)
     }
 
-    // --- Nicknames ---
+    // --- Nicknames (now backed by Room conversations table) ---
 
     fun getDisplayName(addr: String): String {
-        return _nicknames.value[addr] ?: addr
+        // Synchronous check -- read from in-memory cache or just return addr
+        // For proper display, the UI should use the conversation's nickname from Flow
+        return addr
     }
 
     fun setNickname(addr: String, name: String) {
-        val current = _nicknames.value.toMutableMap()
-        if (name.isBlank()) {
-            current.remove(addr)
-        } else {
-            current[addr] = name.trim()
+        scope.launch {
+            repository.setNickname(addr, if (name.isBlank()) null else name.trim())
         }
-        _nicknames.value = current
-        saveNicknames()
     }
 
     fun setMyName(name: String) {
@@ -497,29 +794,9 @@ class NexusService : Service(), NexusNode.Callback {
         prefs.edit().putString(KEY_MY_NAME, name.trim()).apply()
     }
 
-    private fun loadNicknames() {
+    private fun loadMyName() {
         val prefs = getSharedPreferences(PREFS_NICKNAMES, Context.MODE_PRIVATE)
         _myName.value = prefs.getString(KEY_MY_NAME, "") ?: ""
-        val all = prefs.all
-        val nicks = mutableMapOf<String, String>()
-        for ((key, value) in all) {
-            if (key != KEY_MY_NAME && value is String) {
-                nicks[key] = value
-            }
-        }
-        _nicknames.value = nicks
-    }
-
-    private fun saveNicknames() {
-        val prefs = getSharedPreferences(PREFS_NICKNAMES, Context.MODE_PRIVATE)
-        val editor = prefs.edit()
-        val myName = prefs.getString(KEY_MY_NAME, "") ?: ""
-        editor.clear()
-        editor.putString(KEY_MY_NAME, myName)
-        for ((addr, name) in _nicknames.value) {
-            editor.putString(addr, name)
-        }
-        editor.apply()
     }
 
     // --- Helpers ---
@@ -564,9 +841,8 @@ class NexusService : Service(), NexusNode.Callback {
     }
 
     private fun showMessageNotification(from: String, text: String) {
-        val displayName = getDisplayName(from)
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Message from $displayName")
+            .setContentTitle("Message from $from")
             .setContentText(text.take(100))
             .setSmallIcon(R.drawable.ic_mesh)
             .setAutoCancel(true)

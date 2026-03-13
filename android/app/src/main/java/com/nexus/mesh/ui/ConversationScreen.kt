@@ -21,6 +21,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.nexus.mesh.data.DeliveryStatus
+import com.nexus.mesh.data.MessageEntity
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -32,12 +34,12 @@ fun ConversationScreen(
     peerAddr: String
 ) {
     val service = activity.getService()
-    val conversations by service?.conversations?.collectAsState()
-        ?: remember { mutableStateOf(emptyMap()) }
-    val nicknames by service?.nicknames?.collectAsState()
-        ?: remember { mutableStateOf(emptyMap()) }
-    val messages = conversations[peerAddr] ?: emptyList()
-    val nickname = nicknames[peerAddr]
+    val messages by service?.getMessages(peerAddr)?.collectAsState(initial = emptyList())
+        ?: remember { mutableStateOf(emptyList()) }
+    val allConversations by service?.getConversations()?.collectAsState(initial = emptyList())
+        ?: remember { mutableStateOf(emptyList()) }
+    val conv = allConversations.find { it.peerAddr == peerAddr }
+    val nickname = conv?.nickname
     val displayName = nickname ?: peerAddr
 
     var messageText by remember { mutableStateOf("") }
@@ -46,7 +48,7 @@ fun ConversationScreen(
     var showRouteInfo by remember { mutableStateOf(false) }
     var showMenuExpanded by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
-    var selectedMessage by remember { mutableStateOf<com.nexus.mesh.service.NexusService.ChatMessage?>(null) }
+    var selectedMessage by remember { mutableStateOf<MessageEntity?>(null) }
     var editNickname by remember(nickname) { mutableStateOf(nickname ?: "") }
     val dateFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val fullDateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()) }
@@ -325,10 +327,8 @@ fun ConversationScreen(
             title = { Text("Route to $displayName") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Address
                     InfoRow("Address", peerAddr)
 
-                    // Connection type
                     if (isNeighbor) {
                         InfoRow("Connection", "Direct neighbor")
                         if (neighbor != null) {
@@ -341,8 +341,7 @@ fun ConversationScreen(
                     } else if (routeInfo != null) {
                         InfoRow("Connection", "Multi-hop")
                         InfoRow("Hops", "${routeInfo.hopCount}")
-                        val nextHopName = nicknames[routeInfo.nextHop] ?: routeInfo.nextHop
-                        InfoRow("Next Hop", nextHopName)
+                        InfoRow("Next Hop", routeInfo.nextHop)
                         val transportName = when (routeInfo.viaTransport) {
                             0 -> "Default"
                             1 -> "TCP"
@@ -363,7 +362,6 @@ fun ConversationScreen(
 
                     Divider()
 
-                    // Stats
                     val msgCount = messages.size
                     val sentCount = messages.count { it.isOutgoing }
                     val recvCount = msgCount - sentCount
@@ -415,7 +413,6 @@ fun ConversationScreen(
             title = { Text(if (msg.isOutgoing) "Sent Message" else "Received Message") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    // Message preview
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -435,6 +432,17 @@ fun ConversationScreen(
                     InfoRow("Direction", if (msg.isOutgoing) "Sent" else "Received")
                     if (!msg.isOutgoing) {
                         InfoRow("Source", if (msg.isDirect) "Direct" else "Multi-hop relay")
+                    }
+                    if (msg.isOutgoing) {
+                        val statusName = when (msg.deliveryStatus) {
+                            DeliveryStatus.SENDING -> "Sending"
+                            DeliveryStatus.SENT -> "Sent"
+                            DeliveryStatus.DELIVERED -> "Delivered"
+                            DeliveryStatus.READ -> "Read"
+                            DeliveryStatus.FAILED -> "Failed"
+                            else -> "Unknown"
+                        }
+                        InfoRow("Status", statusName)
                     }
                     InfoRow("Size", "${msg.text.toByteArray(Charsets.UTF_8).size} bytes")
                 }
@@ -483,7 +491,7 @@ private fun InfoRow(label: String, value: String) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatBubble(
-    msg: com.nexus.mesh.service.NexusService.ChatMessage,
+    msg: MessageEntity,
     dateFormat: SimpleDateFormat,
     onLongClick: () -> Unit
 ) {
@@ -548,6 +556,31 @@ private fun ChatBubble(
                         color = timeColor,
                         style = MaterialTheme.typography.labelSmall
                     )
+                    // Delivery status indicator for outgoing messages
+                    if (msg.isOutgoing) {
+                        Text(
+                            "\u00B7",
+                            color = timeColor,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                        val statusIcon = when (msg.deliveryStatus) {
+                            DeliveryStatus.SENDING -> "\u23F3"  // hourglass
+                            DeliveryStatus.SENT -> "\u2713"     // single check
+                            DeliveryStatus.DELIVERED -> "\u2713\u2713" // double check
+                            DeliveryStatus.READ -> "\u2713\u2713"      // double check (blue)
+                            DeliveryStatus.FAILED -> "\u2717"   // X
+                            else -> ""
+                        }
+                        val statusColor = if (msg.deliveryStatus == DeliveryStatus.READ)
+                            MaterialTheme.colorScheme.inversePrimary
+                        else
+                            timeColor
+                        Text(
+                            statusIcon,
+                            color = statusColor,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
                 }
             }
         }

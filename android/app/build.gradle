@@ -2,6 +2,7 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
     id 'org.jetbrains.kotlin.plugin.compose'
+    id 'org.jetbrains.kotlin.kapt'
 }
 
 android {
@@ -76,6 +77,18 @@ dependencies {
 
     // BLE
     implementation 'no.nordicsemi.android:ble:2.7.4'
+
+    // Room (persistent storage)
+    def room_version = "2.6.1"
+    implementation "androidx.room:room-runtime:$room_version"
+    implementation "androidx.room:room-ktx:$room_version"
+    kapt "androidx.room:room-compiler:$room_version"
+
+    // QR codes
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+
+    // Maps (OpenStreetMap)
+    implementation 'org.osmdroid:osmdroid-android:6.1.18'
 
     debugImplementation 'androidx.compose.ui:ui-tooling'
 }

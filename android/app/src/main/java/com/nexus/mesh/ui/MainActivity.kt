@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.IBinder
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -25,11 +26,18 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.nexus.mesh.service.NexusService
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 
 class MainActivity : ComponentActivity() {
 
     private var nexusService: NexusService? = null
     private var bound = false
+
+    // QR scan result handler
+    var qrScanLauncher: ActivityResultLauncher<ScanOptions>? = null
+        private set
+    private var qrScanCallback: ((String?) -> Unit)? = null
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -49,6 +57,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Register QR scanner launcher
+        qrScanLauncher = registerForActivityResult(ScanContract()) { result ->
+            val contents = result.contents
+            if (contents != null && contents.startsWith("nexus://")) {
+                // Parse nexus://ADDRESS/PUBKEY format
+                val parts = contents.removePrefix("nexus://").split("/")
+                if (parts.isNotEmpty() && parts[0].length == 8) {
+                    qrScanCallback?.invoke(parts[0])
+                }
+            }
+        }
+
         requestPermissions()
 
         val intent = Intent(this, NexusService::class.java)
@@ -67,6 +87,10 @@ class MainActivity : ComponentActivity() {
 
     fun getService(): NexusService? = nexusService
 
+    fun setQrScanCallback(callback: (String?) -> Unit) {
+        qrScanCallback = callback
+    }
+
     private fun requestPermissions() {
         val needed = mutableListOf<String>()
         val perms = arrayOf(
@@ -75,6 +99,7 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.BLUETOOTH_ADVERTISE,
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.POST_NOTIFICATIONS,
+            Manifest.permission.CAMERA,
         )
         for (p in perms) {
             if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
@@ -94,8 +119,8 @@ fun NexusApp(activity: MainActivity) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route ?: "chat"
 
-    // Hide bottom bar on conversation detail screen
-    val showBottomBar = !currentRoute.startsWith("conversation/")
+    // Hide bottom bar on detail screens
+    val showBottomBar = currentRoute in listOf("chat", "mesh", "devices", "settings")
 
     val selectedTab = when {
         currentRoute == "chat" -> 0
@@ -168,13 +193,39 @@ fun NexusApp(activity: MainActivity) {
                 composable("chat") { ChatScreen(activity, navController) }
                 composable("mesh") { MeshScreen(activity, navController) }
                 composable("devices") { DevicesScreen(activity) }
-                composable("settings") { SettingsScreen(activity) }
+                composable("settings") { SettingsScreen(activity, navController) }
                 composable(
                     "conversation/{address}",
                     arguments = listOf(navArgument("address") { type = NavType.StringType })
                 ) { backStackEntry ->
                     val address = backStackEntry.arguments?.getString("address") ?: ""
                     ConversationScreen(activity, navController, address)
+                }
+                composable("qr") { QrScreen(activity, navController) }
+                composable(
+                    "map/{lat}/{lon}",
+                    arguments = listOf(
+                        navArgument("lat") { type = NavType.StringType },
+                        navArgument("lon") { type = NavType.StringType }
+                    )
+                ) { backStackEntry ->
+                    val lat = backStackEntry.arguments?.getString("lat")?.toDoubleOrNull() ?: 0.0
+                    val lon = backStackEntry.arguments?.getString("lon")?.toDoubleOrNull() ?: 0.0
+                    MapScreen(navController, lat, lon)
+                }
+                composable(
+                    "group_conversation/{groupId}",
+                    arguments = listOf(navArgument("groupId") { type = NavType.StringType })
+                ) { backStackEntry ->
+                    val groupId = backStackEntry.arguments?.getString("groupId") ?: ""
+                    GroupConversationScreen(activity, navController, groupId)
+                }
+                composable(
+                    "group_info/{groupId}",
+                    arguments = listOf(navArgument("groupId") { type = NavType.StringType })
+                ) { backStackEntry ->
+                    val groupId = backStackEntry.arguments?.getString("groupId") ?: ""
+                    GroupInfoScreen(activity, navController, groupId)
                 }
             }
         }

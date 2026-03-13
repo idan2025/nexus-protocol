@@ -57,6 +57,17 @@ extern "C" {
 #define LED_BUILTIN 11
 #endif
 
+/* RGB LEDs on XIAO nRF52840 Sense (active LOW) */
+#ifndef LED_RED
+#define LED_RED    11
+#endif
+#ifndef LED_GREEN
+#define LED_GREEN  13
+#endif
+#ifndef LED_BLUE
+#define LED_BLUE   12
+#endif
+
 /* -- Flash identity storage (nRF52 InternalFS) --------------------------- */
 
 #include <Adafruit_LittleFS.h>
@@ -99,7 +110,14 @@ static nx_err_t save_identity(const nx_identity_t *id)
 
 /* -- Globals ------------------------------------------------------------- */
 
-SX1262 radio = new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
+/*
+ * IMPORTANT: Do NOT create RadioLib Module as a global constructor!
+ * On nRF52840 (ARM Cortex-M4), global constructors run before the Arduino
+ * framework initializes SPI/GPIO. The Module() constructor accesses hardware
+ * pins, causing a hard fault before setup() is even reached.
+ * We use a pointer and create it in setup() after hardware is initialized.
+ */
+static SX1262 *radio_ptr = NULL;
 
 static nx_node_t node;
 static nx_settings_t settings;
@@ -148,6 +166,16 @@ static void led_blink(uint32_t duration_ms)
     led_off_ms = millis() + duration_ms;
 }
 
+static void led_double_blink()
+{
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(60);
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(60);
+    digitalWrite(LED_BUILTIN, LOW);
+    led_off_ms = millis() + 60;
+}
+
 /* -- Callbacks ----------------------------------------------------------- */
 
 static void on_data(const nx_addr_short_t *src,
@@ -159,7 +187,7 @@ static void on_data(const nx_addr_short_t *src,
                   src->bytes[0], src->bytes[1],
                   src->bytes[2], src->bytes[3], (int)len);
 
-    led_blink(50);
+    led_double_blink();
 
     if (nx_ble_bridge_connected()) {
         uint8_t frame[NX_MAX_PACKET];
@@ -376,13 +404,46 @@ static void process_serial_command(const char *line)
 
 void setup()
 {
+    /*
+     * FIRST: LED blink before ANYTHING else.
+     * This is the earliest possible visual indicator that code is running.
+     * If you see this blink but nothing after, the crash is in init below.
+     */
+    pinMode(LED_BUILTIN, OUTPUT);
+    pinMode(LED_RED, OUTPUT);
+    pinMode(LED_GREEN, OUTPUT);
+    pinMode(LED_BLUE, OUTPUT);
+
+    /* All LEDs off first (active LOW) */
+    digitalWrite(LED_RED, HIGH);
+    digitalWrite(LED_GREEN, HIGH);
+    digitalWrite(LED_BLUE, HIGH);
+
+    /* Boot stage 1: RED = hardware init starting */
+    digitalWrite(LED_RED, LOW);  /* RED on */
+    delay(500);
+    digitalWrite(LED_RED, HIGH); /* RED off */
+
     Serial.begin(115200);
     delay(2000); /* nRF52 USB serial needs extra time */
     Serial.println("\n[NEXUS] XIAO nRF52840 + WIO-SX1262 starting...");
 
-    /* LED */
-    pinMode(LED_BUILTIN, OUTPUT);
-    digitalWrite(LED_BUILTIN, HIGH); /* off (active LOW) */
+    /* Boot stage 2: BLUE blinks = initializing */
+    for (int i = 0; i < 5; i++) {
+        digitalWrite(LED_BLUE, LOW);   /* on */
+        delay(100);
+        digitalWrite(LED_BLUE, HIGH);  /* off */
+        delay(100);
+    }
+
+    /*
+     * Create RadioLib Module HERE, after Arduino framework has initialized
+     * SPI and GPIO. Creating it as a global causes hard fault on nRF52840!
+     */
+    static Module lora_module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
+    static SX1262 radio_instance(&lora_module);
+    radio_ptr = &radio_instance;
+    Serial.println("[NEXUS] RadioLib module created (deferred init)");
 
     /* Load settings (or use defaults on first boot) */
     if (nx_settings_load(&settings) != NX_OK) {
@@ -402,12 +463,15 @@ void setup()
     nx_transport_registry_init();
 
     /* LoRa radio via RadioLib HAL */
-    g_lora_radio = nx_radiolib_create(&radio);
+    g_lora_radio = nx_radiolib_create(radio_ptr);
     if (!g_lora_radio || g_lora_radio->ops->init(g_lora_radio, &settings.lora_config) != NX_OK) {
         Serial.println("[NEXUS] LoRa radio init failed!");
         Serial.println("[NEXUS] Check WIO-SX1262 expansion board connection");
+        /* Error pattern: rapid RED blink */
         while (1) {
-            digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+            digitalWrite(LED_RED, LOW);
+            delay(200);
+            digitalWrite(LED_RED, HIGH);
             delay(200);
         }
     }
@@ -450,9 +514,14 @@ void setup()
 
     if (nx_node_init_with_identity(&node, &cfg, &stored_id) != NX_OK) {
         Serial.println("[NEXUS] Node init failed!");
+        /* Error pattern: slow RED+BLUE alternating */
         while (1) {
-            digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+            digitalWrite(LED_RED, LOW);
             delay(500);
+            digitalWrite(LED_RED, HIGH);
+            digitalWrite(LED_BLUE, LOW);
+            delay(500);
+            digitalWrite(LED_BLUE, HIGH);
         }
     }
 
@@ -479,12 +548,20 @@ void setup()
     /* Initial announcement */
     nx_node_announce(&node);
 
-    /* Brief flash to confirm boot */
-    digitalWrite(LED_BUILTIN, LOW);
-    delay(500);
-    digitalWrite(LED_BUILTIN, HIGH);
+    /* Boot success: GREEN LED 3 blinks then steady for 2s */
+    for (int i = 0; i < 3; i++) {
+        digitalWrite(LED_GREEN, LOW);   /* GREEN on */
+        delay(300);
+        digitalWrite(LED_GREEN, HIGH);  /* GREEN off */
+        delay(200);
+    }
+    digitalWrite(LED_GREEN, LOW);   /* GREEN on = ready */
+    delay(2000);
+    digitalWrite(LED_GREEN, HIGH);  /* off */
 
     Serial.println("[NEXUS] Ready (headless mode)");
+    Serial.println("[NEXUS] LED: RED=boot, BLUE=init, GREEN=ready");
+    Serial.println("[NEXUS] LED: blinks every 5s = running, double-blink = RX");
     Serial.println("[NEXUS] Serial commands: STATUS ANNOUNCE NEIGHBORS MAILBOX RADIO SETTINGS HELP");
 }
 
@@ -544,8 +621,15 @@ void loop()
         }
     }
 
-    /* Periodic serial status + heartbeat blink */
+    /* Heartbeat blink every 5s so user knows it's alive */
+    static uint32_t last_heartbeat_ms = 0;
     uint32_t now = millis();
+    if (now - last_heartbeat_ms > 5000) {
+        last_heartbeat_ms = now;
+        led_blink(150);
+    }
+
+    /* Periodic serial status every 30s */
     if (now - last_status_ms > 30000) {
         last_status_ms = now;
 
@@ -557,7 +641,5 @@ void loop()
                       (unsigned long)rx_count,
                       nx_anchor_count(&node.anchor),
                       nx_ble_bridge_connected() ? "yes" : "no");
-
-        led_blink(30);
     }
 }

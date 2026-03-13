@@ -10,6 +10,7 @@
 #include "nexus/anchor.h"
 #include "nexus/session.h"
 #include "nexus/group.h"
+#include "nexus/message.h"
 #include "nexus/transport.h"
 #include "nexus/platform.h"
 #include "monocypher/monocypher.h"
@@ -415,6 +416,14 @@ static void handle_data(nx_node_t *node, const nx_packet_t *pkt,
             /* Reticulum-style: any relay node bridges across transports,
              * forwarding on all interfaces except the one it arrived on */
             (void)transmit_bridge(&fwd, ingress_transport);
+
+            /* PROPAGATE flag: also store-and-forward even when route exists */
+            if (node->anchor.max_slots > 0 &&
+                pkt->header.payload_len >= NX_MSG_HEADER_SIZE &&
+                pkt->payload[0] == NX_MSG_VERSION &&
+                (pkt->payload[2] & NX_MSG_FLAG_PROPAGATE)) {
+                (void)nx_anchor_store(&node->anchor, pkt, nx_platform_time_ms());
+            }
         } else if (node->anchor.max_slots > 0) {
             /* Store for offline destination (all RELAY+ with storage) */
             (void)nx_anchor_store(&node->anchor, pkt, nx_platform_time_ms());

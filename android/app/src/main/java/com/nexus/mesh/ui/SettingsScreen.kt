@@ -8,10 +8,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(activity: MainActivity) {
+fun SettingsScreen(activity: MainActivity, navController: NavController? = null) {
     val service = activity.getService()
     val address by service?.address?.collectAsState() ?: remember { mutableStateOf("--------") }
     val tcpActive by service?.tcpActive?.collectAsState() ?: remember { mutableStateOf(false) }
@@ -82,6 +83,15 @@ fun SettingsScreen(activity: MainActivity) {
                             enabled = editName != myName
                         ) {
                             Text("Save Name")
+                        }
+                    }
+                    if (navController != null) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = { navController.navigate("qr") },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("QR Code")
                         }
                     }
                 }

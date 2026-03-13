@@ -24,9 +24,10 @@ android/local.properties
 *.apk
 *.aab
 
-# IDE
+# IDE / Tools
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~

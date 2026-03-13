@@ -25,6 +25,7 @@ class NexusNode {
         fun onData(src: ByteArray, data: ByteArray)
         fun onNeighbor(addr: ByteArray, role: Int)
         fun onSession(src: ByteArray, data: ByteArray)
+        fun onGroup(groupId: ByteArray, src: ByteArray, data: ByteArray)
     }
 
     var isRunning = false
@@ -118,6 +119,28 @@ class NexusNode {
         return if (isRunning) nativeIsNeighbor(addr) else -1
     }
 
+    // Sign pubkey for QR code
+    fun getSignPubkey(): ByteArray? = if (isRunning) nativeGetSignPubkey() else null
+
+    // Group operations
+    fun groupCreate(groupId: ByteArray, key: ByteArray): Boolean {
+        return isRunning && nativeGroupCreate(groupId, key)
+    }
+
+    fun groupAddMember(groupId: ByteArray, memberAddr: ByteArray): Boolean {
+        return isRunning && nativeGroupAddMember(groupId, memberAddr)
+    }
+
+    fun groupSend(groupId: ByteArray, data: ByteArray): Boolean {
+        return isRunning && nativeGroupSend(groupId, data)
+    }
+
+    fun groupList(): Array<ByteArray>? = if (isRunning) nativeGroupList() else null
+
+    fun groupGetMembers(groupId: ByteArray): Array<ByteArray>? {
+        return if (isRunning) nativeGroupGetMembers(groupId) else null
+    }
+
     // Native methods
     private external fun nativeInit(role: Int, callback: Callback): Boolean
     private external fun nativeInitWithIdentity(role: Int, identity: ByteArray, callback: Callback): Boolean
@@ -138,4 +161,10 @@ class NexusNode {
     private external fun nativeIsUdpMulticastActive(): Boolean
     private external fun nativeGetRouteInfo(dest: ByteArray): IntArray?
     private external fun nativeIsNeighbor(addr: ByteArray): Int
+    private external fun nativeGetSignPubkey(): ByteArray
+    private external fun nativeGroupCreate(groupId: ByteArray, key: ByteArray): Boolean
+    private external fun nativeGroupAddMember(groupId: ByteArray, memberAddr: ByteArray): Boolean
+    private external fun nativeGroupSend(groupId: ByteArray, data: ByteArray): Boolean
+    private external fun nativeGroupList(): Array<ByteArray>
+    private external fun nativeGroupGetMembers(groupId: ByteArray): Array<ByteArray>
 }

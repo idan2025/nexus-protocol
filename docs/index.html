@@ -203,6 +203,17 @@
     border-color: var(--purple);
   }
 
+  .btn-serial {
+    background: rgba(63,185,80,0.1);
+    border-color: rgba(63,185,80,0.3);
+    margin-top: 0.5rem;
+  }
+
+  .btn-serial:hover {
+    background: var(--green);
+    border-color: var(--green);
+  }
+
   .instructions {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -239,6 +250,7 @@
     display: flex;
     gap: 0.5rem;
     margin-bottom: 1rem;
+    flex-wrap: wrap;
   }
 
   .tab {
@@ -279,6 +291,123 @@
 
   .browser-warning.show { display: block; }
 
+  /* Flash status banner */
+  .flash-status {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    padding: 0.75rem 1.25rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.9rem;
+    display: none;
+  }
+  .flash-status.show { display: flex; align-items: center; gap: 0.75rem; }
+  .flash-status.success { border-color: var(--green); color: var(--green); }
+  .flash-status.error { border-color: var(--red); color: var(--red); }
+  .flash-status.progress { border-color: var(--accent); color: var(--accent); }
+
+  .flash-status .spinner {
+    width: 1rem; height: 1rem;
+    border: 2px solid transparent;
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Serial Console */
+  .serial-section {
+    margin-bottom: 2.5rem;
+  }
+
+  .serial-console {
+    background: #000;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    overflow: hidden;
+  }
+
+  .serial-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+
+  .serial-toolbar .btn {
+    width: auto;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.8rem;
+  }
+
+  .serial-toolbar select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.3rem;
+    color: var(--text);
+    padding: 0.35rem 0.5rem;
+    font-size: 0.8rem;
+  }
+
+  .serial-status {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 1rem;
+    margin-left: auto;
+  }
+  .serial-status.connected { background: rgba(63,185,80,0.15); color: var(--green); }
+  .serial-status.disconnected { background: rgba(248,81,73,0.1); color: var(--red); }
+
+  .serial-output {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: #c9d1d9;
+    padding: 0.75rem;
+    height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .serial-output .ts { color: #484f58; }
+  .serial-output .rx { color: #c9d1d9; }
+  .serial-output .sys { color: var(--accent); }
+  .serial-output .err { color: var(--red); }
+
+  .serial-input-row {
+    display: flex;
+    border-top: 1px solid var(--border);
+  }
+
+  .serial-input-row input {
+    flex: 1;
+    background: #0d1117;
+    border: none;
+    color: var(--text);
+    padding: 0.5rem 0.75rem;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.8rem;
+    outline: none;
+  }
+
+  .serial-input-row input::placeholder { color: #30363d; }
+
+  .serial-input-row button {
+    background: var(--surface);
+    border: none;
+    border-left: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+
+  .serial-input-row button:hover { color: var(--text); background: var(--surface-hover); }
+
   .footer {
     text-align: center;
     padding: 2rem 1rem;
@@ -296,9 +425,22 @@
     vertical-align: -0.15em;
   }
 
+  .note-box {
+    background: rgba(88,166,255,0.08);
+    border: 1px solid rgba(88,166,255,0.2);
+    border-radius: 0.5rem;
+    padding: 0.75rem 1rem;
+    margin-top: 1rem;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+
+  .note-box strong { color: var(--accent); }
+
   @media (max-width: 640px) {
     .header h1 { font-size: 1.5rem; }
     .grid { grid-template-columns: 1fr; }
+    .serial-output { height: 200px; }
   }
 </style>
 </head>
@@ -317,6 +459,9 @@
     <strong>Edge</strong>, or <strong>Opera</strong> on desktop to flash ESP32 devices.
     nRF52 UF2 downloads work in any browser.
   </div>
+
+  <!-- Flash Status Banner -->
+  <div class="flash-status" id="flash-status"></div>
 
   <!-- ESP32 Section -->
   <div class="section-label">ESP32 Devices &mdash; Flash via Web Serial</div>
@@ -375,6 +520,11 @@
             <a class="btn" id="dl-xiao-esp2" href="#">Download .bin</a>
           </span>
         </esp-web-install-button>
+        <div class="note-box" style="margin-top:0.75rem">
+          <strong>ESP32-S3 USB-CDC:</strong> If flashing hangs after selecting serial port,
+          hold <code>BOOT</code> button, press <code>RESET</code>, then release <code>BOOT</code>.
+          This enters download mode. Then retry Install.
+        </div>
       </div>
     </div>
 
@@ -423,6 +573,43 @@
 
   </div>
 
+  <!-- Serial Console -->
+  <div class="section-label">Serial Console &mdash; Monitor Device Output</div>
+  <div class="serial-section">
+    <div class="serial-console" id="serial-console">
+      <div class="serial-toolbar">
+        <button class="btn" id="serial-connect-btn" onclick="serialToggle()">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          Connect
+        </button>
+        <select id="baud-select">
+          <option value="9600">9600</option>
+          <option value="19200">19200</option>
+          <option value="38400">38400</option>
+          <option value="57600">57600</option>
+          <option value="115200" selected>115200</option>
+          <option value="230400">230400</option>
+          <option value="460800">460800</option>
+          <option value="921600">921600</option>
+        </select>
+        <button class="btn" onclick="serialClear()" title="Clear console">Clear</button>
+        <button class="btn" onclick="serialDownload()" title="Download log">Save Log</button>
+        <span class="serial-status disconnected" id="serial-status">Disconnected</span>
+      </div>
+      <div class="serial-output" id="serial-output"><span class="sys">Serial console ready. Click "Connect" and select your device's serial port.</span>
+</div>
+      <div class="serial-input-row">
+        <input type="text" id="serial-input" placeholder="Type command and press Enter (e.g. STATUS, HELP)" disabled>
+        <button id="serial-send-btn" onclick="serialSend()" disabled>Send</button>
+      </div>
+    </div>
+    <div class="note-box">
+      <strong>Tip:</strong> Connect the serial console after flashing to monitor your device.
+      NEXUS firmware outputs boot progress, neighbor discoveries, and mesh status at 115200 baud.
+      Type <code>HELP</code> for available commands.
+    </div>
+  </div>
+
   <!-- Flashing Instructions -->
   <div class="section-label">Flashing Instructions</div>
 
@@ -441,12 +628,18 @@
         <li>Select the serial port in the browser popup</li>
         <li>Wait for the flash to complete (~30 seconds)</li>
         <li>The device will reboot and start automatically</li>
+        <li>Use the <strong>Serial Console</strong> below to verify boot output</li>
       </ol>
       <p style="margin-top:1rem; font-size:0.85rem; color:var(--text-dim)">
         Requires Chrome, Edge, or Opera. If your device isn't detected,
-        install <a href="https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers" style="color:var(--accent)">CP2102 drivers</a>
-        or hold <code>BOOT</code> while plugging in USB.
+        install <a href="https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers" style="color:var(--accent)">CP2102 drivers</a>.
       </p>
+      <div class="note-box">
+        <strong>ESP32-S3 native USB:</strong> If flashing hangs after port selection, the device
+        needs to be in download mode. Hold <code>BOOT</code>, press <code>RESET</code>, release
+        <code>BOOT</code>. The port may change -- reselect it. After flashing, press <code>RESET</code>
+        to boot normally.
+      </div>
     </div>
   </div>
 
@@ -456,14 +649,22 @@
       <ol>
         <li>Click <strong>Download UF2</strong> on the card above</li>
         <li>Connect your device via USB</li>
-        <li><strong>Double-tap</strong> the <code>RESET</code> button quickly</li>
+        <li><strong>Double-tap</strong> the <code>RESET</code> button quickly (~200ms between taps)</li>
         <li>A USB drive named <code>XIAO-SENSE</code> or <code>RAK4631</code> appears</li>
         <li>Drag and drop the <code>.uf2</code> file onto the drive</li>
-        <li>The device reboots and starts automatically</li>
+        <li>The drive disappears -- device is flashing</li>
+        <li>After ~5 seconds, the device reboots automatically</li>
+        <li>Use the <strong>Serial Console</strong> to verify: you should see <code>[NEXUS]</code> boot messages</li>
       </ol>
+      <div class="note-box">
+        <strong>Verify success:</strong> After flashing, the RED LED blinks once (boot), then BLUE blinks
+        5 times (init), then GREEN blinks 3 times (ready). If you see rapid RED blinking, the LoRa
+        radio expansion board may not be connected properly.
+      </div>
       <p style="margin-top:1rem; font-size:0.85rem; color:var(--text-dim)">
         Works in any browser / OS. The UF2 bootloader is pre-installed on all
-        Adafruit-based nRF52840 boards. No drivers needed.
+        Adafruit-based nRF52840 boards. No drivers needed. If the USB drive does not appear,
+        try double-tapping RESET faster.
       </p>
     </div>
   </div>
@@ -478,6 +679,7 @@
         </li>
         <li>Navigate to your target: <code>cd firmware/&lt;target&gt;</code></li>
         <li>Build and flash: <code>pio run -t upload</code></li>
+        <li>Monitor serial: <code>pio device monitor -b 115200</code></li>
       </ol>
       <p style="margin-top:1rem; font-size:0.85rem; color:var(--text-dim)">
         Targets: <code>heltec_v3</code>, <code>xiao_esp32s3</code>,
@@ -523,6 +725,24 @@ const ESP_TARGETS = [
   },
 ];
 
+/* ── Flash status helpers ────────────────────────────────────────────── */
+
+function showFlashStatus(msg, type) {
+  const el = document.getElementById('flash-status');
+  el.className = 'flash-status show ' + type;
+  if (type === 'progress') {
+    el.innerHTML = '<div class="spinner"></div>' + msg;
+  } else {
+    el.innerHTML = msg;
+  }
+}
+
+function hideFlashStatus() {
+  document.getElementById('flash-status').className = 'flash-status';
+}
+
+/* ── Manifest & Release Loading ──────────────────────────────────────── */
+
 function makeManifestUrl(target, tag, base) {
   const manifest = {
     name: target.name,
@@ -550,14 +770,23 @@ async function loadRelease() {
 
       document.getElementById('version-badge').innerHTML =
         `<a href="${data.html_url}" target="_blank">${tag}</a>`;
+
+      /* Verify firmware assets exist in the release */
+      const assetNames = data.assets.map(a => a.name);
+      ESP_TARGETS.forEach(t => {
+        if (!assetNames.includes(t.file)) {
+          console.warn(`Firmware ${t.file} not found in release ${tag}`);
+        }
+      });
     } else {
       throw new Error(resp.status);
     }
   } catch (e) {
+    console.error('Release fetch error:', e);
     document.getElementById('version-badge').textContent = 'release info unavailable';
   }
 
-  // Set ESP Web Tools manifest URLs (dynamic blob URLs)
+  /* Set ESP Web Tools manifest URLs */
   for (const target of ESP_TARGETS) {
     const btn = document.getElementById(target.buttonId);
     if (btn) {
@@ -565,14 +794,238 @@ async function loadRelease() {
     }
   }
 
-  // Set download links
+  /* Set download links */
   for (const [id, file] of Object.entries(DOWNLOAD_LINKS)) {
     const el = document.getElementById(id);
     if (el) el.href = `${base}/${file}`;
   }
 }
 
-// Tab switching
+/* ── ESP Web Tools Event Listeners ───────────────────────────────────── */
+
+function setupFlashListeners() {
+  ESP_TARGETS.forEach(target => {
+    const btn = document.getElementById(target.buttonId);
+    if (!btn) return;
+
+    btn.addEventListener('state-changed', (ev) => {
+      const state = ev.detail.state;
+      switch (state) {
+        case 'initializing':
+          showFlashStatus(`Connecting to ${target.name}...`, 'progress');
+          break;
+        case 'manifest':
+          showFlashStatus('Loading firmware manifest...', 'progress');
+          break;
+        case 'preparing':
+          showFlashStatus('Preparing to flash...', 'progress');
+          break;
+        case 'erasing':
+          showFlashStatus('Erasing flash memory...', 'progress');
+          break;
+        case 'writing':
+          showFlashStatus('Writing firmware...', 'progress');
+          break;
+        case 'finished':
+          showFlashStatus('Flash complete! Device is rebooting. Use Serial Console to verify.', 'success');
+          setTimeout(hideFlashStatus, 10000);
+          break;
+        case 'error':
+          showFlashStatus('Flash failed. Check connection and try again. For ESP32-S3: hold BOOT, press RESET, release BOOT, then retry.', 'error');
+          break;
+        default:
+          if (state) showFlashStatus(`${state}...`, 'progress');
+      }
+    });
+
+    btn.addEventListener('error', (ev) => {
+      const msg = ev.detail?.message || 'Unknown error';
+      showFlashStatus(`Flash error: ${msg}`, 'error');
+      console.error('Flash error:', ev.detail);
+    });
+  });
+}
+
+/* ── Serial Console ──────────────────────────────────────────────────── */
+
+let serialPort = null;
+let serialReader = null;
+let serialWriter = null;
+let serialReading = false;
+let serialLog = '';
+
+function serialAppend(text, cls) {
+  const out = document.getElementById('serial-output');
+  const ts = new Date().toLocaleTimeString('en-US', { hour12: false, fractionalSecondDigits: 1 });
+  const line = document.createElement('div');
+  line.innerHTML = `<span class="ts">[${ts}]</span> <span class="${cls}">${escapeHtml(text)}</span>`;
+  out.appendChild(line);
+  out.scrollTop = out.scrollHeight;
+  serialLog += `[${ts}] ${text}\n`;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+async function serialToggle() {
+  if (serialPort) {
+    await serialDisconnect();
+  } else {
+    await serialConnect();
+  }
+}
+
+async function serialConnect() {
+  if (!('serial' in navigator)) {
+    serialAppend('Web Serial not supported. Use Chrome, Edge, or Opera.', 'err');
+    return;
+  }
+
+  try {
+    serialPort = await navigator.serial.requestPort();
+    const baud = parseInt(document.getElementById('baud-select').value);
+    await serialPort.open({ baudRate: baud });
+
+    serialAppend(`Connected at ${baud} baud. Waiting for data...`, 'sys');
+    document.getElementById('serial-status').className = 'serial-status connected';
+    document.getElementById('serial-status').textContent = `Connected (${baud})`;
+    document.getElementById('serial-connect-btn').innerHTML =
+      '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Disconnect';
+    document.getElementById('serial-input').disabled = false;
+    document.getElementById('serial-send-btn').disabled = false;
+
+    serialWriter = serialPort.writable.getWriter();
+    serialReading = true;
+    serialReadLoop();
+
+  } catch (e) {
+    if (e.name !== 'NotFoundError') {
+      serialAppend(`Connection error: ${e.message}`, 'err');
+    }
+    serialPort = null;
+  }
+}
+
+async function serialReadLoop() {
+  const decoder = new TextDecoderStream();
+  const readableStreamClosed = serialPort.readable.pipeTo(decoder.writable);
+  serialReader = decoder.readable.getReader();
+
+  let lineBuffer = '';
+  try {
+    while (serialReading) {
+      const { value, done } = await serialReader.read();
+      if (done) break;
+      if (!value) continue;
+
+      /* Buffer and emit complete lines */
+      lineBuffer += value;
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop(); /* keep incomplete last line */
+
+      for (const line of lines) {
+        const trimmed = line.replace(/\r$/, '');
+        if (trimmed.length > 0) {
+          serialAppend(trimmed, 'rx');
+        }
+      }
+    }
+  } catch (e) {
+    if (serialReading) {
+      serialAppend(`Read error: ${e.message}`, 'err');
+    }
+  } finally {
+    serialReader.releaseLock();
+    try { await readableStreamClosed; } catch (e) { /* expected on disconnect */ }
+  }
+}
+
+async function serialDisconnect() {
+  serialReading = false;
+
+  try {
+    if (serialReader) { await serialReader.cancel(); }
+  } catch (e) { /* ignore */ }
+
+  try {
+    if (serialWriter) { serialWriter.releaseLock(); serialWriter = null; }
+  } catch (e) { /* ignore */ }
+
+  try {
+    if (serialPort) { await serialPort.close(); }
+  } catch (e) { /* ignore */ }
+
+  serialPort = null;
+  serialReader = null;
+
+  serialAppend('Disconnected.', 'sys');
+  document.getElementById('serial-status').className = 'serial-status disconnected';
+  document.getElementById('serial-status').textContent = 'Disconnected';
+  document.getElementById('serial-connect-btn').innerHTML =
+    '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> Connect';
+  document.getElementById('serial-input').disabled = true;
+  document.getElementById('serial-send-btn').disabled = true;
+}
+
+async function serialSend() {
+  const input = document.getElementById('serial-input');
+  const text = input.value.trim();
+  if (!text || !serialWriter) return;
+
+  try {
+    const encoder = new TextEncoder();
+    await serialWriter.write(encoder.encode(text + '\r\n'));
+    serialAppend('> ' + text, 'sys');
+    input.value = '';
+  } catch (e) {
+    serialAppend(`Send error: ${e.message}`, 'err');
+  }
+}
+
+function serialClear() {
+  const out = document.getElementById('serial-output');
+  out.innerHTML = '<span class="sys">Console cleared.</span>\n';
+  serialLog = '';
+}
+
+function serialDownload() {
+  if (!serialLog) return;
+  const blob = new Blob([serialLog], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `nexus-serial-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.log`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* Enter key sends serial input */
+document.getElementById('serial-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') serialSend();
+});
+
+/* Handle serial port disconnect events */
+if ('serial' in navigator) {
+  navigator.serial.addEventListener('disconnect', (e) => {
+    if (serialPort && e.target === serialPort) {
+      serialAppend('Device disconnected.', 'err');
+      serialPort = null;
+      serialReader = null;
+      serialWriter = null;
+      serialReading = false;
+      document.getElementById('serial-status').className = 'serial-status disconnected';
+      document.getElementById('serial-status').textContent = 'Disconnected';
+      document.getElementById('serial-connect-btn').innerHTML =
+        '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> Connect';
+      document.getElementById('serial-input').disabled = true;
+      document.getElementById('serial-send-btn').disabled = true;
+    }
+  });
+}
+
+/* ── Tab switching ───────────────────────────────────────────────────── */
+
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -582,12 +1035,14 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-// Browser check
+/* ── Init ────────────────────────────────────────────────────────────── */
+
 if (!('serial' in navigator)) {
   document.getElementById('browser-warning').classList.add('show');
 }
 
 loadRelease();
+setupFlashListeners();
 </script>
 </body>
 </html>

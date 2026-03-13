@@ -20,6 +20,7 @@ set(TESTS
     test_stress_1k
     test_tcp_inet
     test_udp_mcast
+    test_message
 )
 
 foreach(test ${TESTS})
@@ -29,3 +30,6 @@ foreach(test ${TESTS})
     target_compile_options(${test} PRIVATE -UNDEBUG)
     add_test(NAME ${test} COMMAND ${test})
 endforeach()
+
+# test_message needs math library for fabs()
+target_link_libraries(test_message PRIVATE m)

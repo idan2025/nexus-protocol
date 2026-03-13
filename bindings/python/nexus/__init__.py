@@ -4,6 +4,7 @@ from .identity import Identity
 from .node import Node
 from .transport import registry_init, create_pipe_pair, set_active
 from .errors import NexusError, check
+from . import message
 
 __version__ = "0.1.0"
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "registry_init",
     "create_pipe_pair",
     "set_active",
+    "message",
 ]

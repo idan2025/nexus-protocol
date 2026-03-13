@@ -18,7 +18,12 @@ fun MeshScreen(activity: MainActivity, navController: NavController) {
     val service = activity.getService()
     val address by service?.address?.collectAsState() ?: remember { mutableStateOf("--------") }
     val neighbors by service?.neighbors?.collectAsState() ?: remember { mutableStateOf(emptyList()) }
-    val nicknames by service?.nicknames?.collectAsState() ?: remember { mutableStateOf(emptyMap()) }
+    val allConversations by service?.getConversations()?.collectAsState(initial = emptyList())
+        ?: remember { mutableStateOf(emptyList()) }
+    val nicknames = remember(allConversations) {
+        allConversations.filter { it.nickname != null }
+            .associate { it.peerAddr to it.nickname!! }
+    }
     val myName by service?.myName?.collectAsState() ?: remember { mutableStateOf("") }
 
     Scaffold(

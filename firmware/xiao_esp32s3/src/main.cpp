@@ -117,6 +117,16 @@ static void led_blink(uint32_t duration_ms)
     led_off_ms = millis() + duration_ms;
 }
 
+static void led_double_blink()
+{
+    digitalWrite(LED_PIN, LOW);
+    delay(60);
+    digitalWrite(LED_PIN, HIGH);
+    delay(60);
+    digitalWrite(LED_PIN, LOW);
+    led_off_ms = millis() + 60;
+}
+
 /* -- Callbacks ----------------------------------------------------------- */
 
 static void on_data(const nx_addr_short_t *src,

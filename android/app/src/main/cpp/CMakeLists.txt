@@ -21,6 +21,7 @@ add_library(nexus STATIC
     ${NEXUS_ROOT}/lib/src/session.c
     ${NEXUS_ROOT}/lib/src/group.c
     ${NEXUS_ROOT}/lib/src/node.c
+    ${NEXUS_ROOT}/lib/src/message.c
     ${NEXUS_ROOT}/lib/src/platform/platform_android.c
     ${NEXUS_ROOT}/transports/pipe/nexus_pipe.c
     ${NEXUS_ROOT}/transports/tcp/nexus_tcp_inet.c

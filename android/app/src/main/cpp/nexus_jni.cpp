@@ -12,6 +12,7 @@ extern "C" {
 #include "nexus/node.h"
 #include "nexus/identity.h"
 #include "nexus/transport.h"
+#include "nexus/group.h"
 #include "nexus/platform.h"
 }
 
@@ -32,6 +33,7 @@ static jobject g_callback_obj = nullptr;
 static jmethodID g_on_data_method = nullptr;
 static jmethodID g_on_neighbor_method = nullptr;
 static jmethodID g_on_session_method = nullptr;
+static jmethodID g_on_group_method = nullptr;
 
 /* ── Helper: get JNIEnv for current thread ────────────────────────────── */
 
@@ -99,6 +101,28 @@ static void jni_on_session(const nx_addr_short_t *src,
     env->DeleteLocalRef(jdata);
 }
 
+static void jni_on_group(const nx_addr_short_t *group_id,
+                         const nx_addr_short_t *src,
+                         const uint8_t *data, size_t len, void *user)
+{
+    (void)user;
+    JNIEnv *env = get_env();
+    if (!env || !g_callback_obj || !g_on_group_method) return;
+
+    jbyteArray jgid = env->NewByteArray(4);
+    jbyteArray jsrc = env->NewByteArray(4);
+    jbyteArray jdata = env->NewByteArray((jsize)len);
+    env->SetByteArrayRegion(jgid, 0, 4, (jbyte *)group_id->bytes);
+    env->SetByteArrayRegion(jsrc, 0, 4, (jbyte *)src->bytes);
+    env->SetByteArrayRegion(jdata, 0, (jsize)len, (jbyte *)data);
+
+    env->CallVoidMethod(g_callback_obj, g_on_group_method, jgid, jsrc, jdata);
+
+    env->DeleteLocalRef(jgid);
+    env->DeleteLocalRef(jsrc);
+    env->DeleteLocalRef(jdata);
+}
+
 /* ── JNI exports ──────────────────────────────────────────────────────── */
 
 extern "C" {
@@ -124,6 +148,7 @@ Java_com_nexus_mesh_service_NexusNode_nativeInit(JNIEnv *env, jobject thiz,
     g_on_data_method = env->GetMethodID(cls, "onData", "([B[B)V");
     g_on_neighbor_method = env->GetMethodID(cls, "onNeighbor", "([BI)V");
     g_on_session_method = env->GetMethodID(cls, "onSession", "([B[B)V");
+    g_on_group_method = env->GetMethodID(cls, "onGroup", "([B[B[B)V");
 
     /* Initialize transport registry */
     nx_transport_registry_init();
@@ -136,6 +161,7 @@ Java_com_nexus_mesh_service_NexusNode_nativeInit(JNIEnv *env, jobject thiz,
     cfg.on_data = jni_on_data;
     cfg.on_neighbor = jni_on_neighbor;
     cfg.on_session = jni_on_session;
+    cfg.on_group = jni_on_group;
 
     nx_err_t err = nx_node_init(&g_node, &cfg);
     if (err != NX_OK) {
@@ -167,6 +193,7 @@ Java_com_nexus_mesh_service_NexusNode_nativeInitWithIdentity(
     g_on_data_method = env->GetMethodID(cls, "onData", "([B[B)V");
     g_on_neighbor_method = env->GetMethodID(cls, "onNeighbor", "([BI)V");
     g_on_session_method = env->GetMethodID(cls, "onSession", "([B[B)V");
+    g_on_group_method = env->GetMethodID(cls, "onGroup", "([B[B[B)V");
 
     /* Deserialize identity */
     nx_identity_t id;
@@ -183,6 +210,7 @@ Java_com_nexus_mesh_service_NexusNode_nativeInitWithIdentity(
     cfg.on_data = jni_on_data;
     cfg.on_neighbor = jni_on_neighbor;
     cfg.on_session = jni_on_session;
+    cfg.on_group = jni_on_group;
 
     nx_err_t err = nx_node_init_with_identity(&g_node, &cfg, &id);
     if (err != NX_OK) return JNI_FALSE;
@@ -537,6 +565,143 @@ Java_com_nexus_mesh_service_NexusNode_nativeIsUdpMulticastActive(JNIEnv *env,
 {
     (void)env; (void)thiz;
     return (g_udp_mcast && g_udp_mcast->active) ? JNI_TRUE : JNI_FALSE;
+}
+
+/* ── Sign pubkey for QR code ──────────────────────────────────────────── */
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeGetSignPubkey(JNIEnv *env,
+                                                           jobject thiz)
+{
+    (void)thiz;
+    if (!g_running) return nullptr;
+
+    const nx_identity_t *id = nx_node_identity(&g_node);
+    jbyteArray result = env->NewByteArray(32);
+    env->SetByteArrayRegion(result, 0, 32, (jbyte *)id->sign_public);
+    return result;
+}
+
+/* ── Group operations ────────────────────────────────────────────────── */
+
+JNIEXPORT jboolean JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeGroupCreate(JNIEnv *env,
+                                                         jobject thiz,
+                                                         jbyteArray groupId,
+                                                         jbyteArray key)
+{
+    (void)thiz;
+    if (!g_running) return JNI_FALSE;
+
+    nx_group_id_t gid;
+    env->GetByteArrayRegion(groupId, 0, 4, (jbyte *)gid.bytes);
+
+    uint8_t gkey[32];
+    env->GetByteArrayRegion(key, 0, 32, (jbyte *)gkey);
+
+    nx_err_t err = nx_group_create(&g_node.group_store, &gid, gkey,
+                                    &g_node.identity.short_addr);
+    return (err == NX_OK) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeGroupAddMember(JNIEnv *env,
+                                                            jobject thiz,
+                                                            jbyteArray groupId,
+                                                            jbyteArray memberAddr)
+{
+    (void)thiz;
+    if (!g_running) return JNI_FALSE;
+
+    nx_group_id_t gid;
+    env->GetByteArrayRegion(groupId, 0, 4, (jbyte *)gid.bytes);
+
+    nx_addr_short_t addr;
+    env->GetByteArrayRegion(memberAddr, 0, 4, (jbyte *)addr.bytes);
+
+    nx_err_t err = nx_group_add_member(&g_node.group_store, &gid, &addr);
+    return (err == NX_OK) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeGroupSend(JNIEnv *env,
+                                                       jobject thiz,
+                                                       jbyteArray groupId,
+                                                       jbyteArray data)
+{
+    (void)thiz;
+    if (!g_running) return JNI_FALSE;
+
+    nx_group_id_t gid;
+    env->GetByteArrayRegion(groupId, 0, 4, (jbyte *)gid.bytes);
+
+    jsize len = env->GetArrayLength(data);
+    jbyte *buf = env->GetByteArrayElements(data, nullptr);
+
+    nx_err_t err = nx_node_send_group(&g_node, &gid, (uint8_t *)buf, (size_t)len);
+    env->ReleaseByteArrayElements(data, buf, JNI_ABORT);
+
+    return (err == NX_OK) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeGroupList(JNIEnv *env,
+                                                       jobject thiz)
+{
+    (void)thiz;
+    if (!g_running) return nullptr;
+
+    int count = 0;
+    for (int i = 0; i < NX_GROUP_MAX; i++) {
+        if (g_node.group_store.groups[i].active) count++;
+    }
+
+    jclass byteArrayClass = env->FindClass("[B");
+    jobjectArray result = env->NewObjectArray(count, byteArrayClass, nullptr);
+    int idx = 0;
+    for (int i = 0; i < NX_GROUP_MAX && idx < count; i++) {
+        if (g_node.group_store.groups[i].active) {
+            jbyteArray gid = env->NewByteArray(4);
+            env->SetByteArrayRegion(gid, 0, 4,
+                (jbyte *)g_node.group_store.groups[i].group_id.bytes);
+            env->SetObjectArrayElement(result, idx++, gid);
+            env->DeleteLocalRef(gid);
+        }
+    }
+    return result;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeGroupGetMembers(JNIEnv *env,
+                                                              jobject thiz,
+                                                              jbyteArray groupId)
+{
+    (void)thiz;
+    if (!g_running) return nullptr;
+
+    nx_group_id_t gid;
+    env->GetByteArrayRegion(groupId, 0, 4, (jbyte *)gid.bytes);
+
+    /* Find the group */
+    const nx_group_t *grp = NULL;
+    for (int i = 0; i < NX_GROUP_MAX; i++) {
+        if (g_node.group_store.groups[i].active &&
+            memcmp(g_node.group_store.groups[i].group_id.bytes, gid.bytes, 4) == 0) {
+            grp = &g_node.group_store.groups[i];
+            break;
+        }
+    }
+    if (!grp) return nullptr;
+
+    jclass byteArrayClass = env->FindClass("[B");
+    jobjectArray result = env->NewObjectArray(grp->member_count, byteArrayClass, nullptr);
+    for (int i = 0; i < grp->member_count; i++) {
+        jbyteArray addr = env->NewByteArray(4);
+        env->SetByteArrayRegion(addr, 0, 4, (jbyte *)grp->members[i].bytes);
+        env->SetObjectArrayElement(result, i, addr);
+        env->DeleteLocalRef(addr);
+    }
+    return result;
 }
 
 } /* extern "C" */
