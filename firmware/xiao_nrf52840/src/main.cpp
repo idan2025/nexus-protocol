@@ -437,15 +437,6 @@ void setup()
         delay(100);
     }
 
-    /*
-     * Create RadioLib Module HERE, after Arduino framework has initialized
-     * SPI and GPIO. Creating it as a global causes hard fault on nRF52840!
-     */
-    static Module lora_module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
-    static SX1262 radio_instance(&lora_module);
-    radio_ptr = &radio_instance;
-    Serial.println("[NEXUS] RadioLib module created (deferred init)");
-
     /* Load settings (or use defaults on first boot) */
     if (nx_settings_load(&settings) != NX_OK) {
         Serial.println("[NEXUS] First boot - using default settings");
@@ -460,36 +451,8 @@ void setup()
                       settings.node_role);
     }
 
-    /* Transport registry */
-    nx_transport_registry_init();
+    /* ── Identity (BEFORE BLE so we have a name) ─────────────────────── */
 
-    /* LoRa radio via RadioLib HAL */
-    g_lora_radio = nx_radiolib_create(radio_ptr);
-    if (!g_lora_radio || g_lora_radio->ops->init(g_lora_radio, &settings.lora_config) != NX_OK) {
-        Serial.println("[NEXUS] LoRa radio init failed!");
-        Serial.println("[NEXUS] Check WIO-SX1262 expansion board connection");
-        /* Error pattern: rapid RED blink */
-        while (1) {
-            digitalWrite(LED_RED, LOW);
-            delay(200);
-            digitalWrite(LED_RED, HIGH);
-            delay(200);
-        }
-    }
-
-    /* Create and register LoRa transport */
-    nx_transport_t *lora_t = nx_lora_transport_create();
-    if (!lora_t || lora_t->ops->init(lora_t, &g_lora_radio) != NX_OK) {
-        Serial.println("[NEXUS] LoRa transport init failed!");
-        while (1) delay(1000);
-    }
-    if (nx_transport_register(lora_t) != NX_OK) {
-        Serial.println("[NEXUS] LoRa transport register failed!");
-        while (1) delay(1000);
-    }
-    Serial.println("[NEXUS] LoRa transport OK");
-
-    /* Load or generate identity */
     nx_identity_t stored_id;
     bool new_identity = false;
     if (load_identity(&stored_id) != NX_OK) {
@@ -501,7 +464,22 @@ void setup()
         Serial.println("[NEXUS] Identity loaded from flash");
     }
 
-    /* Node config */
+    snprintf(ble_name, sizeof(ble_name), "NEXUS-%02X%02X",
+             stored_id.short_addr.bytes[0], stored_id.short_addr.bytes[1]);
+
+    Serial.printf("[NEXUS] Identity: %02X%02X%02X%02X %s\n",
+                  stored_id.short_addr.bytes[0], stored_id.short_addr.bytes[1],
+                  stored_id.short_addr.bytes[2], stored_id.short_addr.bytes[3],
+                  new_identity ? "(new)" : "(stored)");
+
+    /* ── BLE bridge (EARLY -- always discoverable even if LoRa fails) ── */
+
+    nx_ble_bridge_init(ble_name);
+    nx_ble_bridge_start();
+    Serial.printf("[NEXUS] BLE advertising: %s\n", ble_name);
+
+    /* ── Node init ───────────────────────────────────────────────────── */
+
     nx_node_config_t cfg = {
         .role              = (nx_role_t)settings.node_role,
         .default_ttl       = 7,
@@ -515,25 +493,37 @@ void setup()
 
     if (nx_node_init_with_identity(&node, &cfg, &stored_id) != NX_OK) {
         Serial.println("[NEXUS] Node init failed!");
-        /* Error pattern: slow RED+BLUE alternating */
-        while (1) {
-            digitalWrite(LED_RED, LOW);
-            delay(500);
-            digitalWrite(LED_RED, HIGH);
-            digitalWrite(LED_BLUE, LOW);
-            delay(500);
-            digitalWrite(LED_BLUE, HIGH);
-        }
+        /* Continue anyway -- BLE is already running */
     }
 
-    const nx_identity_t *id = nx_node_identity(&node);
-    snprintf(ble_name, sizeof(ble_name), "NEXUS-%02X%02X",
-             id->short_addr.bytes[0], id->short_addr.bytes[1]);
+    /* ── LoRa radio (non-fatal -- BLE works without it) ──────────────── */
 
-    Serial.printf("[NEXUS] Node: %02X%02X%02X%02X %s\n",
-                  id->short_addr.bytes[0], id->short_addr.bytes[1],
-                  id->short_addr.bytes[2], id->short_addr.bytes[3],
-                  new_identity ? "(new)" : "(stored)");
+    /*
+     * Create RadioLib Module HERE, after Arduino framework has initialized
+     * SPI and GPIO. Creating it as a global causes hard fault on nRF52840!
+     */
+    static Module lora_module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
+    static SX1262 radio_instance(&lora_module);
+    radio_ptr = &radio_instance;
+    Serial.println("[NEXUS] RadioLib module created (deferred init)");
+
+    nx_transport_registry_init();
+
+    bool lora_ok = false;
+    g_lora_radio = nx_radiolib_create(radio_ptr);
+    if (!g_lora_radio || g_lora_radio->ops->init(g_lora_radio, &settings.lora_config) != NX_OK) {
+        Serial.println("[NEXUS] LoRa radio init FAILED -- check WIO-SX1262 connection");
+        Serial.println("[NEXUS] BLE bridge is still active");
+    } else {
+        nx_transport_t *lora_t = nx_lora_transport_create();
+        if (lora_t && lora_t->ops->init(lora_t, &g_lora_radio) == NX_OK &&
+            nx_transport_register(lora_t) == NX_OK) {
+            lora_ok = true;
+            Serial.println("[NEXUS] LoRa transport OK");
+        } else {
+            Serial.println("[NEXUS] LoRa transport setup failed");
+        }
+    }
 
     /* Load stored messages from flash */
     if (nx_anchor_store_load(&node.anchor) == NX_OK) {
@@ -542,28 +532,38 @@ void setup()
         last_anchor_count = count;
     }
 
-    /* BLE bridge for phone connectivity */
-    nx_ble_bridge_init(ble_name);
-    nx_ble_bridge_start();
-
-    /* Initial announcement */
-    nx_node_announce(&node);
-
-    /* Boot success: GREEN LED 3 blinks then steady for 2s */
-    for (int i = 0; i < 3; i++) {
-        digitalWrite(LED_GREEN, LOW);   /* GREEN on */
-        delay(300);
-        digitalWrite(LED_GREEN, HIGH);  /* GREEN off */
-        delay(200);
+    /* Initial announcement (only if LoRa is up) */
+    if (lora_ok) {
+        nx_node_announce(&node);
     }
-    digitalWrite(LED_GREEN, LOW);   /* GREEN on = ready */
-    delay(2000);
-    digitalWrite(LED_GREEN, HIGH);  /* off */
 
-    Serial.println("[NEXUS] Ready (headless mode)");
-    Serial.println("[NEXUS] LED: RED=boot, BLUE=init, GREEN=ready");
-    Serial.println("[NEXUS] LED: blinks every 5s = running, double-blink = RX");
-    Serial.println("[NEXUS] Serial commands: STATUS ANNOUNCE NEIGHBORS MAILBOX RADIO SETTINGS HELP");
+    /* Boot result LED pattern */
+    if (lora_ok) {
+        /* Full success: GREEN blinks */
+        for (int i = 0; i < 3; i++) {
+            digitalWrite(LED_GREEN, LOW);
+            delay(300);
+            digitalWrite(LED_GREEN, HIGH);
+            delay(200);
+        }
+        digitalWrite(LED_GREEN, LOW);
+        delay(2000);
+        digitalWrite(LED_GREEN, HIGH);
+    } else {
+        /* BLE only (no LoRa): alternating RED+BLUE */
+        for (int i = 0; i < 5; i++) {
+            digitalWrite(LED_RED, LOW);
+            delay(300);
+            digitalWrite(LED_RED, HIGH);
+            digitalWrite(LED_BLUE, LOW);
+            delay(300);
+            digitalWrite(LED_BLUE, HIGH);
+        }
+    }
+
+    Serial.printf("[NEXUS] Ready -- BLE: %s, LoRa: %s\n",
+                  ble_name, lora_ok ? "OK" : "FAILED");
+    Serial.println("[NEXUS] Commands: STATUS ANNOUNCE NEIGHBORS MAILBOX RADIO SETTINGS HELP");
 }
 
 /* -- Main Loop ----------------------------------------------------------- */
