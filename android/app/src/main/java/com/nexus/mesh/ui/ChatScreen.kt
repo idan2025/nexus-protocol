@@ -302,7 +302,7 @@ fun ChatScreen(activity: MainActivity, navController: NavController) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun GroupConversationItem(
     group: GroupEntity,
@@ -379,7 +379,7 @@ private fun GroupConversationItem(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun ConversationItem(
     conv: ConversationEntity,
