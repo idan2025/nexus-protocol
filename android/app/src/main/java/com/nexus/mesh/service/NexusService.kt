@@ -3,6 +3,10 @@ package com.nexus.mesh.service
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.IBinder
@@ -41,6 +45,9 @@ class NexusService : Service(), NexusNode.Callback {
     private var pollJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val activeNetworks = mutableSetOf<Network>()
 
     // Room DB
     private lateinit var db: NexusDatabase
@@ -100,9 +107,11 @@ class NexusService : Service(), NexusNode.Callback {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Starting..."))
         startNode()
+        registerNetworkCallback()
     }
 
     override fun onDestroy() {
+        unregisterNetworkCallback()
         pollJob?.cancel()
         node.stopTcpInet()
         node.stopUdpMulticast()
@@ -110,6 +119,92 @@ class NexusService : Service(), NexusNode.Callback {
         node.stop()
         scope.cancel()
         super.onDestroy()
+    }
+
+    // --- Dynamic Network Detection ---
+
+    private fun registerNetworkCallback() {
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val cm = connectivityManager ?: return
+
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                synchronized(activeNetworks) { activeNetworks.add(network) }
+                Log.i(TAG, "Network available: $network (${activeNetworks.size} active)")
+                onNetworkChanged()
+            }
+
+            override fun onLost(network: Network) {
+                synchronized(activeNetworks) { activeNetworks.remove(network) }
+                Log.i(TAG, "Network lost: $network (${activeNetworks.size} active)")
+                if (synchronized(activeNetworks) { activeNetworks.isEmpty() }) {
+                    onNetworkLost()
+                }
+            }
+
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                val hasWifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                val hasCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                Log.d(TAG, "Network caps changed: wifi=$hasWifi cellular=$hasCellular")
+            }
+        }
+
+        cm.registerNetworkCallback(request, networkCallback!!)
+        Log.i(TAG, "Network callback registered")
+    }
+
+    private fun unregisterNetworkCallback() {
+        networkCallback?.let { cb ->
+            connectivityManager?.unregisterNetworkCallback(cb)
+            Log.i(TAG, "Network callback unregistered")
+        }
+        networkCallback = null
+        connectivityManager = null
+    }
+
+    private fun onNetworkChanged() {
+        scope.launch {
+            // Debounce rapid network changes (e.g. WiFi handoff)
+            delay(1000)
+
+            // Restart UDP multicast to pick up new interfaces
+            if (_udpActive.value) {
+                Log.i(TAG, "Network change: restarting UDP multicast")
+                node.stopUdpMulticast()
+                multicastLock?.release()
+                startUdpMulticast()
+            }
+
+            // Reconnect pillars if configured but disconnected
+            val pillarsEnabled = _pillarsEnabled.value
+            val pillarList = _pillarList.value
+            if (pillarsEnabled && pillarList.isNotBlank() && !_pillarConnected.value) {
+                Log.i(TAG, "Network change: reconnecting pillars")
+                connectToPillars()
+            }
+
+            // Restart manual TCP if it was active but socket died
+            val tcpPrefs = getSharedPreferences(PREFS_TCP, Context.MODE_PRIVATE)
+            if (tcpPrefs.getBoolean(KEY_TCP_ENABLED, false) && !_tcpActive.value) {
+                val port = tcpPrefs.getInt(KEY_TCP_PORT, 4242)
+                val peers = tcpPrefs.getString(KEY_TCP_PEERS, "") ?: ""
+                Log.i(TAG, "Network change: restarting TCP inet")
+                startTcpInetFromConfig(port, peers)
+            }
+
+            updateTransportNotification()
+        }
+    }
+
+    private fun onNetworkLost() {
+        Log.w(TAG, "All networks lost")
+        _udpActive.value = false
+        _pillarConnected.value = false
+        updateTransportNotification()
     }
 
     private fun startNode() {
