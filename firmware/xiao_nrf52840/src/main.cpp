@@ -32,23 +32,27 @@ extern "C" {
 
 /* -- Pin definitions (XIAO nRF52840 + WIO-SX1262 expansion) -------------- */
 /*
- * WIO-SX1262 expansion board connects to XIAO header pins:
- *   D0  -> SX1262 RESET
- *   D1  -> SX1262 BUSY
- *   D2  -> SX1262 DIO1
- *   D3  -> SX1262 NSS (chip select)
+ * WIO-SX1262 for XIAO (standalone, SKU 113010003 / nRF52840 kit SKU 102010710)
+ * Pin mapping confirmed by Meshtastic firmware and Seeed schematic:
+ *   https://files.seeedstudio.com/products/SenseCAP/Wio_SX1262/Wio-SX1262%20for%20XIAO%20V1.0_SCH.pdf
+ *
+ *   D1  -> SX1262 DIO1
+ *   D2  -> SX1262 RESET
+ *   D3  -> SX1262 BUSY
+ *   D4  -> SX1262 NSS (chip select)
+ *   D5  -> SX1262 RXEN (RF switch RX enable)
  *   D8  -> SPI SCK   (default SPI bus)
  *   D9  -> SPI MISO  (default SPI bus)
  *   D10 -> SPI MOSI  (default SPI bus)
- *
- * nRF52840 Arduino pin mapping:
- *   D0=P0.02  D1=P0.03  D2=P0.28  D3=P0.29
- *   D8=P1.13(SCK)  D9=P1.14(MISO)  D10=P1.15(MOSI)
  */
-#define LORA_SS     3   /* D3 */
-#define LORA_DIO1   2   /* D2 */
-#define LORA_RST    0   /* D0 */
-#define LORA_BUSY   1   /* D1 */
+#define LORA_SS     4   /* D4 */
+#define LORA_DIO1   1   /* D1 */
+#define LORA_RST    2   /* D2 */
+#define LORA_BUSY   3   /* D3 */
+#define LORA_RXEN   5   /* D5 - RF switch RX enable */
+
+/* TCXO voltage for WIO-SX1262 (DIO3-controlled) */
+#define LORA_TCXO_VOLTAGE 1.8f
 
 /* XIAO nRF52840 has LEDs defined in variant:
  * LED_RED (11), LED_GREEN (not available on base model)
@@ -509,12 +513,27 @@ void setup()
 
     nx_transport_registry_init();
 
+    /* Set TCXO voltage -- WIO-SX1262 has TCXO controlled via SX1262 DIO3 */
+    settings.lora_config.tcxo_voltage = LORA_TCXO_VOLTAGE;
+
     bool lora_ok = false;
     g_lora_radio = nx_radiolib_create(radio_ptr);
     if (!g_lora_radio || g_lora_radio->ops->init(g_lora_radio, &settings.lora_config) != NX_OK) {
         Serial.println("[NEXUS] LoRa radio init FAILED -- check WIO-SX1262 connection");
         Serial.println("[NEXUS] BLE bridge is still active");
     } else {
+        /* Configure RF switch: DIO2 handles TX, RXEN GPIO handles RX */
+        static const uint32_t rfswitch_pins[] = {
+            LORA_RXEN, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC
+        };
+        static const Module::RfSwitchMode_t rfswitch_table[] = {
+            {Module::MODE_IDLE, {LOW}},
+            {Module::MODE_RX,   {HIGH}},
+            {Module::MODE_TX,   {LOW}},
+            END_OF_MODE_TABLE,
+        };
+        radio_ptr->setRfSwitchTable(rfswitch_pins, rfswitch_table);
+
         nx_transport_t *lora_t = nx_lora_transport_create();
         if (lora_t && lora_t->ops->init(lora_t, &g_lora_radio) == NX_OK &&
             nx_transport_register(lora_t) == NX_OK) {

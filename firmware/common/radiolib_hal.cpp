@@ -35,7 +35,8 @@ static nx_err_t rl_init(nx_lora_radio_t *radio, const nx_lora_config_t *config)
     int8_t power = config->tx_power_dbm;
     uint16_t pre = config->preamble_len;
 
-    int state = rl->begin(freq, bw, sf, cr, sw, power, pre, 0);
+    float tcxo = config->tcxo_voltage;
+    int state = rl->begin(freq, bw, sf, cr, sw, power, pre, tcxo);
     if (state != RADIOLIB_ERR_NONE) return NX_ERR_IO;
 
     /* SX1262 requires DIO2 as RF switch on most boards */

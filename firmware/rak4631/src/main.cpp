@@ -10,6 +10,7 @@
  * NEXUS memory budget: ~95KB (node + routes + sessions + fragments)
  */
 #include <Arduino.h>
+#include <SPI.h>
 #include <RadioLib.h>
 
 /* NEXUS C API */
@@ -26,11 +27,25 @@ extern "C" {
 #include "anchor_store.h"
 
 /* ── Pin definitions (RAK4631 WisBlock) ───────────────────────────────── */
+/*
+ * IMPORTANT: The Adafruit BSP's WB_IO1/2/3 are WisBlock Base slot connector
+ * pins, NOT the onboard SX1262 radio pins! The SX1262 on the RAK4631 module
+ * has dedicated connections. Pin numbers confirmed by RNode firmware and the
+ * RAK4631 schematic.
+ */
+#define LORA_CS     42   /* P1.10 - SX1262 NSS */
+#define LORA_DIO1   47   /* P1.15 - SX1262 DIO1 */
+#define LORA_RST    38   /* P1.06 - SX1262 RESET */
+#define LORA_BUSY   46   /* P1.14 - SX1262 BUSY */
+#define LORA_RXEN   37   /* P1.05 - RF switch RX enable */
 
-#define LORA_SS     SS
-#define LORA_DIO1   WB_IO1
-#define LORA_RST    WB_IO2
-#define LORA_BUSY   WB_IO3
+/* SX1262 SPI bus (separate from WisBlock IO slot default SPI on pins 3/29/30) */
+#define LORA_SCK    43   /* P1.11 */
+#define LORA_MISO   45   /* P1.13 */
+#define LORA_MOSI   44   /* P1.12 */
+
+/* TCXO voltage for RAK4631's SX1262 (DIO3-controlled) */
+#define LORA_TCXO_VOLTAGE 1.6f
 
 /* LED_GREEN and LED_BLUE are defined in variant.h */
 
@@ -215,13 +230,23 @@ void setup()
     /*
      * Create RadioLib Module HERE, after Arduino framework has initialized
      * SPI and GPIO. Creating it as a global causes hard fault on nRF52840!
+     *
+     * RAK4631's onboard SX1262 uses a SEPARATE SPI bus (pins 43/44/45)
+     * from the default WisBlock IO slot SPI (pins 3/29/30). We must create
+     * a custom SPIClass instance for the correct pins.
      */
-    static Module lora_module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
+    static SPIClass SPI_LORA(NRF_SPIM3, LORA_MISO, LORA_SCK, LORA_MOSI);
+    SPI_LORA.begin();
+
+    static Module lora_module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY, SPI_LORA);
     static SX1262 radio_instance(&lora_module);
     radio_ptr = &radio_instance;
-    Serial.println("[NEXUS] RadioLib module created (deferred init)");
+    Serial.println("[NEXUS] RadioLib module created (deferred init, dedicated SPI)");
 
     nx_transport_registry_init();
+
+    /* Set TCXO voltage -- RAK4631 has TCXO controlled via SX1262 DIO3 */
+    settings.lora_config.tcxo_voltage = LORA_TCXO_VOLTAGE;
 
     bool lora_ok = false;
     g_lora_radio = nx_radiolib_create(radio_ptr);
@@ -229,6 +254,18 @@ void setup()
         Serial.println("[NEXUS] LoRa radio init FAILED -- check SX1262 WisBlock module");
         Serial.println("[NEXUS] BLE bridge is still active");
     } else {
+        /* Configure RF switch: DIO2 handles TX, RXEN GPIO handles RX */
+        static const uint32_t rfswitch_pins[] = {
+            LORA_RXEN, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC
+        };
+        static const Module::RfSwitchMode_t rfswitch_table[] = {
+            {Module::MODE_IDLE, {LOW}},
+            {Module::MODE_RX,   {HIGH}},
+            {Module::MODE_TX,   {LOW}},
+            END_OF_MODE_TABLE,
+        };
+        radio_ptr->setRfSwitchTable(rfswitch_pins, rfswitch_table);
+
         nx_transport_t *lora_t = nx_lora_transport_create();
         if (lora_t && lora_t->ops->init(lora_t, &g_lora_radio) == NX_OK &&
             nx_transport_register(lora_t) == NX_OK) {

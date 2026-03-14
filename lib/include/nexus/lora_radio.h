@@ -30,6 +30,7 @@ typedef struct {
     uint8_t  sync_word;        /* 0x12 private, 0x34 public */
     bool     crc_on;           /* Hardware CRC */
     bool     implicit_header;  /* Implicit (fixed-len) vs explicit header */
+    float    tcxo_voltage;     /* TCXO voltage via DIO3 (0=no TCXO, 1.6 RAK4631, 1.8 WIO-SX1262) */
 } nx_lora_config_t;
 
 /* Sensible defaults for NEXUS mesh */
@@ -43,6 +44,7 @@ typedef struct {
     .sync_word        = 0x12,      \
     .crc_on           = true,      \
     .implicit_header  = false,     \
+    .tcxo_voltage     = 0.0f,      \
 }
 
 /* ── Radio State ─────────────────────────────────────────────────────── */
