@@ -1,6 +1,7 @@
 """
 PlatformIO pre-build script: symlinks all NEXUS sources into src/
 so PlatformIO compiles them alongside main.cpp.
+Also installs custom board variants into the Adafruit BSP if needed.
 """
 Import("env")
 import os, shutil
@@ -9,6 +10,21 @@ project_dir = env.get("PROJECT_DIR")
 repo_root = os.path.abspath(os.path.join(project_dir, "..", ".."))
 common_dir = os.path.join(project_dir, "..", "common")
 src_dir = os.path.join(project_dir, "src")
+
+# Install custom variant into Adafruit BSP if project has one
+local_variant_dir = os.path.join(project_dir, "variant")
+if os.path.isdir(local_variant_dir):
+    variant_name = env.BoardConfig().get("build.variant", "")
+    if variant_name:
+        framework_dir = env.PioPlatform().get_package_dir("framework-arduinoadafruitnrf52")
+        bsp_variant_dir = os.path.join(framework_dir, "variants", variant_name)
+        if not os.path.exists(bsp_variant_dir):
+            try:
+                os.symlink(os.path.abspath(local_variant_dir), bsp_variant_dir)
+                print("Installed variant '%s' -> %s" % (variant_name, bsp_variant_dir))
+            except OSError:
+                shutil.copytree(local_variant_dir, bsp_variant_dir)
+                print("Copied variant '%s' -> %s" % (variant_name, bsp_variant_dir))
 
 # libnexus C sources
 c_sources = [
