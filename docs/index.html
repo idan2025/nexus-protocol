@@ -629,19 +629,26 @@
       <h3>Flash ESP32 via Browser</h3>
       <ol>
         <li>Connect your device via <strong>USB</strong></li>
+        <li>Click <strong>Enter Download Mode</strong> below (or hold BOOT manually)</li>
         <li>Click <strong>Install Firmware</strong> on the card above</li>
         <li>Select the serial port in the browser popup</li>
         <li>Wait for the flash to complete (~30 seconds)</li>
         <li>The device will reboot and start automatically</li>
         <li>Use the <strong>Serial Console</strong> below to verify boot output</li>
       </ol>
-      <p style="margin-top:1rem; font-size:0.85rem; color:var(--text-dim)">
+      <div style="margin:1rem 0; display:flex; gap:0.75rem; flex-wrap:wrap">
+        <button class="btn" id="btn-enter-dfu" onclick="enterDownloadMode()" style="background:var(--accent); color:#fff; border:none; padding:0.5rem 1.25rem; border-radius:6px; cursor:pointer; font-weight:600">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;vertical-align:middle;margin-right:4px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Enter Download Mode
+        </button>
+        <span id="dfu-status" style="font-size:0.85rem; align-self:center; color:var(--text-dim)"></span>
+      </div>
+      <p style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-dim)">
         Requires Chrome, Edge, or Opera. If your device isn't detected,
         install <a href="https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers" style="color:var(--accent)">CP2102 drivers</a>.
       </p>
       <div class="note-box">
-        <strong>Port not detected?</strong> Hold <code>BOOT</code> while clicking
-        <strong>Install Firmware</strong>. Alternatively: hold <code>BOOT</code>,
+        <strong>Manual fallback:</strong> If the button doesn't work, hold <code>BOOT</code>,
         press <code>RESET</code>, release <code>BOOT</code> to enter download mode,
         then click Install. The port may change &mdash; reselect it. After flashing,
         press <code>RESET</code> to boot normally.
@@ -1041,6 +1048,58 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById(tab.dataset.tab).classList.add('active');
   });
 });
+
+/* ── Enter Download Mode (DTR/RTS bootloader reset) ──────────────────── */
+
+async function enterDownloadMode() {
+  const status = document.getElementById('dfu-status');
+
+  if (!('serial' in navigator)) {
+    status.textContent = 'Web Serial not supported. Use Chrome/Edge/Opera.';
+    status.style.color = '#f85149';
+    return;
+  }
+
+  let port = null;
+  try {
+    status.textContent = 'Select the ESP32 serial port...';
+    status.style.color = 'var(--text-dim)';
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+
+    /*
+     * ESP32 bootloader reset sequence (same as esptool.py):
+     *   1. DTR=false, RTS=true  → EN held low (reset), GPIO0 released
+     *   2. DTR=true,  RTS=false → GPIO0 held low (boot select), EN released
+     *   3. Brief pause for RC circuit
+     *   4. DTR=false, RTS=false → both released, chip boots into download mode
+     *
+     * On typical USB-serial adapters:
+     *   DTR controls GPIO0 (boot pin) via inverting transistor
+     *   RTS controls EN (reset pin) via inverting transistor
+     */
+    status.textContent = 'Triggering download mode...';
+
+    await port.setSignals({ dataTerminalReady: false, requestToSend: true });
+    await new Promise(r => setTimeout(r, 100));
+    await port.setSignals({ dataTerminalReady: true, requestToSend: false });
+    await new Promise(r => setTimeout(r, 50));
+    await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+
+    await port.close();
+
+    status.textContent = 'Download mode active! Now click "Install Firmware" above.';
+    status.style.color = '#3fb950';
+  } catch (e) {
+    if (e.name === 'NotFoundError') {
+      status.textContent = 'No port selected.';
+    } else {
+      status.textContent = 'Error: ' + e.message;
+      status.style.color = '#f85149';
+    }
+    try { if (port) await port.close(); } catch (_) {}
+  }
+}
 
 /* ── Init ────────────────────────────────────────────────────────────── */
 
