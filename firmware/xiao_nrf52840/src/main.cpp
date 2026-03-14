@@ -13,6 +13,7 @@
  * The nRF52840 has 256KB SRAM, leaving ~160KB for stack/heap/BLE.
  */
 #include <Arduino.h>
+#include <SPI.h>
 #include <RadioLib.h>
 
 /* NEXUS C API */
@@ -434,14 +435,30 @@ void setup()
     Serial.println("\n[NEXUS] XIAO nRF52840 + WIO-SX1262 starting...");
 
     /* Boot stage 2: BLUE blinks = initializing */
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 3; i++) {
         digitalWrite(LED_BLUE, LOW);   /* on */
-        delay(100);
+        delay(150);
         digitalWrite(LED_BLUE, HIGH);  /* off */
-        delay(100);
+        delay(150);
     }
 
-    /* Load settings (or use defaults on first boot) */
+    /*
+     * DIAGNOSTIC STEP INDICATORS
+     * Each init step is preceded by N RED blinks (with a long pause after).
+     * Count the RED blinks to identify which step crashes:
+     *   1 RED blink  = about to load settings (InternalFS)
+     *   2 RED blinks = about to load/generate identity
+     *   3 RED blinks = about to init BLE (Bluefruit/SoftDevice)
+     *   4 RED blinks = about to init NEXUS node
+     *   5 RED blinks = about to init LoRa radio (SPI + RadioLib)
+     *   6 RED blinks = about to init LoRa transport layer
+     *   GREEN solid  = boot complete
+     */
+
+    /* ── STEP 1: Settings ──────────────────────────────────────────────── */
+    digitalWrite(LED_RED, LOW); delay(400); digitalWrite(LED_RED, HIGH); delay(600);
+    Serial.println("[BOOT] Step 1: Loading settings...");
+
     if (nx_settings_load(&settings) != NX_OK) {
         Serial.println("[NEXUS] First boot - using default settings");
         nx_settings_t defaults = NX_SETTINGS_DEFAULT;
@@ -455,7 +472,12 @@ void setup()
                       settings.node_role);
     }
 
-    /* ── Identity (BEFORE BLE so we have a name) ─────────────────────── */
+    /* ── STEP 2: Identity ──────────────────────────────────────────────── */
+    for (int i = 0; i < 2; i++) {
+        digitalWrite(LED_RED, LOW); delay(200); digitalWrite(LED_RED, HIGH); delay(200);
+    }
+    delay(400);
+    Serial.println("[BOOT] Step 2: Loading identity...");
 
     nx_identity_t stored_id;
     bool new_identity = false;
@@ -476,13 +498,23 @@ void setup()
                   stored_id.short_addr.bytes[2], stored_id.short_addr.bytes[3],
                   new_identity ? "(new)" : "(stored)");
 
-    /* ── BLE bridge (EARLY -- always discoverable even if LoRa fails) ── */
+    /* ── STEP 3: BLE ───────────────────────────────────────────────────── */
+    for (int i = 0; i < 3; i++) {
+        digitalWrite(LED_RED, LOW); delay(200); digitalWrite(LED_RED, HIGH); delay(200);
+    }
+    delay(400);
+    Serial.println("[BOOT] Step 3: Initializing BLE...");
 
     nx_ble_bridge_init(ble_name);
     nx_ble_bridge_start();
     Serial.printf("[NEXUS] BLE advertising: %s\n", ble_name);
 
-    /* ── Node init ───────────────────────────────────────────────────── */
+    /* ── STEP 4: Node init ─────────────────────────────────────────────── */
+    for (int i = 0; i < 4; i++) {
+        digitalWrite(LED_RED, LOW); delay(200); digitalWrite(LED_RED, HIGH); delay(200);
+    }
+    delay(400);
+    Serial.println("[BOOT] Step 4: Initializing NEXUS node...");
 
     nx_node_config_t cfg = {
         .role              = (nx_role_t)settings.node_role,
@@ -500,13 +532,19 @@ void setup()
         /* Continue anyway -- BLE is already running */
     }
 
-    /* ── LoRa radio (non-fatal -- BLE works without it) ──────────────── */
+    /* ── STEP 5: LoRa radio ────────────────────────────────────────────── */
+    for (int i = 0; i < 5; i++) {
+        digitalWrite(LED_RED, LOW); delay(200); digitalWrite(LED_RED, HIGH); delay(200);
+    }
+    delay(400);
+    Serial.println("[BOOT] Step 5: Initializing LoRa radio...");
 
     /*
      * Create RadioLib Module HERE, after Arduino framework has initialized
      * SPI and GPIO. Creating it as a global causes hard fault on nRF52840!
      */
-    static Module lora_module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
+    SPI.begin();  /* Ensure default SPI bus is initialized */
+    static Module lora_module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY, SPI);
     static SX1262 radio_instance(&lora_module);
     radio_ptr = &radio_instance;
     Serial.println("[NEXUS] RadioLib module created (deferred init)");
@@ -522,6 +560,13 @@ void setup()
         Serial.println("[NEXUS] LoRa radio init FAILED -- check WIO-SX1262 connection");
         Serial.println("[NEXUS] BLE bridge is still active");
     } else {
+        /* ── STEP 6: LoRa transport ────────────────────────────────────── */
+        for (int i = 0; i < 6; i++) {
+            digitalWrite(LED_RED, LOW); delay(150); digitalWrite(LED_RED, HIGH); delay(150);
+        }
+        delay(400);
+        Serial.println("[BOOT] Step 6: Setting up LoRa transport...");
+
         /* Configure RF switch: DIO2 handles TX, RXEN GPIO handles RX */
         static const uint32_t rfswitch_pins[] = {
             LORA_RXEN, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC
@@ -556,15 +601,12 @@ void setup()
         nx_node_announce(&node);
     }
 
-    /* Boot result LED pattern */
+    /* Boot complete: solid GREEN for 2s */
+    Serial.printf("[NEXUS] Ready -- BLE: %s, LoRa: %s\n",
+                  ble_name, lora_ok ? "OK" : "FAILED");
+    Serial.println("[NEXUS] Commands: STATUS ANNOUNCE NEIGHBORS MAILBOX RADIO SETTINGS HELP");
+
     if (lora_ok) {
-        /* Full success: GREEN blinks */
-        for (int i = 0; i < 3; i++) {
-            digitalWrite(LED_GREEN, LOW);
-            delay(300);
-            digitalWrite(LED_GREEN, HIGH);
-            delay(200);
-        }
         digitalWrite(LED_GREEN, LOW);
         delay(2000);
         digitalWrite(LED_GREEN, HIGH);
@@ -579,10 +621,6 @@ void setup()
             digitalWrite(LED_BLUE, HIGH);
         }
     }
-
-    Serial.printf("[NEXUS] Ready -- BLE: %s, LoRa: %s\n",
-                  ble_name, lora_ok ? "OK" : "FAILED");
-    Serial.println("[NEXUS] Commands: STATUS ANNOUNCE NEIGHBORS MAILBOX RADIO SETTINGS HELP");
 }
 
 /* -- Main Loop ----------------------------------------------------------- */
