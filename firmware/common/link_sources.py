@@ -25,6 +25,18 @@ if os.path.isdir(local_variant_dir):
             except OSError:
                 shutil.copytree(local_variant_dir, bsp_variant_dir)
                 print("Copied variant '%s' -> %s" % (variant_name, bsp_variant_dir))
+        # Also install custom linker scripts into BSP linker directory
+        linker_dir = os.path.join(framework_dir, "cores", "nRF5", "linker")
+        for f in os.listdir(local_variant_dir):
+            if f.endswith(".ld"):
+                ld_src = os.path.join(local_variant_dir, f)
+                ld_dst = os.path.join(linker_dir, f)
+                if not os.path.exists(ld_dst):
+                    try:
+                        os.symlink(os.path.abspath(ld_src), ld_dst)
+                    except OSError:
+                        shutil.copy2(ld_src, ld_dst)
+                    print("Installed linker script '%s'" % f)
 
 # libnexus C sources
 c_sources = [
