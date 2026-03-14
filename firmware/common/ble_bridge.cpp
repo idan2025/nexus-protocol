@@ -228,9 +228,16 @@ static ble_rx_slot_t rx_ring[BLE_RX_SLOTS];
 static volatile uint8_t rx_write = 0;
 static volatile uint8_t rx_read  = 0;
 
-static BLEService nus_svc(NUS_SERVICE_UUID);
-static BLECharacteristic nus_tx_char(NUS_TX_UUID);
-static BLECharacteristic nus_rx_char(NUS_RX_UUID);
+/*
+ * IMPORTANT: Do NOT create BLEService/BLECharacteristic as globals!
+ * On nRF52840, global constructors run before the SoftDevice is initialized.
+ * BLEUuid constructors may call sd_ble_uuid_vs_add(), causing a hard fault
+ * before setup() is reached -- same issue as RadioLib Module.
+ * Use pointers, constructed in nx_ble_bridge_init() after framework init.
+ */
+static BLEService *nus_svc = NULL;
+static BLECharacteristic *nus_tx_char = NULL;
+static BLECharacteristic *nus_rx_char = NULL;
 
 static volatile bool client_connected = false;
 
@@ -292,21 +299,32 @@ void nx_ble_bridge_init(const char *device_name)
     Bluefruit.Periph.setConnectCallback(connect_callback);
     Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
 
+    /*
+     * Create BLE objects HERE, after SoftDevice is initialized.
+     * Static locals are constructed on first call only.
+     */
+    static BLEService svc(NUS_SERVICE_UUID);
+    static BLECharacteristic tx_char(NUS_TX_UUID);
+    static BLECharacteristic rx_char(NUS_RX_UUID);
+    nus_svc = &svc;
+    nus_tx_char = &tx_char;
+    nus_rx_char = &rx_char;
+
     /* NUS Service */
-    nus_svc.begin();
+    nus_svc->begin();
 
     /* TX characteristic: firmware -> phone (notify) */
-    nus_tx_char.setProperties(CHR_PROPS_NOTIFY);
-    nus_tx_char.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-    nus_tx_char.setMaxLen(BLE_MAX_PKT);
-    nus_tx_char.begin();
+    nus_tx_char->setProperties(CHR_PROPS_NOTIFY);
+    nus_tx_char->setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+    nus_tx_char->setMaxLen(BLE_MAX_PKT);
+    nus_tx_char->begin();
 
     /* RX characteristic: phone -> firmware (write) */
-    nus_rx_char.setProperties(CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
-    nus_rx_char.setPermission(SECMODE_NO_ACCESS, SECMODE_OPEN);
-    nus_rx_char.setMaxLen(BLE_MAX_PKT);
-    nus_rx_char.setWriteCallback(rx_write_callback);
-    nus_rx_char.begin();
+    nus_rx_char->setProperties(CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
+    nus_rx_char->setPermission(SECMODE_NO_ACCESS, SECMODE_OPEN);
+    nus_rx_char->setMaxLen(BLE_MAX_PKT);
+    nus_rx_char->setWriteCallback(rx_write_callback);
+    nus_rx_char->begin();
 
     Serial.printf("[BLE] Bridge initialized: %s\n", device_name);
 }
@@ -315,7 +333,7 @@ void nx_ble_bridge_start(void)
 {
     Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
     Bluefruit.Advertising.addTxPower();
-    Bluefruit.Advertising.addService(nus_svc);
+    Bluefruit.Advertising.addService(*nus_svc);
     Bluefruit.Advertising.addName();
 
     /* Fast advertising for 30s, then slow */
@@ -348,7 +366,7 @@ nx_err_t nx_ble_bridge_send(const uint8_t *data, size_t len)
     frame[1] = (uint8_t)(len & 0xFF);
     memcpy(&frame[2], data, len);
 
-    if (nus_tx_char.notify(frame, len + 2)) {
+    if (nus_tx_char->notify(frame, len + 2)) {
         return NX_OK;
     }
     return NX_ERR_TRANSPORT;

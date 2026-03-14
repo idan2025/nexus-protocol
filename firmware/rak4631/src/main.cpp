@@ -47,12 +47,12 @@ static int last_anchor_count = 0;
 #include <InternalFileSystem.h>
 
 using namespace Adafruit_LittleFS_Namespace;
-static File id_file(InternalFS);
 static const char *ID_FILE = "/nexus_id";
 
 static nx_err_t load_identity(nx_identity_t *id)
 {
     InternalFS.begin();
+    File id_file(InternalFS);
     id_file.open(ID_FILE, FILE_O_READ);
     if (!id_file) return NX_ERR_NOT_FOUND;
 
@@ -73,6 +73,7 @@ static nx_err_t save_identity(const nx_identity_t *id)
     InternalFS.begin();
     if (InternalFS.exists(ID_FILE)) InternalFS.remove(ID_FILE);
 
+    File id_file(InternalFS);
     id_file.open(ID_FILE, FILE_O_WRITE);
     if (!id_file) return NX_ERR_IO;
 
