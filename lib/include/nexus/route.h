@@ -14,10 +14,18 @@
 #include "types.h"
 
 /* ── Table Sizes ─────────────────────────────────────────────────────── */
+#ifndef NX_MAX_NEIGHBORS
 #define NX_MAX_NEIGHBORS     32
+#endif
+#ifndef NX_MAX_ROUTES
 #define NX_MAX_ROUTES        64
+#endif
+#ifndef NX_MAX_DEDUP
 #define NX_MAX_DEDUP         128
+#endif
+#ifndef NX_MAX_PENDING_RREQ
 #define NX_MAX_PENDING_RREQ  16
+#endif
 
 /* ── Timeouts (ms) ───────────────────────────────────────────────────── */
 #define NX_NEIGHBOR_TIMEOUT_MS   60000   /* 60s without beacon -> stale */

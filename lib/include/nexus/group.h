@@ -15,8 +15,12 @@
 #include "types.h"
 
 /* ── Limits ──────────────────────────────────────────────────────────── */
+#ifndef NX_GROUP_MAX
 #define NX_GROUP_MAX           8
+#endif
+#ifndef NX_GROUP_MAX_MEMBERS
 #define NX_GROUP_MAX_MEMBERS  16
+#endif
 #define NX_GROUP_OVERHEAD     48   /* group_id(4) + msg_num(4) + nonce(24) + MAC(16) */
 #define NX_GROUP_MAX_PLAINTEXT (NX_MAX_PAYLOAD - 1 - NX_GROUP_OVERHEAD)  /* 193 */
 

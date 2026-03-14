@@ -25,7 +25,9 @@
 #define NX_FRAG_MAX_COUNT      16
 #define NX_FRAG_PAYLOAD_CAP    (NX_MAX_PAYLOAD - NX_FRAG_EXTHDR_SIZE) /* 239 */
 #define NX_FRAG_MAX_MESSAGE    (NX_FRAG_MAX_COUNT * NX_FRAG_PAYLOAD_CAP) /* 3824 */
+#ifndef NX_FRAG_REASSEMBLY_SLOTS
 #define NX_FRAG_REASSEMBLY_SLOTS  8
+#endif
 #define NX_FRAG_TIMEOUT_MS    30000   /* 30s to collect all fragments */
 
 /* ── Fragment Extended Header ────────────────────────────────────────── */

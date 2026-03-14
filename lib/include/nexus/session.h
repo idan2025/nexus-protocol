@@ -34,9 +34,13 @@
 #include "types.h"
 
 /* ── Constants ───────────────────────────────────────────────────────── */
+#ifndef NX_SESSION_MAX
 #define NX_SESSION_MAX           16    /* Max concurrent sessions */
+#endif
 #define NX_SESSION_OVERHEAD      80    /* 4+4+32+24+16 */
+#ifndef NX_SESSION_MAX_SKIP
 #define NX_SESSION_MAX_SKIP      32    /* Max skipped message keys to store */
+#endif
 #define NX_SESSION_INIT_LEN      32    /* Handshake init: ephemeral pubkey */
 #define NX_SESSION_ACK_LEN       32    /* Handshake ack: ephemeral pubkey */
 
