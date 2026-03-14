@@ -510,6 +510,7 @@ void setup()
     nx_node_announce(&node);
 
     Serial.println("[NEXUS] Ready (headless mode)");
+    Serial.println("[NEXUS] BOOT button: press=announce, long hold=sleep");
     Serial.println("[NEXUS] Serial commands: STATUS ANNOUNCE NEIGHBORS MAILBOX RADIO SETTINGS HELP");
 
     /* Steady LED = running */

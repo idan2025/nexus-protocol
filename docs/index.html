@@ -521,11 +521,10 @@
           </span>
         </esp-web-install-button>
         <div class="note-box" style="margin-top:0.75rem">
-          <strong>WIO-SX1262 kit (single button):</strong> If flashing fails, the ESP32-S3 needs
-          download mode. Quickly <strong>double-tap</strong> the RESET button, then click Install
-          and select the new port (<code>USB JTAG/serial debug unit</code>).
-          If that doesn't work, briefly short the <code>B</code> (boot) pad on the XIAO
-          to GND while pressing RESET.
+          <strong>ESP32-S3 download mode:</strong> If flashing fails, hold the <code>BOOT</code>
+          button on the XIAO board, press <code>RESET</code>, then release <code>BOOT</code>.
+          Select the new port (<code>USB JTAG/serial debug unit</code>) and retry.
+          After flashing, press <code>RESET</code> to boot normally.
         </div>
       </div>
     </div>
@@ -637,12 +636,10 @@
         install <a href="https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers" style="color:var(--accent)">CP2102 drivers</a>.
       </p>
       <div class="note-box">
-        <strong>WIO-SX1262 kit (single button):</strong> The kit only has a RESET button.
-        To enter download mode, quickly <strong>double-tap RESET</strong>. A new serial port
-        appears (<code>USB JTAG/serial debug unit</code>) -- select it and retry.
-        If double-tap doesn't work, briefly short the <code>B</code> (boot) pad on the
-        underside of the XIAO to GND while pressing RESET. After flashing, press
-        RESET once to boot normally.
+        <strong>XIAO ESP32-S3:</strong> The XIAO board has both <code>BOOT</code> and
+        <code>RESET</code> buttons. Hold <code>BOOT</code>, press <code>RESET</code>,
+        release <code>BOOT</code> to enter download mode. The port may change --
+        reselect it. After flashing, press <code>RESET</code> to boot normally.
       </div>
     </div>
   </div>
