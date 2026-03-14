@@ -203,6 +203,17 @@
     border-color: var(--purple);
   }
 
+  .btn-dfu {
+    background: rgba(210,153,34,0.1);
+    border-color: rgba(210,153,34,0.3);
+    margin-top: 0.5rem;
+  }
+
+  .btn-dfu:hover {
+    background: var(--orange);
+    border-color: var(--orange);
+  }
+
   .btn-serial {
     background: rgba(63,185,80,0.1);
     border-color: rgba(63,185,80,0.3);
@@ -492,6 +503,10 @@
             <a class="btn" id="dl-heltec2" href="#">Download .bin</a>
           </span>
         </esp-web-install-button>
+        <button class="btn btn-dfu" onclick="enterDFU()">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+          Enter Download Mode
+        </button>
       </div>
     </div>
 
@@ -520,11 +535,15 @@
             <a class="btn" id="dl-xiao-esp2" href="#">Download .bin</a>
           </span>
         </esp-web-install-button>
+        <button class="btn btn-dfu" onclick="enterDFU()">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+          Enter Download Mode
+        </button>
         <div class="note-box" style="margin-top:0.75rem">
-          <strong>ESP32-S3 download mode:</strong> If flashing fails, hold the <code>BOOT</code>
-          button on the XIAO board, press <code>RESET</code>, then release <code>BOOT</code>.
-          Select the new port (<code>USB JTAG/serial debug unit</code>) and retry.
-          After flashing, press <code>RESET</code> to boot normally.
+          <strong>Tip:</strong> Click <strong>Enter Download Mode</strong> to reboot the ESP32
+          into its bootloader via USB. Then click <strong>Install Firmware</strong> and select
+          the new port. Or manually: hold <code>BOOT</code>, press <code>RESET</code>,
+          release <code>BOOT</code>.
         </div>
       </div>
     </div>
@@ -702,6 +721,43 @@
 
 <script>
 const REPO = 'idan2025/nexus-protocol';
+
+/* ── Enter DFU / Download Mode (1200bps touch) ─────────────────────── */
+
+async function enterDFU() {
+  if (!('serial' in navigator)) {
+    showFlashStatus('Web Serial not supported. Use Chrome, Edge, or Opera.', 'error');
+    return;
+  }
+
+  try {
+    showFlashStatus('Select the serial port of your ESP32 device...', 'progress');
+    const port = await navigator.serial.requestPort();
+
+    showFlashStatus('Sending reboot-to-bootloader signal...', 'progress');
+    await port.open({ baudRate: 1200 });
+
+    /* Toggle DTR to trigger the ESP32 USB-CDC bootloader reset */
+    await port.setSignals({ dataTerminalReady: false });
+    await new Promise(r => setTimeout(r, 200));
+    await port.setSignals({ dataTerminalReady: true });
+    await new Promise(r => setTimeout(r, 200));
+
+    await port.close();
+
+    showFlashStatus(
+      'Device is rebooting into download mode. Wait 2 seconds, then click Install Firmware and select the new port.',
+      'success'
+    );
+    setTimeout(hideFlashStatus, 15000);
+  } catch (e) {
+    if (e.name === 'NotFoundError') {
+      hideFlashStatus();
+    } else {
+      showFlashStatus('DFU error: ' + e.message, 'error');
+    }
+  }
+}
 
 const DOWNLOAD_LINKS = {
   'dl-heltec':     'nexus-heltec_v3.bin',
