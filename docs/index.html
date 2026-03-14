@@ -521,9 +521,11 @@
           </span>
         </esp-web-install-button>
         <div class="note-box" style="margin-top:0.75rem">
-          <strong>ESP32-S3 USB-CDC:</strong> If flashing hangs after selecting serial port,
-          hold <code>BOOT</code> button, press <code>RESET</code>, then release <code>BOOT</code>.
-          This enters download mode. Then retry Install.
+          <strong>WIO-SX1262 kit (single button):</strong> If flashing fails, the ESP32-S3 needs
+          download mode. Quickly <strong>double-tap</strong> the RESET button, then click Install
+          and select the new port (<code>USB JTAG/serial debug unit</code>).
+          If that doesn't work, briefly short the <code>B</code> (boot) pad on the XIAO
+          to GND while pressing RESET.
         </div>
       </div>
     </div>
@@ -635,10 +637,12 @@
         install <a href="https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers" style="color:var(--accent)">CP2102 drivers</a>.
       </p>
       <div class="note-box">
-        <strong>ESP32-S3 native USB:</strong> If flashing hangs after port selection, the device
-        needs to be in download mode. Hold <code>BOOT</code>, press <code>RESET</code>, release
-        <code>BOOT</code>. The port may change -- reselect it. After flashing, press <code>RESET</code>
-        to boot normally.
+        <strong>WIO-SX1262 kit (single button):</strong> The kit only has a RESET button.
+        To enter download mode, quickly <strong>double-tap RESET</strong>. A new serial port
+        appears (<code>USB JTAG/serial debug unit</code>) -- select it and retry.
+        If double-tap doesn't work, briefly short the <code>B</code> (boot) pad on the
+        underside of the XIAO to GND while pressing RESET. After flashing, press
+        RESET once to boot normally.
       </div>
     </div>
   </div>
@@ -657,9 +661,10 @@
         <li>Use the <strong>Serial Console</strong> to verify: you should see <code>[NEXUS]</code> boot messages</li>
       </ol>
       <div class="note-box">
-        <strong>Verify success:</strong> After flashing, the RED LED blinks once (boot), then BLUE blinks
-        5 times (init), then GREEN blinks 3 times (ready). If you see rapid RED blinking, the LoRa
-        radio expansion board may not be connected properly.
+        <strong>WIO-SX1262 kit:</strong> The kit has a single RESET button.
+        <strong>Double-tap</strong> it quickly to enter UF2 bootloader (a USB drive appears).
+        After flashing, the RED LED blinks once (boot), BLUE blinks 5 times (init),
+        then GREEN blinks 3 times (ready). Rapid RED blinking = LoRa radio not detected.
       </div>
       <p style="margin-top:1rem; font-size:0.85rem; color:var(--text-dim)">
         Works in any browser / OS. The UF2 bootloader is pre-installed on all
