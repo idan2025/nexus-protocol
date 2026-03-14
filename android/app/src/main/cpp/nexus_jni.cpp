@@ -593,14 +593,13 @@ Java_com_nexus_mesh_service_NexusNode_nativeGroupCreate(JNIEnv *env,
     (void)thiz;
     if (!g_running) return JNI_FALSE;
 
-    nx_group_id_t gid;
+    nx_addr_short_t gid;
     env->GetByteArrayRegion(groupId, 0, 4, (jbyte *)gid.bytes);
 
     uint8_t gkey[32];
     env->GetByteArrayRegion(key, 0, 32, (jbyte *)gkey);
 
-    nx_err_t err = nx_group_create(&g_node.group_store, &gid, gkey,
-                                    &g_node.identity.short_addr);
+    nx_err_t err = nx_node_group_create(&g_node, &gid, gkey);
     return (err == NX_OK) ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -613,13 +612,13 @@ Java_com_nexus_mesh_service_NexusNode_nativeGroupAddMember(JNIEnv *env,
     (void)thiz;
     if (!g_running) return JNI_FALSE;
 
-    nx_group_id_t gid;
+    nx_addr_short_t gid;
     env->GetByteArrayRegion(groupId, 0, 4, (jbyte *)gid.bytes);
 
     nx_addr_short_t addr;
     env->GetByteArrayRegion(memberAddr, 0, 4, (jbyte *)addr.bytes);
 
-    nx_err_t err = nx_group_add_member(&g_node.group_store, &gid, &addr);
+    nx_err_t err = nx_node_group_add_member(&g_node, &gid, &addr);
     return (err == NX_OK) ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -632,13 +631,13 @@ Java_com_nexus_mesh_service_NexusNode_nativeGroupSend(JNIEnv *env,
     (void)thiz;
     if (!g_running) return JNI_FALSE;
 
-    nx_group_id_t gid;
+    nx_addr_short_t gid;
     env->GetByteArrayRegion(groupId, 0, 4, (jbyte *)gid.bytes);
 
     jsize len = env->GetArrayLength(data);
     jbyte *buf = env->GetByteArrayElements(data, nullptr);
 
-    nx_err_t err = nx_node_send_group(&g_node, &gid, (uint8_t *)buf, (size_t)len);
+    nx_err_t err = nx_node_group_send(&g_node, &gid, (uint8_t *)buf, (size_t)len);
     env->ReleaseByteArrayElements(data, buf, JNI_ABORT);
 
     return (err == NX_OK) ? JNI_TRUE : JNI_FALSE;
@@ -653,17 +652,17 @@ Java_com_nexus_mesh_service_NexusNode_nativeGroupList(JNIEnv *env,
 
     int count = 0;
     for (int i = 0; i < NX_GROUP_MAX; i++) {
-        if (g_node.group_store.groups[i].active) count++;
+        if (g_node.groups.groups[i].valid) count++;
     }
 
     jclass byteArrayClass = env->FindClass("[B");
     jobjectArray result = env->NewObjectArray(count, byteArrayClass, nullptr);
     int idx = 0;
     for (int i = 0; i < NX_GROUP_MAX && idx < count; i++) {
-        if (g_node.group_store.groups[i].active) {
+        if (g_node.groups.groups[i].valid) {
             jbyteArray gid = env->NewByteArray(4);
             env->SetByteArrayRegion(gid, 0, 4,
-                (jbyte *)g_node.group_store.groups[i].group_id.bytes);
+                (jbyte *)g_node.groups.groups[i].group_id.bytes);
             env->SetObjectArrayElement(result, idx++, gid);
             env->DeleteLocalRef(gid);
         }
@@ -679,27 +678,29 @@ Java_com_nexus_mesh_service_NexusNode_nativeGroupGetMembers(JNIEnv *env,
     (void)thiz;
     if (!g_running) return nullptr;
 
-    nx_group_id_t gid;
+    nx_addr_short_t gid;
     env->GetByteArrayRegion(groupId, 0, 4, (jbyte *)gid.bytes);
 
     /* Find the group */
-    const nx_group_t *grp = NULL;
-    for (int i = 0; i < NX_GROUP_MAX; i++) {
-        if (g_node.group_store.groups[i].active &&
-            memcmp(g_node.group_store.groups[i].group_id.bytes, gid.bytes, 4) == 0) {
-            grp = &g_node.group_store.groups[i];
-            break;
-        }
-    }
+    const nx_group_t *grp = nx_group_find(&g_node.groups, &gid);
     if (!grp) return nullptr;
 
+    /* Count valid members */
+    int member_count = 0;
+    for (int i = 0; i < NX_GROUP_MAX_MEMBERS; i++) {
+        if (grp->members[i].valid) member_count++;
+    }
+
     jclass byteArrayClass = env->FindClass("[B");
-    jobjectArray result = env->NewObjectArray(grp->member_count, byteArrayClass, nullptr);
-    for (int i = 0; i < grp->member_count; i++) {
-        jbyteArray addr = env->NewByteArray(4);
-        env->SetByteArrayRegion(addr, 0, 4, (jbyte *)grp->members[i].bytes);
-        env->SetObjectArrayElement(result, i, addr);
-        env->DeleteLocalRef(addr);
+    jobjectArray result = env->NewObjectArray(member_count, byteArrayClass, nullptr);
+    int idx = 0;
+    for (int i = 0; i < NX_GROUP_MAX_MEMBERS && idx < member_count; i++) {
+        if (grp->members[i].valid) {
+            jbyteArray addr = env->NewByteArray(4);
+            env->SetByteArrayRegion(addr, 0, 4, (jbyte *)grp->members[i].addr.bytes);
+            env->SetObjectArrayElement(result, idx++, addr);
+            env->DeleteLocalRef(addr);
+        }
     }
     return result;
 }
