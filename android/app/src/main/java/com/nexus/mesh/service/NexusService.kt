@@ -4,6 +4,7 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -19,6 +20,32 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+
+data class NetworkInterface(
+    val type: String,          // "WiFi", "Cellular", "Ethernet", "VPN", "Unknown"
+    val name: String?,         // e.g. "wlan0", "rmnet0"
+    val addresses: List<String>, // IPv4/IPv6 addresses
+    val isMetered: Boolean
+)
+
+data class NetworkState(
+    val interfaces: List<NetworkInterface> = emptyList(),
+    val hasWifi: Boolean = false,
+    val hasCellular: Boolean = false,
+    val hasEthernet: Boolean = false,
+    val hasVpn: Boolean = false,
+    val hasAnyInternet: Boolean = false
+) {
+    val summary: String get() {
+        if (interfaces.isEmpty()) return "No network"
+        return interfaces.joinToString(" + ") { iface ->
+            val addr = iface.addresses.firstOrNull()?.let { " ($it)" } ?: ""
+            "${iface.type}$addr"
+        }
+    }
+
+    val canMulticast: Boolean get() = hasWifi || hasEthernet
+}
 
 class NexusService : Service(), NexusNode.Callback {
     companion object {
@@ -38,6 +65,7 @@ class NexusService : Service(), NexusNode.Callback {
         private const val KEY_PILLAR_LIST = "pillar_list"
         private const val KEY_PILLARS_ENABLED = "pillars_enabled"
         val DEFAULT_PILLARS = ""
+        private const val NETWORK_DEBOUNCE_MS = 1500L
     }
 
     private val node = NexusNode()
@@ -47,7 +75,10 @@ class NexusService : Service(), NexusNode.Callback {
     private var multicastLock: WifiManager.MulticastLock? = null
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private val activeNetworks = mutableSetOf<Network>()
+    private val activeNetworks = mutableMapOf<Network, NetworkCapabilities>()
+    private val activeLinkProps = mutableMapOf<Network, LinkProperties>()
+    private var networkDebounceJob: Job? = null
+    private var udpAutoManaged = true  // true = auto start/stop UDP based on interface type
 
     // Room DB
     private lateinit var db: NexusDatabase
@@ -91,6 +122,9 @@ class NexusService : Service(), NexusNode.Callback {
     private val _pillarConnected = MutableStateFlow(false)
     val pillarConnected: StateFlow<Boolean> = _pillarConnected
 
+    private val _networkState = MutableStateFlow(NetworkState())
+    val networkState: StateFlow<NetworkState> = _networkState
+
     inner class LocalBinder : Binder() {
         fun getService(): NexusService = this@NexusService
     }
@@ -133,23 +167,35 @@ class NexusService : Service(), NexusNode.Callback {
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                synchronized(activeNetworks) { activeNetworks.add(network) }
-                Log.i(TAG, "Network available: $network (${activeNetworks.size} active)")
-                onNetworkChanged()
+                Log.i(TAG, "Network available: $network")
+                scheduleNetworkUpdate()
             }
 
             override fun onLost(network: Network) {
-                synchronized(activeNetworks) { activeNetworks.remove(network) }
-                Log.i(TAG, "Network lost: $network (${activeNetworks.size} active)")
+                synchronized(activeNetworks) {
+                    activeNetworks.remove(network)
+                    activeLinkProps.remove(network)
+                }
+                Log.i(TAG, "Network lost: $network (${activeNetworks.size} remaining)")
                 if (synchronized(activeNetworks) { activeNetworks.isEmpty() }) {
                     onNetworkLost()
+                } else {
+                    rebuildNetworkState()
+                    scheduleNetworkUpdate()
                 }
             }
 
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                val hasWifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                val hasCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
-                Log.d(TAG, "Network caps changed: wifi=$hasWifi cellular=$hasCellular")
+                synchronized(activeNetworks) { activeNetworks[network] = caps }
+                rebuildNetworkState()
+                scheduleNetworkUpdate()
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
+                synchronized(activeNetworks) { activeLinkProps[network] = lp }
+                rebuildNetworkState()
+                Log.d(TAG, "Link properties: iface=${lp.interfaceName} " +
+                        "addrs=${lp.linkAddresses.map { it.address.hostAddress }}")
             }
         }
 
@@ -166,20 +212,91 @@ class NexusService : Service(), NexusNode.Callback {
         connectivityManager = null
     }
 
-    private fun onNetworkChanged() {
-        scope.launch {
-            // Debounce rapid network changes (e.g. WiFi handoff)
-            delay(1000)
+    private fun rebuildNetworkState() {
+        val interfaces = mutableListOf<NetworkInterface>()
+        var hasWifi = false
+        var hasCellular = false
+        var hasEthernet = false
+        var hasVpn = false
 
-            // Restart UDP multicast to pick up new interfaces
-            if (_udpActive.value) {
-                Log.i(TAG, "Network change: restarting UDP multicast")
+        synchronized(activeNetworks) {
+            for ((network, caps) in activeNetworks) {
+                val lp = activeLinkProps[network]
+                val type = when {
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> { hasWifi = true; "WiFi" }
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> { hasCellular = true; "Cellular" }
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> { hasEthernet = true; "Ethernet" }
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> { hasVpn = true; "VPN" }
+                    else -> "Unknown"
+                }
+                val addrs = lp?.linkAddresses
+                    ?.mapNotNull { it.address.hostAddress }
+                    ?.filter { !it.contains(":") }  // IPv4 only for display
+                    ?: emptyList()
+                val isMetered = !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+
+                interfaces.add(NetworkInterface(
+                    type = type,
+                    name = lp?.interfaceName,
+                    addresses = addrs,
+                    isMetered = isMetered
+                ))
+            }
+        }
+
+        val newState = NetworkState(
+            interfaces = interfaces,
+            hasWifi = hasWifi,
+            hasCellular = hasCellular,
+            hasEthernet = hasEthernet,
+            hasVpn = hasVpn,
+            hasAnyInternet = interfaces.isNotEmpty()
+        )
+
+        val prev = _networkState.value
+        _networkState.value = newState
+
+        // Log meaningful transitions
+        if (prev.hasWifi != newState.hasWifi || prev.hasCellular != newState.hasCellular ||
+            prev.hasEthernet != newState.hasEthernet || prev.hasVpn != newState.hasVpn) {
+            Log.i(TAG, "Network state: ${newState.summary}")
+        }
+    }
+
+    private fun scheduleNetworkUpdate() {
+        // Cancel any pending debounce -- only the latest change fires
+        networkDebounceJob?.cancel()
+        networkDebounceJob = scope.launch {
+            delay(NETWORK_DEBOUNCE_MS)
+            onNetworkChanged()
+        }
+    }
+
+    private fun onNetworkChanged() {
+        val state = _networkState.value
+        Log.i(TAG, "Network change handler: ${state.summary}")
+
+        // --- UDP multicast: auto-manage based on interface type ---
+        if (udpAutoManaged) {
+            if (state.canMulticast && !_udpActive.value) {
+                Log.i(TAG, "WiFi/Ethernet detected: starting UDP multicast")
+                startUdpMulticast()
+            } else if (!state.canMulticast && _udpActive.value) {
+                Log.i(TAG, "No WiFi/Ethernet: stopping UDP multicast (cellular only)")
+                node.stopUdpMulticast()
+                multicastLock?.release()
+                _udpActive.value = false
+            } else if (state.canMulticast && _udpActive.value) {
+                // WiFi still up but interface may have changed (e.g. SSID switch)
+                Log.i(TAG, "Network change: restarting UDP multicast for new interfaces")
                 node.stopUdpMulticast()
                 multicastLock?.release()
                 startUdpMulticast()
             }
+        }
 
-            // Reconnect pillars if configured but disconnected
+        // --- Reconnect pillars if we have internet but lost connection ---
+        if (state.hasAnyInternet) {
             val pillarsEnabled = _pillarsEnabled.value
             val pillarList = _pillarList.value
             if (pillarsEnabled && pillarList.isNotBlank() && !_pillarConnected.value) {
@@ -195,13 +312,14 @@ class NexusService : Service(), NexusNode.Callback {
                 Log.i(TAG, "Network change: restarting TCP inet")
                 startTcpInetFromConfig(port, peers)
             }
-
-            updateTransportNotification()
         }
+
+        updateTransportNotification()
     }
 
     private fun onNetworkLost() {
         Log.w(TAG, "All networks lost")
+        _networkState.value = NetworkState()
         _udpActive.value = false
         _pillarConnected.value = false
         updateTransportNotification()
@@ -255,7 +373,18 @@ class NexusService : Service(), NexusNode.Callback {
             startTcpInetFromConfig(port, peersStr)
         }
 
-        startUdpMulticast()
+        // UDP multicast will auto-start when network callback detects WiFi/Ethernet.
+        // Attempt now in case connectivity is already available (callback may fire before poll).
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val activeCaps = cm?.getNetworkCapabilities(cm.activeNetwork)
+        val hasLocalNet = activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
+                          activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+        if (hasLocalNet) {
+            startUdpMulticast()
+        } else {
+            Log.i(TAG, "No WiFi/Ethernet at startup, UDP multicast deferred to network callback")
+        }
+
         connectToPillars()
 
         Log.i(TAG, "Node started: ${_address.value}")
@@ -799,7 +928,8 @@ class NexusService : Service(), NexusNode.Callback {
 
     // --- UDP Multicast ---
 
-    fun startUdpMulticast(): Boolean {
+    fun startUdpMulticast(userTriggered: Boolean = false): Boolean {
+        if (userTriggered) udpAutoManaged = true  // user enabling means they want auto-management
         if (multicastLock == null) {
             val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             multicastLock = wifi?.createMulticastLock("nexus_mcast")?.apply {
@@ -820,7 +950,8 @@ class NexusService : Service(), NexusNode.Callback {
         return ok
     }
 
-    fun stopUdpMulticast() {
+    fun stopUdpMulticast(userTriggered: Boolean = false) {
+        if (userTriggered) udpAutoManaged = false  // user disabling = don't auto-restart
         node.stopUdpMulticast()
         _udpActive.value = false
         multicastLock?.release()
@@ -900,6 +1031,11 @@ class NexusService : Service(), NexusNode.Callback {
         val parts = mutableListOf("Node: ${_address.value}")
         if (_tcpActive.value) parts.add("TCP")
         if (_udpActive.value) parts.add("UDP")
+        val net = _networkState.value
+        if (net.hasAnyInternet) {
+            val netTypes = net.interfaces.map { it.type }.distinct()
+            parts.add(netTypes.joinToString("+"))
+        }
         updateNotification(parts.joinToString(" | "))
     }
 

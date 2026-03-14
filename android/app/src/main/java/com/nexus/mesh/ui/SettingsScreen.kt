@@ -21,6 +21,8 @@ fun SettingsScreen(activity: MainActivity, navController: NavController? = null)
     val pillarsEnabled by service?.pillarsEnabled?.collectAsState() ?: remember { mutableStateOf(true) }
     val pillarList by service?.pillarList?.collectAsState() ?: remember { mutableStateOf("") }
     val pillarConnected by service?.pillarConnected?.collectAsState() ?: remember { mutableStateOf(false) }
+    val networkState by service?.networkState?.collectAsState()
+        ?: remember { mutableStateOf(com.nexus.mesh.service.NetworkState()) }
 
     val tcpConfig = service?.getTcpConfig()
     var tcpPort by remember { mutableStateOf(tcpConfig?.first?.toString() ?: "4242") }
@@ -93,6 +95,84 @@ fun SettingsScreen(activity: MainActivity, navController: NavController? = null)
                         ) {
                             Text("QR Code")
                         }
+                    }
+                }
+            }
+
+            // Network Interfaces (Dynamic Detection)
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Network Interfaces", style = MaterialTheme.typography.titleMedium)
+                        StatusBadge(active = networkState.hasAnyInternet)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Detected interfaces are used automatically. " +
+                        "UDP multicast runs only on WiFi/Ethernet.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    if (networkState.interfaces.isEmpty()) {
+                        Text(
+                            "No network interfaces detected",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    } else {
+                        networkState.interfaces.forEach { iface ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        iface.type + (iface.name?.let { " ($it)" } ?: ""),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    if (iface.addresses.isNotEmpty()) {
+                                        Text(
+                                            iface.addresses.joinToString(", "),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (iface.isMetered) {
+                                    Surface(
+                                        shape = MaterialTheme.shapes.small,
+                                        color = MaterialTheme.colorScheme.tertiaryContainer
+                                    ) {
+                                        Text(
+                                            "Metered",
+                                            modifier = Modifier.padding(
+                                                horizontal = 6.dp, vertical = 2.dp
+                                            ),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (!networkState.canMulticast && networkState.hasAnyInternet) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "LAN discovery paused (no WiFi/Ethernet)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
                     }
                 }
             }
@@ -243,14 +323,14 @@ fun SettingsScreen(activity: MainActivity, navController: NavController? = null)
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
-                            onClick = { service?.startUdpMulticast() },
+                            onClick = { service?.startUdpMulticast(userTriggered = true) },
                             enabled = !udpActive,
                             modifier = Modifier.weight(1f)
                         ) {
                             Text("Enable")
                         }
                         OutlinedButton(
-                            onClick = { service?.stopUdpMulticast() },
+                            onClick = { service?.stopUdpMulticast(userTriggered = true) },
                             enabled = udpActive,
                             modifier = Modifier.weight(1f)
                         ) {
