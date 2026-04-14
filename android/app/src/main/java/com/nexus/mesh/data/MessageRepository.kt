@@ -26,6 +26,12 @@ class MessageRepository(private val db: NexusDatabase) {
         messageDao.updateDeliveryStatus(nxmMsgId, status)
     }
 
+    suspend fun getUnreadIncomingForPeer(peerAddr: String): List<MessageEntity> =
+        messageDao.getUnreadIncomingForPeer(peerAddr, DeliveryStatus.READ)
+
+    suspend fun markIncomingRead(peerAddr: String) =
+        messageDao.markIncomingRead(peerAddr, DeliveryStatus.READ)
+
     suspend fun findByNxmMsgId(msgId: String): MessageEntity? =
         messageDao.findByNxmMsgId(msgId)
 

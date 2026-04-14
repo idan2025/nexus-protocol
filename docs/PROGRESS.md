@@ -17,6 +17,31 @@ Shorthand:
 
 ## Now in flight
 
+### Android: Delivery receipts wiring `[done 2026-04-14, unverified]`
+- Most infra was already in place: `NxmBuilder.buildAck` / `buildRead`, auto-ACK
+  on TEXT receive (`NexusService.handleNxmMessage` NxmType.TEXT path), ACK/READ
+  handlers updating `deliveryStatus` via `repository.updateDeliveryStatus`, and
+  `ChatBubble` in `ConversationScreen.kt` rendering all 5 states (⏳ / ✓ / ✓✓ /
+  ✓✓ blue / ✗). The gap was that READ receipts were never *sent*.
+- Added (this session):
+  - `MessageDao.getUnreadIncomingForPeer(peerAddr, readStatus)` and
+    `markIncomingRead(peerAddr, readStatus)`.
+  - `MessageRepository.getUnreadIncomingForPeer()` / `markIncomingRead()`.
+  - `NexusService.sendReadReceipts(peerAddr)` — iterates unreceipted incoming
+    messages with an NXM msgId, sends `buildRead(msgId)` to the peer (session
+    first, fallback to plaintext), then flips local `deliveryStatus = READ` and
+    clears the conversation unread count.
+  - `ConversationScreen.kt` — `LaunchedEffect(peerAddr, messages.size)` calls
+    `service.sendReadReceipts(peerAddr)` on open and whenever new messages
+    arrive while the user is viewing.
+- Semantics: we reuse `deliveryStatus` on incoming rows as a "did we already
+  receipt this" flag. Values < READ mean "need to send receipt", READ means
+  "already sent". Outgoing rows continue to use the field as
+  SENDING→SENT→DELIVERED→READ.
+- Out of scope: group messages use sender-keys (no per-message receipts),
+  GroupConversationScreen intentionally omits the indicator.
+- Not yet verified on hardware. CI will type-check on next release tag.
+
 ### Android: Identity backup &amp; restore `[done 2026-04-14, unverified]`
 - Implemented entirely in Kotlin — no JNI/libnexus changes needed. Identity
   bytes come from existing `node.getIdentityBytes()`, encryption uses stock
@@ -39,7 +64,6 @@ Shorthand:
 
 ## Up next (P0 Android)
 
-- Delivery receipts UI — ACK NXM plumbing (task #13).
 - File &amp; image attachments (chunked `nx_node_send_large`).
 - Voice-note recorder (AMR-WB or Opus → NXM VOICE_NOTE field).
 - Pillar inbox pull — needs new protocol exthdr first.

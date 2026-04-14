@@ -60,6 +60,12 @@ fun ConversationScreen(
         }
     }
 
+    // Send READ receipts for incoming messages when the conversation is opened
+    // or when new messages arrive while the user is viewing it.
+    LaunchedEffect(peerAddr, messages.size) {
+        service?.sendReadReceipts(peerAddr)
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(

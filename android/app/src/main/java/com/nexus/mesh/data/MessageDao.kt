@@ -23,6 +23,12 @@ interface MessageDao {
     @Query("UPDATE messages SET deliveryStatus = :status WHERE nxmMsgId = :msgId")
     suspend fun updateDeliveryStatus(msgId: String, status: Int)
 
+    @Query("SELECT * FROM messages WHERE peerAddr = :peerAddr AND groupId IS NULL AND isOutgoing = 0 AND nxmMsgId IS NOT NULL AND deliveryStatus < :readStatus")
+    suspend fun getUnreadIncomingForPeer(peerAddr: String, readStatus: Int): List<MessageEntity>
+
+    @Query("UPDATE messages SET deliveryStatus = :readStatus WHERE peerAddr = :peerAddr AND groupId IS NULL AND isOutgoing = 0 AND deliveryStatus < :readStatus")
+    suspend fun markIncomingRead(peerAddr: String, readStatus: Int)
+
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun deleteById(id: Long)
 

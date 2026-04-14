@@ -768,6 +768,27 @@ class NexusService : Service(), NexusNode.Callback {
         return node.isRunning
     }
 
+    /**
+     * Send READ receipts for every incoming message from [peerAddr] that hasn't
+     * already been receipted, then mark them READ locally so we don't resend.
+     * Called when the user opens a conversation.
+     */
+    fun sendReadReceipts(peerAddr: String) {
+        val destBytes = hexToBytes(peerAddr) ?: return
+        scope.launch {
+            val pending = repository.getUnreadIncomingForPeer(peerAddr)
+            if (pending.isEmpty()) return@launch
+            for (m in pending) {
+                val hex = m.nxmMsgId ?: continue
+                val msgId = hexToBytes(hex) ?: continue
+                val nxm = NxmBuilder.buildRead(msgId)
+                node.sendSession(destBytes, nxm) || node.send(destBytes, nxm)
+            }
+            repository.markIncomingRead(peerAddr)
+            repository.clearUnread(peerAddr)
+        }
+    }
+
     fun sendMessage(dest: String, text: String): Boolean {
         val destBytes = hexToBytes(dest) ?: return false
 
