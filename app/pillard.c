@@ -44,8 +44,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <time.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define PILLARD_DEFAULT_PORT   4242
 #define PILLARD_DEFAULT_IDENT  "/var/lib/nexus/pillar.identity"
@@ -68,7 +72,22 @@ typedef struct {
     int      foreground;         /* systemd Type=simple friendly */
     int      verbose;
     int      vault_mode;         /* use VAULT role (larger mailbox) */
+    uint16_t metrics_port;       /* 0 = off */
+    uint32_t peer_rate_window_s; /* announces-per-window threshold window */
+    uint32_t peer_rate_limit;    /* warn when a peer exceeds this in window */
 } pillard_config_t;
+
+/* Per-peer rate-limit tracker. Keyed by 4-byte short address. Not a hard
+ * drop (forwarding happens deep in the routing layer) -- logged as a WARN
+ * so operators notice noisy peers and can act. */
+#define PILLARD_RATE_SLOTS  64
+typedef struct {
+    uint8_t  addr[NX_SHORT_ADDR_SIZE];
+    uint32_t count;
+    time_t   window_start;
+    int      used;
+    int      warned;             /* one WARN per window */
+} peer_rate_slot_t;
 
 /* ── Globals ─────────────────────────────────────────────────────────── */
 
@@ -82,6 +101,15 @@ static uint64_t g_msgs_data    = 0;
 static uint64_t g_msgs_session = 0;
 static uint64_t g_msgs_group   = 0;
 static uint64_t g_announces    = 0;
+static uint64_t g_rate_warnings = 0;
+static time_t   g_start_time    = 0;
+
+static peer_rate_slot_t g_rate_slots[PILLARD_RATE_SLOTS];
+static pthread_mutex_t  g_rate_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static pthread_t g_metrics_thread;
+static int       g_metrics_running = 0;
+static int       g_metrics_fd = -1;
 
 /* ── Logging ─────────────────────────────────────────────────────────── */
 
@@ -215,16 +243,222 @@ static void on_group(const nx_addr_short_t *gid,
               src->bytes[0], src->bytes[1], src->bytes[2], src->bytes[3], len);
 }
 
+/* Returns 1 if this tick pushed the peer over the per-window threshold
+ * (first crossing triggers a single WARN; further hits are silent until
+ * the window rolls). */
+static int rate_record(const uint8_t addr[NX_SHORT_ADDR_SIZE])
+{
+    if (g_cfg.peer_rate_limit == 0 || g_cfg.peer_rate_window_s == 0) return 0;
+    time_t now = time(NULL);
+    int crossed = 0;
+
+    pthread_mutex_lock(&g_rate_mutex);
+
+    int free_slot = -1;
+    int oldest = -1;
+    time_t oldest_ts = now;
+    for (int i = 0; i < PILLARD_RATE_SLOTS; i++) {
+        if (!g_rate_slots[i].used) { if (free_slot < 0) free_slot = i; continue; }
+        if (memcmp(g_rate_slots[i].addr, addr, NX_SHORT_ADDR_SIZE) == 0) {
+            if ((uint32_t)(now - g_rate_slots[i].window_start)
+                    >= g_cfg.peer_rate_window_s) {
+                g_rate_slots[i].window_start = now;
+                g_rate_slots[i].count = 0;
+                g_rate_slots[i].warned = 0;
+            }
+            g_rate_slots[i].count++;
+            if (!g_rate_slots[i].warned &&
+                g_rate_slots[i].count > g_cfg.peer_rate_limit) {
+                g_rate_slots[i].warned = 1;
+                g_rate_warnings++;
+                crossed = 1;
+            }
+            pthread_mutex_unlock(&g_rate_mutex);
+            return crossed;
+        }
+        if (g_rate_slots[i].window_start < oldest_ts) {
+            oldest_ts = g_rate_slots[i].window_start;
+            oldest = i;
+        }
+    }
+
+    int slot = (free_slot >= 0) ? free_slot : (oldest >= 0 ? oldest : 0);
+    memcpy(g_rate_slots[slot].addr, addr, NX_SHORT_ADDR_SIZE);
+    g_rate_slots[slot].count = 1;
+    g_rate_slots[slot].window_start = now;
+    g_rate_slots[slot].used = 1;
+    g_rate_slots[slot].warned = 0;
+
+    pthread_mutex_unlock(&g_rate_mutex);
+    return 0;
+}
+
 static void on_neighbor(const nx_addr_short_t *addr, nx_role_t role, void *user)
 {
     (void)user;
     g_announces++;
+    if (rate_record(addr->bytes)) {
+        LOG_WARN("peer %02X%02X%02X%02X exceeded %u announces/%us -- noisy",
+                 addr->bytes[0], addr->bytes[1], addr->bytes[2], addr->bytes[3],
+                 g_cfg.peer_rate_limit, g_cfg.peer_rate_window_s);
+    }
     static const char *role_names[] = {
         "LEAF", "RELAY", "GATEWAY", "ANCHOR", "SENTINEL", "PILLAR", "VAULT"
     };
     const char *rn = ((int)role >= 0 && (int)role <= 6) ? role_names[role] : "?";
     LOG_INFO("peer: %02X%02X%02X%02X role=%s",
              addr->bytes[0], addr->bytes[1], addr->bytes[2], addr->bytes[3], rn);
+}
+
+/* ── Metrics HTTP (Prometheus text format) ───────────────────────────── */
+
+static int count_neighbors(void)
+{
+    const nx_route_table_t *rt = nx_node_route_table(&g_node);
+    if (!rt) return 0;
+    int n = 0;
+    for (int i = 0; i < NX_MAX_NEIGHBORS; i++)
+        if (rt->neighbors[i].valid) n++;
+    return n;
+}
+
+static int count_routes(void)
+{
+    const nx_route_table_t *rt = nx_node_route_table(&g_node);
+    if (!rt) return 0;
+    int n = 0;
+    for (int i = 0; i < NX_MAX_ROUTES; i++)
+        if (rt->routes[i].valid) n++;
+    return n;
+}
+
+static size_t metrics_render(char *buf, size_t buflen)
+{
+    uint64_t uptime = (uint64_t)(time(NULL) - g_start_time);
+    return (size_t)snprintf(buf, buflen,
+        "# HELP pillard_uptime_seconds Process uptime\n"
+        "# TYPE pillard_uptime_seconds counter\n"
+        "pillard_uptime_seconds %llu\n"
+        "# HELP pillard_neighbors Current neighbor count\n"
+        "# TYPE pillard_neighbors gauge\n"
+        "pillard_neighbors %d\n"
+        "# HELP pillard_routes Current route count\n"
+        "# TYPE pillard_routes gauge\n"
+        "pillard_routes %d\n"
+        "# HELP pillard_transports Registered transports\n"
+        "# TYPE pillard_transports gauge\n"
+        "pillard_transports %d\n"
+        "# HELP pillard_rx_total Received application packets\n"
+        "# TYPE pillard_rx_total counter\n"
+        "pillard_rx_total{kind=\"data\"} %llu\n"
+        "pillard_rx_total{kind=\"session\"} %llu\n"
+        "pillard_rx_total{kind=\"group\"} %llu\n"
+        "# HELP pillard_announces_total Announce callbacks fired\n"
+        "# TYPE pillard_announces_total counter\n"
+        "pillard_announces_total %llu\n"
+        "# HELP pillard_rate_warnings_total Peers that crossed the rate threshold\n"
+        "# TYPE pillard_rate_warnings_total counter\n"
+        "pillard_rate_warnings_total %llu\n",
+        (unsigned long long)uptime,
+        count_neighbors(), count_routes(), nx_transport_count(),
+        (unsigned long long)g_msgs_data,
+        (unsigned long long)g_msgs_session,
+        (unsigned long long)g_msgs_group,
+        (unsigned long long)g_announces,
+        (unsigned long long)g_rate_warnings);
+}
+
+static void metrics_handle_client(int cfd)
+{
+    char req[512];
+    ssize_t n = recv(cfd, req, sizeof(req) - 1, 0);
+    if (n <= 0) { close(cfd); return; }
+    req[n] = '\0';
+
+    /* Accept only "GET /metrics" (plus "/" returns same). Everything else = 404. */
+    int is_metrics = (strncmp(req, "GET /metrics", 12) == 0) ||
+                     (strncmp(req, "GET / ", 6) == 0);
+
+    if (!is_metrics) {
+        const char *nf = "HTTP/1.0 404 Not Found\r\n"
+                         "Content-Length: 0\r\n\r\n";
+        (void)send(cfd, nf, strlen(nf), MSG_NOSIGNAL);
+        close(cfd);
+        return;
+    }
+
+    char body[2048];
+    size_t blen = metrics_render(body, sizeof(body));
+    char hdr[128];
+    int hlen = snprintf(hdr, sizeof(hdr),
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: text/plain; version=0.0.4\r\n"
+        "Content-Length: %zu\r\n\r\n", blen);
+    (void)send(cfd, hdr, (size_t)hlen, MSG_NOSIGNAL);
+    (void)send(cfd, body, blen, MSG_NOSIGNAL);
+    close(cfd);
+}
+
+static void *metrics_thread_main(void *arg)
+{
+    (void)arg;
+    while (g_metrics_running && g_metrics_fd >= 0) {
+        struct sockaddr_in cli;
+        socklen_t clen = sizeof(cli);
+        int cfd = accept(g_metrics_fd, (struct sockaddr *)&cli, &clen);
+        if (cfd < 0) {
+            if (errno == EINTR) continue;
+            if (!g_metrics_running) break;
+            usleep(100000);
+            continue;
+        }
+        metrics_handle_client(cfd);
+    }
+    return NULL;
+}
+
+static int metrics_start(uint16_t port)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port   = htons(port);
+    sa.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        close(fd);
+        return -1;
+    }
+    if (listen(fd, 4) < 0) {
+        close(fd);
+        return -1;
+    }
+    g_metrics_fd = fd;
+    g_metrics_running = 1;
+    if (pthread_create(&g_metrics_thread, NULL, metrics_thread_main, NULL) != 0) {
+        close(fd);
+        g_metrics_fd = -1;
+        g_metrics_running = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static void metrics_stop(void)
+{
+    if (!g_metrics_running) return;
+    g_metrics_running = 0;
+    if (g_metrics_fd >= 0) {
+        shutdown(g_metrics_fd, SHUT_RDWR);
+        close(g_metrics_fd);
+        g_metrics_fd = -1;
+    }
+    pthread_join(g_metrics_thread, NULL);
 }
 
 /* ── Stats ───────────────────────────────────────────────────────────── */
@@ -265,6 +499,9 @@ static void print_usage(const char *prog)
         "  -m             Also enable UDP multicast (default: off; LAN-only use)\n"
         "  -V             Run as VAULT (role=6) instead of PILLAR (role=5)\n"
         "  -f             Foreground (don't double-fork); use under systemd\n"
+        "  -M PORT        Expose Prometheus /metrics on this TCP port (default: off)\n"
+        "  -r N/WINDOW    Warn when a peer exceeds N announces per WINDOW seconds\n"
+        "                 (e.g. '-r 60/60' = 60/min). 0 disables (default).\n"
         "  -v             Verbose debug logging\n"
         "  -h             Show this help\n"
         "\n"
@@ -320,7 +557,7 @@ int main(int argc, char **argv)
     resolve_default_identity_path(g_cfg.identity_file, sizeof(g_cfg.identity_file));
 
     int opt;
-    while ((opt = getopt(argc, argv, "p:i:c:mVfvh")) != -1) {
+    while ((opt = getopt(argc, argv, "p:i:c:mVfM:r:vh")) != -1) {
         switch (opt) {
         case 'p':
             g_cfg.listen_port = (uint16_t)atoi(optarg);
@@ -352,6 +589,17 @@ int main(int argc, char **argv)
         case 'm': g_cfg.enable_multicast = 1; break;
         case 'V': g_cfg.vault_mode = 1; break;
         case 'f': g_cfg.foreground = 1; break;
+        case 'M': g_cfg.metrics_port = (uint16_t)atoi(optarg); break;
+        case 'r': {
+            char *slash = strchr(optarg, '/');
+            if (!slash) {
+                fprintf(stderr, "Invalid -r %s (want N/WINDOW)\n", optarg);
+                return 1;
+            }
+            g_cfg.peer_rate_limit = (uint32_t)atoi(optarg);
+            g_cfg.peer_rate_window_s = (uint32_t)atoi(slash + 1);
+            break;
+        }
         case 'v': g_cfg.verbose = 1; break;
         case 'h': print_usage(argv[0]); return 0;
         default:  print_usage(argv[0]); return 1;
@@ -461,8 +709,25 @@ int main(int argc, char **argv)
         }
     }
 
+    /* ── Metrics HTTP (optional) ─────────────────────────────────────── */
+
+    if (g_cfg.metrics_port > 0) {
+        if (metrics_start(g_cfg.metrics_port) == 0) {
+            LOG_INFO("metrics listening on :%u /metrics", g_cfg.metrics_port);
+        } else {
+            LOG_WARN("metrics bind on :%u failed: %s",
+                     g_cfg.metrics_port, strerror(errno));
+        }
+    }
+
+    if (g_cfg.peer_rate_limit > 0) {
+        LOG_INFO("peer rate-warn threshold: %u announces / %us",
+                 g_cfg.peer_rate_limit, g_cfg.peer_rate_window_s);
+    }
+
     /* ── Announce + event loop ───────────────────────────────────────── */
 
+    g_start_time = time(NULL);
     nx_node_announce(&g_node);
     LOG_INFO("ready");
 
@@ -491,6 +756,7 @@ int main(int argc, char **argv)
 
     LOG_INFO("shutting down");
     dump_stats();
+    metrics_stop();
     nx_node_stop(&g_node);
     LOG_INFO("stopped");
     return 0;
