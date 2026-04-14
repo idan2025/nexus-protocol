@@ -1,5 +1,6 @@
 package com.nexus.mesh.ui
 
+import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -7,8 +8,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.nexus.mesh.data.IdentityBackup
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -31,6 +35,10 @@ fun SettingsScreen(activity: MainActivity, navController: NavController? = null)
     var editPillars by remember(pillarList) { mutableStateOf(pillarList) }
     var showAddPillar by remember { mutableStateOf(false) }
     var newPillar by remember { mutableStateOf("") }
+    var showExportDialog by remember { mutableStateOf(false) }
+    var showImportDialog by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
 
     Scaffold(
         topBar = {
@@ -95,6 +103,34 @@ fun SettingsScreen(activity: MainActivity, navController: NavController? = null)
                         ) {
                             Text("QR Code")
                         }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    Divider()
+                    Spacer(Modifier.height(12.dp))
+                    Text("Backup", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Encrypted export of your keys. Required to keep the same " +
+                            "address on a new device.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { showExportDialog = true },
+                            modifier = Modifier.weight(1f),
+                            enabled = service != null
+                        ) { Text("Export") }
+                        OutlinedButton(
+                            onClick = { showImportDialog = true },
+                            modifier = Modifier.weight(1f),
+                            enabled = service != null
+                        ) { Text("Import") }
                     }
                 }
             }
@@ -383,6 +419,168 @@ fun SettingsScreen(activity: MainActivity, navController: NavController? = null)
             Spacer(Modifier.height(16.dp))
         }
     }
+
+    if (showExportDialog) {
+        ExportIdentityDialog(
+            onDismiss = { showExportDialog = false },
+            onExport = { passphrase ->
+                val blob = service?.exportIdentity(passphrase.toCharArray())
+                if (blob != null) {
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "NEXUS Identity Backup")
+                        putExtra(Intent.EXTRA_TEXT, blob)
+                    }
+                    context.startActivity(Intent.createChooser(intent, "Share identity backup"))
+                }
+                showExportDialog = false
+            }
+        )
+    }
+
+    if (showImportDialog) {
+        ImportIdentityDialog(
+            onDismiss = { showImportDialog = false },
+            onImport = { blob, passphrase ->
+                try {
+                    val ok = service?.importIdentity(blob, passphrase.toCharArray()) ?: false
+                    if (ok) showImportDialog = false
+                    ok to null
+                } catch (e: IdentityBackup.BadPassphraseException) {
+                    false to "Wrong passphrase"
+                } catch (e: IdentityBackup.BadBackupException) {
+                    false to (e.message ?: "Invalid backup")
+                } catch (e: Exception) {
+                    false to (e.message ?: "Import failed")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ExportIdentityDialog(
+    onDismiss: () -> Unit,
+    onExport: (String) -> Unit,
+) {
+    var passphrase by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    val valid = passphrase.length >= 8 && passphrase == confirm
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Export Identity") },
+        text = {
+            Column {
+                Text(
+                    "Choose a passphrase (8+ characters). You'll need it to restore " +
+                        "on another device. Losing it means losing the backup.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = passphrase,
+                    onValueChange = { passphrase = it },
+                    label = { Text("Passphrase") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = confirm,
+                    onValueChange = { confirm = it },
+                    label = { Text("Confirm passphrase") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    isError = confirm.isNotEmpty() && confirm != passphrase,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onExport(passphrase) },
+                enabled = valid
+            ) { Text("Export") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun ImportIdentityDialog(
+    onDismiss: () -> Unit,
+    onImport: (blob: String, passphrase: String) -> Pair<Boolean, String?>,
+) {
+    var blob by remember { mutableStateOf("") }
+    var passphrase by remember { mutableStateOf("") }
+    var confirmReplace by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Import Identity") },
+        text = {
+            Column {
+                Text(
+                    "This replaces your current identity. Your address will change " +
+                        "to match the backup. Existing conversations remain but peers " +
+                        "may need to re-announce.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = blob,
+                    onValueChange = { blob = it; error = null },
+                    label = { Text("Backup blob") },
+                    placeholder = { Text("Paste the exported text") },
+                    maxLines = 4,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = passphrase,
+                    onValueChange = { passphrase = it; error = null },
+                    label = { Text("Passphrase") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = confirmReplace,
+                        onCheckedChange = { confirmReplace = it }
+                    )
+                    Text("Replace current identity", style = MaterialTheme.typography.bodySmall)
+                }
+                if (error != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        error!!,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val (ok, err) = onImport(blob.trim(), passphrase)
+                    if (!ok) error = err ?: "Import failed"
+                },
+                enabled = blob.isNotBlank() && passphrase.isNotEmpty() && confirmReplace
+            ) { Text("Import") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable

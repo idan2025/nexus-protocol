@@ -729,6 +729,45 @@ class NexusService : Service(), NexusNode.Callback {
     fun getConversations(): Flow<List<ConversationEntity>> =
         repository.getConversations()
 
+    /**
+     * Export the current identity as a passphrase-encrypted Base64 blob.
+     * Returns null if the node isn't running yet.
+     */
+    fun exportIdentity(passphrase: CharArray): String? {
+        val bytes = node.getIdentityBytes() ?: return null
+        return try {
+            IdentityBackup.encrypt(bytes, passphrase)
+        } finally {
+            passphrase.fill('\u0000')
+        }
+    }
+
+    /**
+     * Import an identity backup, replacing the current identity.
+     * Stops the node, overwrites stored identity, restarts the node.
+     * Returns true on success. Throws IdentityBackup.BadBackupException /
+     * BadPassphraseException on bad input.
+     */
+    fun importIdentity(blob: String, passphrase: CharArray): Boolean {
+        val plain = try {
+            IdentityBackup.decrypt(blob, passphrase)
+        } finally {
+            passphrase.fill('\u0000')
+        }
+
+        pollJob?.cancel()
+        pollJob = null
+        node.stop()
+
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val encoded = android.util.Base64.encodeToString(plain, android.util.Base64.DEFAULT)
+        prefs.edit().putString(KEY_IDENTITY, encoded).apply()
+        plain.fill(0)
+
+        startNode()
+        return node.isRunning
+    }
+
     fun sendMessage(dest: String, text: String): Boolean {
         val destBytes = hexToBytes(dest) ?: return false
 
