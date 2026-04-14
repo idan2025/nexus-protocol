@@ -33,9 +33,41 @@ typedef struct {
     float    tcxo_voltage;     /* TCXO voltage via DIO3 (0=no TCXO, 1.6 RAK4631, 1.8 WIO-SX1262) */
 } nx_lora_config_t;
 
+/* ── Regional default frequency ──────────────────────────────────────
+ *
+ * Pass -DNX_LORA_REGION=<tag> at build time to set the default frequency
+ * for this build. Tags match Meshtastic region names so users and
+ * firmware targets stay aligned. Channel choice is the Meshtastic "LongFast"
+ * mid-slot where applicable, which avoids the low/high edges where LoRaWAN
+ * gateways tend to listen.
+ *
+ * Users can still override at runtime via BLE config / nexus-cli.
+ *   US915 (default), EU868, EU433, CN470, AS923, IN865, AU915, KR920, TH923
+ */
+#if defined(NX_LORA_REGION_EU868)
+  #define NX_LORA_DEFAULT_FREQ_HZ  869525000u
+#elif defined(NX_LORA_REGION_EU433)
+  #define NX_LORA_DEFAULT_FREQ_HZ  433175000u
+#elif defined(NX_LORA_REGION_CN470)
+  #define NX_LORA_DEFAULT_FREQ_HZ  470000000u
+#elif defined(NX_LORA_REGION_AS923)
+  #define NX_LORA_DEFAULT_FREQ_HZ  923625000u
+#elif defined(NX_LORA_REGION_IN865)
+  #define NX_LORA_DEFAULT_FREQ_HZ  866375000u
+#elif defined(NX_LORA_REGION_AU915)
+  #define NX_LORA_DEFAULT_FREQ_HZ  917625000u
+#elif defined(NX_LORA_REGION_KR920)
+  #define NX_LORA_DEFAULT_FREQ_HZ  921875000u
+#elif defined(NX_LORA_REGION_TH923)
+  #define NX_LORA_DEFAULT_FREQ_HZ  923125000u
+#else
+  /* NX_LORA_REGION_US915 -- default */
+  #define NX_LORA_DEFAULT_FREQ_HZ  906875000u
+#endif
+
 /* Sensible defaults for NEXUS mesh */
 #define NX_LORA_CONFIG_DEFAULT { \
-    .frequency_hz     = 915000000, \
+    .frequency_hz     = NX_LORA_DEFAULT_FREQ_HZ, \
     .bandwidth_hz     = 250000,    \
     .spreading_factor = 9,         \
     .coding_rate      = 5,         \

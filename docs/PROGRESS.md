@@ -17,6 +17,20 @@ Shorthand:
 
 ## Now in flight
 
+### Firmware: region-aware default LoRa frequency `[done 2026-04-14]`
+- `lib/include/nexus/lora_radio.h`: `NX_LORA_CONFIG_DEFAULT` now pulls
+  `frequency_hz` from a compile-time-selectable `NX_LORA_DEFAULT_FREQ_HZ`
+  macro driven by region tokens: `NX_LORA_REGION_US915` (default),
+  `_EU868`, `_EU433`, `_CN470`, `_AS923`, `_IN865`, `_AU915`, `_KR920`,
+  `_TH923`. Channel frequencies match Meshtastic "LongFast" mid-slot
+  (e.g. EU868=869.525MHz, US915=906.875MHz) to stay clear of LoRaWAN
+  gateway low-edge listening.
+- Build as `pio run -e xiao_nrf52840 -- -DNX_LORA_REGION_EU868` or add
+  to `platformio.ini build_flags`. All existing builds default to US915
+  (no behavior change for existing users). Runtime override via BLE
+  config / nexus-cli still works as before.
+- Desktop rebuild passes (`cmake .. && make`).
+
 ### Android: Delivery receipts wiring `[done 2026-04-14, unverified]`
 - Most infra was already in place: `NxmBuilder.buildAck` / `buildRead`, auto-ACK
   on TEXT receive (`NexusService.handleNxmMessage` NxmType.TEXT path), ACK/READ
