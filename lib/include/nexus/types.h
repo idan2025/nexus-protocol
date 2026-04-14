@@ -92,7 +92,10 @@ typedef enum {
 #define NX_FLAG_RTYPE_MASK   0x03
 
 /* ── Extended Header Types ──────────────────────────────────────────── */
-#define NX_EXTHDR_FRAGMENT  0x01
+#define NX_EXTHDR_FRAGMENT   0x01
+/* 0x10-0x12 defined in session.h (SESSION_SUB_*) */
+/* 0x20 defined in group.h (GROUP_MSG) */
+#define NX_EXTHDR_INBOX_REQ  0x30  /* Client asking a pillar/anchor to replay stored pkts for src */
 
 /* ── Addresses ───────────────────────────────────────────────────────── */
 typedef struct {

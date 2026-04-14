@@ -85,6 +85,9 @@ class NexusService : Service(), NexusNode.Callback {
     lateinit var repository: MessageRepository
         private set
 
+    // Dedup set for inbox-pull requests (once per neighbor per session)
+    private val inboxRequested = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     // --- Data models (kept for backward compat with UI references) ---
 
     data class Neighbor(val addr: String, val role: Int)
@@ -549,6 +552,14 @@ class NexusService : Service(), NexusNode.Callback {
         existing.removeAll { it.addr == addrHex }
         existing.add(Neighbor(addrHex, role))
         _neighbors.value = existing
+
+        // Pull any stored-and-forward packets held for us by pillars/vaults/anchors.
+        // Request once per neighbor per session.
+        if (role >= NexusNode.ROLE_ANCHOR && inboxRequested.add(addrHex)) {
+            if (node.requestInbox(addr)) {
+                Log.i(TAG, "Inbox pull requested from $addrHex (role=$role)")
+            }
+        }
     }
 
     override fun onSession(src: ByteArray, data: ByteArray) {
@@ -811,6 +822,106 @@ class NexusService : Service(), NexusNode.Callback {
                     deliveryStatus = DeliveryStatus.SENT,
                     nxmMsgId = msgIdHex,
                     messageType = MessageType.TEXT
+                ))
+            }
+        }
+        return ok
+    }
+
+    /**
+     * Send an image. [data] is the full encoded JPEG/PNG bytes — caller is
+     * responsible for downscaling before calling (max NX_FRAG_MAX_MESSAGE
+     * minus NXM envelope, ~3.5 kB of attachment in practice).
+     */
+    fun sendImage(dest: String, filename: String, data: ByteArray,
+                  thumbnail: ByteArray? = null): Boolean {
+        val destBytes = hexToBytes(dest) ?: return false
+        val nxmData = NxmBuilder.buildImage(filename, data, thumbnail)
+        val ok = node.sendLarge(destBytes, nxmData)
+        if (ok) {
+            scope.launch {
+                val dir = getExternalFilesDir("nexus_media")
+                var mediaPath: String? = null
+                if (dir != null) {
+                    dir.mkdirs()
+                    val f = java.io.File(dir, "${System.currentTimeMillis()}_$filename")
+                    f.writeBytes(data)
+                    mediaPath = f.absolutePath
+                }
+                repository.insertMessage(MessageEntity(
+                    peerAddr = dest,
+                    text = "Image: $filename",
+                    timestamp = System.currentTimeMillis(),
+                    isOutgoing = true,
+                    isDirect = node.isNeighbor(destBytes) >= 0,
+                    deliveryStatus = DeliveryStatus.SENT,
+                    messageType = MessageType.IMAGE,
+                    mediaPath = mediaPath,
+                    fileName = filename,
+                    mimeType = "image/jpeg"
+                ))
+            }
+        }
+        return ok
+    }
+
+    fun sendFile(dest: String, filename: String, mimetype: String,
+                 data: ByteArray): Boolean {
+        val destBytes = hexToBytes(dest) ?: return false
+        val nxmData = NxmBuilder.buildFile(filename, mimetype, data)
+        val ok = node.sendLarge(destBytes, nxmData)
+        if (ok) {
+            scope.launch {
+                val dir = getExternalFilesDir("nexus_media")
+                var mediaPath: String? = null
+                if (dir != null) {
+                    dir.mkdirs()
+                    val f = java.io.File(dir, "${System.currentTimeMillis()}_$filename")
+                    f.writeBytes(data)
+                    mediaPath = f.absolutePath
+                }
+                repository.insertMessage(MessageEntity(
+                    peerAddr = dest,
+                    text = "File: $filename",
+                    timestamp = System.currentTimeMillis(),
+                    isOutgoing = true,
+                    isDirect = node.isNeighbor(destBytes) >= 0,
+                    deliveryStatus = DeliveryStatus.SENT,
+                    messageType = MessageType.FILE,
+                    mediaPath = mediaPath,
+                    fileName = filename,
+                    mimeType = mimetype
+                ))
+            }
+        }
+        return ok
+    }
+
+    fun sendVoice(dest: String, data: ByteArray, durationSec: Int,
+                  codec: Int = 1): Boolean {
+        val destBytes = hexToBytes(dest) ?: return false
+        val nxmData = NxmBuilder.buildVoice(data, durationSec, codec)
+        val ok = node.sendLarge(destBytes, nxmData)
+        if (ok) {
+            scope.launch {
+                val dir = getExternalFilesDir("nexus_media")
+                var mediaPath: String? = null
+                if (dir != null) {
+                    dir.mkdirs()
+                    val f = java.io.File(dir, "${System.currentTimeMillis()}_voice.amr")
+                    f.writeBytes(data)
+                    mediaPath = f.absolutePath
+                }
+                repository.insertMessage(MessageEntity(
+                    peerAddr = dest,
+                    text = "Voice note (${durationSec}s)",
+                    timestamp = System.currentTimeMillis(),
+                    isOutgoing = true,
+                    isDirect = node.isNeighbor(destBytes) >= 0,
+                    deliveryStatus = DeliveryStatus.SENT,
+                    messageType = MessageType.VOICE_NOTE,
+                    mediaPath = mediaPath,
+                    duration = durationSec
                 ))
             }
         }

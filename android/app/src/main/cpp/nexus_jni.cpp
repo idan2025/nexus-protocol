@@ -290,6 +290,26 @@ Java_com_nexus_mesh_service_NexusNode_nativeSend(JNIEnv *env, jobject thiz,
 }
 
 JNIEXPORT jboolean JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeSendLarge(JNIEnv *env, jobject thiz,
+                                                      jbyteArray dest,
+                                                      jbyteArray data)
+{
+    (void)thiz;
+    if (!g_running) return JNI_FALSE;
+
+    nx_addr_short_t dst;
+    env->GetByteArrayRegion(dest, 0, 4, (jbyte *)dst.bytes);
+
+    jsize len = env->GetArrayLength(data);
+    jbyte *buf = env->GetByteArrayElements(data, nullptr);
+
+    nx_err_t err = nx_node_send_large(&g_node, &dst, (uint8_t *)buf, (size_t)len);
+    env->ReleaseByteArrayElements(data, buf, JNI_ABORT);
+
+    return (err == NX_OK) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
 Java_com_nexus_mesh_service_NexusNode_nativeSessionStart(JNIEnv *env,
                                                           jobject thiz,
                                                           jbyteArray dest)
@@ -330,6 +350,18 @@ Java_com_nexus_mesh_service_NexusNode_nativeAnnounce(JNIEnv *env, jobject thiz)
     (void)env; (void)thiz;
     if (!g_running) return;
     nx_node_announce(&g_node);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeRequestInbox(JNIEnv *env, jobject thiz,
+                                                         jbyteArray target)
+{
+    (void)thiz;
+    if (!g_running) return JNI_FALSE;
+
+    nx_addr_short_t t;
+    env->GetByteArrayRegion(target, 0, 4, (jbyte *)t.bytes);
+    return (nx_node_request_inbox(&g_node, &t) == NX_OK) ? JNI_TRUE : JNI_FALSE;
 }
 
 /* Inject raw packet data from BLE transport (received from ESP32) */

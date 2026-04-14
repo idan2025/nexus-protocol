@@ -1,5 +1,15 @@
 package com.nexus.mesh.ui
 
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaPlayer
+import android.media.MediaRecorder
+import android.net.Uri
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -11,18 +21,30 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.navigation.NavController
 import com.nexus.mesh.data.DeliveryStatus
 import com.nexus.mesh.data.MessageEntity
+import com.nexus.mesh.data.MessageType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -42,9 +64,54 @@ fun ConversationScreen(
     val nickname = conv?.nickname
     val displayName = nickname ?: peerAddr
 
+    val context = LocalContext.current
+    val coScope = rememberCoroutineScope()
+
     var messageText by remember { mutableStateOf("") }
     var sendError by remember { mutableStateOf(false) }
+    var showAttachMenu by remember { mutableStateOf(false) }
+    var showVoiceRecorder by remember { mutableStateOf(false) }
+    var attachError by remember { mutableStateOf<String?>(null) }
     var showNicknameDialog by remember { mutableStateOf(false) }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            coScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    loadAndDownscaleImage(context, uri)
+                }
+                if (result == null) {
+                    attachError = "Couldn't read or decode image"
+                } else {
+                    val (bytes, name) = result
+                    val ok = service?.sendImage(peerAddr, name, bytes)
+                    if (ok != true) attachError = "Send failed (too big or peer unreachable)"
+                }
+            }
+        }
+    }
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            coScope.launch {
+                val result = withContext(Dispatchers.IO) { loadFile(context, uri) }
+                if (result == null) {
+                    attachError = "Couldn't read file"
+                } else {
+                    val (bytes, name, mime) = result
+                    if (bytes.size > 3500) {
+                        attachError = "File too big (${bytes.size}B, max ~3.5KB)"
+                    } else {
+                        val ok = service?.sendFile(peerAddr, name, mime, bytes)
+                        if (ok != true) attachError = "Send failed"
+                    }
+                }
+            }
+        }
+    }
     var showRouteInfo by remember { mutableStateOf(false) }
     var showMenuExpanded by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
@@ -225,6 +292,17 @@ fun ConversationScreen(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                 )
             }
+            val err = attachError
+            if (err != null) {
+                Text(
+                    err,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clickable { attachError = null }
+                )
+            }
 
             Surface(
                 tonalElevation = 3.dp,
@@ -236,6 +314,32 @@ fun ConversationScreen(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Box {
+                        IconButton(onClick = { showAttachMenu = true }) {
+                            Icon(Icons.Default.Add, "Attach")
+                        }
+                        DropdownMenu(
+                            expanded = showAttachMenu,
+                            onDismissRequest = { showAttachMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Image") },
+                                onClick = {
+                                    showAttachMenu = false
+                                    attachError = null
+                                    imagePicker.launch("image/*")
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("File") },
+                                onClick = {
+                                    showAttachMenu = false
+                                    attachError = null
+                                    filePicker.launch("*/*")
+                                }
+                            )
+                        }
+                    }
                     OutlinedTextField(
                         value = messageText,
                         onValueChange = {
@@ -248,7 +352,16 @@ fun ConversationScreen(
                         maxLines = 4,
                         shape = RoundedCornerShape(24.dp)
                     )
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(4.dp))
+                    if (messageText.isBlank()) {
+                        IconButton(onClick = {
+                            attachError = null
+                            showVoiceRecorder = true
+                        }) {
+                            Icon(Icons.Default.Mic, "Record voice note")
+                        }
+                    }
+                    Spacer(Modifier.width(4.dp))
                     FilledIconButton(
                         onClick = {
                             if (messageText.isNotBlank()) {
@@ -473,6 +586,21 @@ fun ConversationScreen(
             }
         )
     }
+
+    if (showVoiceRecorder) {
+        VoiceRecorderDialog(
+            onDismiss = { showVoiceRecorder = false },
+            onSend = { data, durSec ->
+                showVoiceRecorder = false
+                if (data.size > 3500) {
+                    attachError = "Voice note too long (${data.size}B). Keep under ~5s."
+                } else {
+                    val ok = service?.sendVoice(peerAddr, data, durSec)
+                    if (ok != true) attachError = "Send failed"
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -534,6 +662,7 @@ private fun ChatBubble(
                 )
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
+                MediaAttachment(msg, textColor)
                 Text(
                     msg.text,
                     color = textColor,
@@ -591,4 +720,290 @@ private fun ChatBubble(
             }
         }
     }
+}
+
+/* ─── Media rendering & attachment helpers ──────────────────────────── */
+
+@Composable
+private fun MediaAttachment(msg: MessageEntity, tint: androidx.compose.ui.graphics.Color) {
+    val path = msg.mediaPath ?: return
+    val ctx = LocalContext.current
+    when (msg.messageType) {
+        MessageType.IMAGE -> {
+            val bmp = remember(path) {
+                runCatching { BitmapFactory.decodeFile(path) }.getOrNull()
+            }
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = msg.fileName ?: "image",
+                    modifier = Modifier
+                        .widthIn(max = 260.dp)
+                        .heightIn(max = 260.dp)
+                        .padding(bottom = 6.dp)
+                        .clickable { openFileExternally(ctx, path, msg.mimeType ?: "image/*") }
+                )
+            }
+        }
+        MessageType.FILE -> {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .padding(bottom = 6.dp)
+                    .clickable { openFileExternally(ctx, path, msg.mimeType ?: "*/*") }
+            ) {
+                Icon(Icons.Default.Info, contentDescription = "file", tint = tint)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    msg.fileName ?: "file",
+                    color = tint,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+        MessageType.VOICE_NOTE -> {
+            var playing by remember { mutableStateOf(false) }
+            val player = remember { mutableStateOf<MediaPlayer?>(null) }
+            DisposableEffect(Unit) {
+                onDispose {
+                    player.value?.release()
+                    player.value = null
+                }
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .padding(bottom = 6.dp)
+                    .clickable {
+                        if (playing) {
+                            player.value?.stop()
+                            player.value?.release()
+                            player.value = null
+                            playing = false
+                        } else {
+                            val mp = MediaPlayer().apply {
+                                setDataSource(path)
+                                setOnCompletionListener {
+                                    playing = false
+                                    it.release()
+                                    if (player.value === it) player.value = null
+                                }
+                                prepare()
+                                start()
+                            }
+                            player.value = mp
+                            playing = true
+                        }
+                    }
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = "play", tint = tint)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "${msg.duration}s",
+                    color = tint,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+private fun openFileExternally(ctx: android.content.Context, path: String, mime: String) {
+    val file = File(path)
+    val uri = FileProvider.getUriForFile(
+        ctx, "${ctx.packageName}.fileprovider", file
+    )
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, mime)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching { ctx.startActivity(intent) }
+}
+
+/**
+ * Decode an image from a content URI, downscale so the long edge is ≤1024px,
+ * recompress as JPEG until it fits in ~3300 bytes (leaves headroom for NXM).
+ */
+private fun loadAndDownscaleImage(
+    ctx: android.content.Context,
+    uri: Uri
+): Pair<ByteArray, String>? {
+    val cr = ctx.contentResolver
+    val name = queryDisplayName(ctx, uri) ?: "image.jpg"
+
+    // First pass: bounds only
+    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+    val srcW = opts.outWidth
+    val srcH = opts.outHeight
+    if (srcW <= 0 || srcH <= 0) return null
+
+    val maxEdge = 1024
+    var sample = 1
+    while (srcW / sample > maxEdge * 2 || srcH / sample > maxEdge * 2) sample *= 2
+
+    val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample }
+    val bmp = cr.openInputStream(uri)?.use {
+        BitmapFactory.decodeStream(it, null, decodeOpts)
+    } ?: return null
+
+    val scale = minOf(
+        maxEdge.toFloat() / bmp.width,
+        maxEdge.toFloat() / bmp.height,
+        1f
+    )
+    val scaled = if (scale < 1f) {
+        Bitmap.createScaledBitmap(
+            bmp,
+            (bmp.width * scale).toInt(),
+            (bmp.height * scale).toInt(),
+            true
+        ).also { if (it !== bmp) bmp.recycle() }
+    } else bmp
+
+    // Compress, stepping quality down until we fit the fragment budget.
+    var quality = 80
+    val cap = 3300
+    var bytes: ByteArray
+    while (true) {
+        val baos = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
+        bytes = baos.toByteArray()
+        if (bytes.size <= cap || quality <= 20) break
+        quality -= 15
+    }
+    scaled.recycle()
+    if (bytes.size > cap) return null
+    return bytes to name
+}
+
+private fun loadFile(
+    ctx: android.content.Context,
+    uri: Uri
+): Triple<ByteArray, String, String>? {
+    val cr = ctx.contentResolver
+    val name = queryDisplayName(ctx, uri) ?: "file"
+    val mime = cr.getType(uri) ?: "application/octet-stream"
+    val bytes = cr.openInputStream(uri)?.use { it.readBytes() } ?: return null
+    return Triple(bytes, name, mime)
+}
+
+private fun queryDisplayName(ctx: android.content.Context, uri: Uri): String? {
+    val cr = ctx.contentResolver
+    cr.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+             null, null, null)?.use { c ->
+        if (c.moveToFirst()) {
+            val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0) return c.getString(idx)
+        }
+    }
+    return uri.lastPathSegment
+}
+
+/* ─── Voice recorder ──────────────────────────────────────────────────── */
+
+@Composable
+private fun VoiceRecorderDialog(
+    onDismiss: () -> Unit,
+    onSend: (ByteArray, Int) -> Unit
+) {
+    val ctx = LocalContext.current
+    var recording by remember { mutableStateOf(false) }
+    var elapsed by remember { mutableStateOf(0) }
+    var err by remember { mutableStateOf<String?>(null) }
+    val fileRef = remember { mutableStateOf<File?>(null) }
+    val recorderRef = remember { mutableStateOf<MediaRecorder?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            recorderRef.value?.runCatching { stop() }
+            recorderRef.value?.release()
+            recorderRef.value = null
+        }
+    }
+
+    LaunchedEffect(recording) {
+        if (recording) {
+            while (recording && elapsed < 60) {
+                kotlinx.coroutines.delay(1000)
+                elapsed++
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (recording) "Recording…" else "Voice note") },
+        text = {
+            Column {
+                Text(
+                    if (recording) "${elapsed}s (tap Stop when done)"
+                    else "Tap Record to start. Keep it short — the mesh payload " +
+                        "limits voice notes to a few seconds of AMR-NB audio.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                err?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error,
+                         style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            if (!recording) {
+                TextButton(onClick = {
+                    val dir = ctx.cacheDir
+                    val f = File(dir, "voice_${System.currentTimeMillis()}.amr")
+                    val rec = if (Build.VERSION.SDK_INT >= 31)
+                        MediaRecorder(ctx) else @Suppress("DEPRECATION") MediaRecorder()
+                    try {
+                        rec.setAudioSource(MediaRecorder.AudioSource.MIC)
+                        rec.setOutputFormat(MediaRecorder.OutputFormat.AMR_NB)
+                        rec.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB)
+                        rec.setAudioSamplingRate(8000)
+                        rec.setAudioEncodingBitRate(4750)
+                        rec.setMaxDuration(60_000)
+                        rec.setOutputFile(f.absolutePath)
+                        rec.prepare()
+                        rec.start()
+                        recorderRef.value = rec
+                        fileRef.value = f
+                        elapsed = 0
+                        recording = true
+                        err = null
+                    } catch (e: Exception) {
+                        err = "Mic unavailable: ${e.message}"
+                        rec.runCatching { release() }
+                    }
+                }) { Text("Record") }
+            } else {
+                TextButton(onClick = {
+                    val rec = recorderRef.value
+                    val f = fileRef.value
+                    recording = false
+                    try { rec?.stop() } catch (_: Exception) {}
+                    rec?.release()
+                    recorderRef.value = null
+                    if (f != null && f.exists()) {
+                        val bytes = f.readBytes()
+                        f.delete()
+                        if (bytes.isEmpty()) {
+                            err = "Empty recording"
+                        } else {
+                            onSend(bytes, elapsed.coerceAtLeast(1))
+                        }
+                    }
+                }) { Text("Stop & Send") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                recorderRef.value?.runCatching { stop() }
+                recorderRef.value?.release()
+                recorderRef.value = null
+                fileRef.value?.delete()
+                onDismiss()
+            }) { Text("Cancel") }
+        }
+    )
 }

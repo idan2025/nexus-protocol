@@ -123,6 +123,14 @@ nx_err_t nx_node_send_large(nx_node_t *node,
 /* Broadcast an announcement on all transports. */
 nx_err_t nx_node_announce(nx_node_t *node);
 
+/*
+ * Ask a pillar/anchor to replay any stored-and-forward packets it is
+ * holding for this node. Sends an EXTHDR_INBOX_REQ packet to [target].
+ * Targets with role < RELAY or an empty mailbox will silently ignore it.
+ */
+nx_err_t nx_node_request_inbox(nx_node_t *node,
+                               const nx_addr_short_t *target);
+
 /* ── Session API ─────────────────────────────────────────────────────── */
 
 /* Max plaintext per session message: 242 - 1(type) - 80(overhead) = 161 */

@@ -140,6 +140,7 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.POST_NOTIFICATIONS,
             Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO,
         )
         for (p in perms) {
             if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {

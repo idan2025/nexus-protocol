@@ -391,6 +391,21 @@ static void handle_data(nx_node_t *node, const nx_packet_t *pkt,
             case NX_EXTHDR_GROUP_MSG:
                 handle_group_msg(node, pkt);
                 break;
+            case NX_EXTHDR_INBOX_REQ: {
+                /* Peer is asking us to replay stored-and-forward traffic for
+                 * them. Iterate anchor mailbox, re-transmit each matching
+                 * packet via the normal bridge path. Retrieval removes the
+                 * packet from the mailbox (delivered once). */
+                if (node->anchor.max_slots <= 0) break;
+                nx_packet_t stored[NX_ANCHOR_MAX_PER_DEST];
+                int n = nx_anchor_retrieve(&node->anchor,
+                                           &pkt->header.src,
+                                           stored, NX_ANCHOR_MAX_PER_DEST);
+                for (int i = 0; i < n; i++) {
+                    (void)transmit_bridge(&stored[i], -1);
+                }
+                break;
+            }
             }
         } else {
             deliver_data(node, &pkt->header.src,
@@ -590,6 +605,31 @@ nx_err_t nx_node_send_raw(nx_node_t *node,
     pkt.header.payload_len = (uint8_t)len;
 
     memcpy(pkt.payload, data, len);
+
+    return transmit_all(&pkt);
+}
+
+nx_err_t nx_node_request_inbox(nx_node_t *node,
+                               const nx_addr_short_t *target)
+{
+    if (!node || !target) return NX_ERR_INVALID_ARG;
+
+    nx_packet_t pkt;
+    memset(&pkt, 0, sizeof(pkt));
+
+    const nx_route_t *route = nx_route_lookup(&node->route_table, target);
+    nx_rtype_t rtype = route ? NX_RTYPE_ROUTED : NX_RTYPE_FLOOD;
+
+    /* has_exthdr=true so the receiver enters the exthdr switch */
+    pkt.header.flags = nx_packet_flags(false, true, NX_PRIO_NORMAL,
+                                       NX_PTYPE_DATA, rtype);
+    pkt.header.hop_count = 0;
+    pkt.header.ttl = node->config.default_ttl;
+    pkt.header.dst = *target;
+    pkt.header.src = node->identity.short_addr;
+    pkt.header.seq_id = node->next_seq_id++;
+    pkt.header.payload_len = 1;
+    pkt.payload[0] = NX_EXTHDR_INBOX_REQ;
 
     return transmit_all(&pkt);
 }

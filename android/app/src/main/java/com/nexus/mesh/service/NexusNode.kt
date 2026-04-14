@@ -77,8 +77,19 @@ class NexusNode {
         return isRunning && nativeSendSession(dest, data)
     }
 
+    /** Auto-fragmenting send (up to NX_FRAG_MAX_MESSAGE = 3808 bytes). */
+    fun sendLarge(dest: ByteArray, data: ByteArray): Boolean {
+        return isRunning && nativeSendLarge(dest, data)
+    }
+
     fun announce() {
         if (isRunning) nativeAnnounce()
+    }
+
+    /** Ask [target] (typically a Pillar) to replay any stored-and-forward
+     *  packets it's holding for us. */
+    fun requestInbox(target: ByteArray): Boolean {
+        return isRunning && nativeRequestInbox(target)
     }
 
     // TCP Internet transport
@@ -151,7 +162,9 @@ class NexusNode {
     private external fun nativeSend(dest: ByteArray, data: ByteArray): Boolean
     private external fun nativeSessionStart(dest: ByteArray): Boolean
     private external fun nativeSendSession(dest: ByteArray, data: ByteArray): Boolean
+    private external fun nativeSendLarge(dest: ByteArray, data: ByteArray): Boolean
     private external fun nativeAnnounce()
+    private external fun nativeRequestInbox(target: ByteArray): Boolean
     private external fun nativeInjectPacket(packet: ByteArray)
     private external fun nativeStartTcpInet(listenPort: Int, peerHosts: Array<String>, peerPorts: IntArray, reconnectMs: Int): Boolean
     private external fun nativeStopTcpInet()
