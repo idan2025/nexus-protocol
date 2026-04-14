@@ -39,7 +39,6 @@ Shorthand:
 
 ## Up next (P0 Android)
 
-- Battery-optimization whitelist prompt (task #12).
 - Delivery receipts UI — ACK NXM plumbing (task #13).
 - File &amp; image attachments (chunked `nx_node_send_large`).
 - Voice-note recorder (AMR-WB or Opus → NXM VOICE_NOTE field).
@@ -55,6 +54,14 @@ Shorthand:
 ---
 
 ## Recently completed
+
+### Android: Battery optimization prompt `[done 2026-04-14, unverified]`
+- `AndroidManifest.xml`: added `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` permission.
+- `MainActivity.kt`: on first run, if `PowerManager.isIgnoringBatteryOptimizations()`
+  is false and the user hasn't already dismissed the prompt, shows an
+  `AlertDialog`. "Allow" launches `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
+  (falls back to `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` on OEMs that
+  hide it). Dismissal stored in `PREFS_STARTUP` under `battery_opt_dismissed`.
 
 ### v0.3.0 released `[done 2026-04-14]`
 - Tag `v0.3.0` pushed, release CI queued. Run `gh run list --workflow=release.yml`.

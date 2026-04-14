@@ -6,8 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.os.IBinder
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -28,6 +31,9 @@ import androidx.navigation.navArgument
 import com.nexus.mesh.service.NexusService
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+
+private const val PREFS_STARTUP = "nexus_startup"
+private const val KEY_BATTERY_DISMISSED = "battery_opt_dismissed"
 
 class MainActivity : ComponentActivity() {
 
@@ -54,6 +60,9 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { /* permissions granted or denied */ }
 
+    var showBatteryPrompt by mutableStateOf(false)
+        private set
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -75,8 +84,39 @@ class MainActivity : ComponentActivity() {
         startForegroundService(intent)
         bindService(intent, connection, Context.BIND_AUTO_CREATE)
 
+        showBatteryPrompt = shouldPromptBatteryOptimization()
+
         setContent {
             NexusApp(this)
+        }
+    }
+
+    private fun shouldPromptBatteryOptimization(): Boolean {
+        val prefs = getSharedPreferences(PREFS_STARTUP, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_BATTERY_DISMISSED, false)) return false
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return false
+        return !pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    fun requestIgnoreBatteryOptimizations() {
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:$packageName")
+        }
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            // Fall back to the generic battery-optimization settings list if the
+            // direct-request intent isn't available on this OEM.
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
+        dismissBatteryPrompt(persist = true)
+    }
+
+    fun dismissBatteryPrompt(persist: Boolean) {
+        showBatteryPrompt = false
+        if (persist) {
+            getSharedPreferences(PREFS_STARTUP, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_BATTERY_DISMISSED, true).apply()
         }
     }
 
@@ -228,6 +268,31 @@ fun NexusApp(activity: MainActivity) {
                     GroupInfoScreen(activity, navController, groupId)
                 }
             }
+        }
+
+        if (activity.showBatteryPrompt) {
+            AlertDialog(
+                onDismissRequest = { activity.dismissBatteryPrompt(persist = false) },
+                title = { Text("Keep NEXUS running?") },
+                text = {
+                    Text(
+                        "Android's battery optimizer silently kills background mesh " +
+                            "services, which stops delivery of messages while your " +
+                            "screen is off. Allow NEXUS to run in the background to " +
+                            "stay reachable."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { activity.requestIgnoreBatteryOptimizations() }) {
+                        Text("Allow")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { activity.dismissBatteryPrompt(persist = true) }) {
+                        Text("Not now")
+                    }
+                }
+            )
         }
     }
 }
