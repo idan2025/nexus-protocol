@@ -1,0 +1,70 @@
+# systemd unit for the NEXUS Pillar Server.
+#
+# Install:
+#   sudo cp scripts/nexus-pillar.service /etc/systemd/system/
+#   sudo cp build/app/pillard /usr/local/bin/
+#   sudo useradd --system --home /var/lib/nexus --shell /usr/sbin/nologin nexus
+#   sudo install -d -o nexus -g nexus -m 0700 /var/lib/nexus
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nexus-pillar.service
+#
+# Inspect:
+#   systemctl status nexus-pillar
+#   journalctl -u nexus-pillar -f
+#   sudo systemctl kill --signal=SIGUSR1 nexus-pillar   # dump stats
+#   sudo systemctl reload nexus-pillar                   # re-announce (SIGHUP)
+
+[Unit]
+Description=NEXUS Pillar Server (public mesh relay)
+Documentation=https://github.com/anthropics/nexus
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nexus
+Group=nexus
+WorkingDirectory=/var/lib/nexus
+
+# Foreground (-f) is required under Type=simple so systemd tracks the PID.
+# Adjust port/peers/flags as needed.
+ExecStart=/usr/local/bin/pillard -f -p 4242 -i /var/lib/nexus/pillar.identity
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nexus
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Listen on :4242 by default; no privileged port binding needed.
+# Uncomment if you want to bind <1024:
+#AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Resource caps
+LimitNOFILE=65536
+TasksMax=256
+
+# Logs go to journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nexus-pillar
+
+[Install]
+WantedBy=multi-user.target

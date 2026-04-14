@@ -2,23 +2,52 @@
  * NEXUS Firmware -- RadioLib HAL Bridge
  *
  * Maps nx_lora_radio_ops_t to RadioLib's SX1262 C++ API.
+ *
+ * RX is interrupt-driven: startReceive() once, DIO1 ISR sets a flag, the
+ * receive() HAL op polls the flag with yield() up to timeout_ms. This keeps
+ * the main loop cooperative with BLE/FreeRTOS instead of blocking ~100 s
+ * inside RadioLib's synchronous receive().
  */
 #include "radiolib_hal.h"
 #include <string.h>
+#include <Arduino.h>
 
 extern "C" {
 #include "nexus/platform.h"
 }
 
+#if defined(ESP32) || defined(ESP_PLATFORM)
+  #define NX_ISR_ATTR IRAM_ATTR
+#else
+  #define NX_ISR_ATTR
+#endif
+
 /* ── Internal state ───────────────────────────────────────────────────── */
 
 typedef struct {
-    SX1262 *rl;   /* RadioLib SX1262 instance (not owned) */
+    SX1262 *rl;        /* RadioLib SX1262 instance (not owned) */
 } radiolib_hw_t;
+
+/* Single-radio firmware: one flag is enough. If multi-radio is ever needed,
+ * move this into radiolib_hw_t and bind through a small trampoline. */
+static volatile bool s_rx_flag = false;
+static bool s_rx_armed = false;
+
+static void NX_ISR_ATTR rl_dio1_isr(void)
+{
+    s_rx_flag = true;
+}
 
 static inline SX1262 *get_rl(nx_lora_radio_t *radio)
 {
     return ((radiolib_hw_t *)radio->hw)->rl;
+}
+
+static void rl_arm_rx(SX1262 *rl)
+{
+    s_rx_flag = false;
+    rl->startReceive();
+    s_rx_armed = true;
 }
 
 /* ── HAL: init ────────────────────────────────────────────────────────── */
@@ -39,8 +68,13 @@ static nx_err_t rl_init(nx_lora_radio_t *radio, const nx_lora_config_t *config)
     int state = rl->begin(freq, bw, sf, cr, sw, power, pre, tcxo);
     if (state != RADIOLIB_ERR_NONE) return NX_ERR_IO;
 
-    /* SX1262 requires DIO2 as RF switch on most boards */
+    /* DIO2-as-RF-switch: bare SX1262 modules use DIO2 to drive T/R select.
+     * Boards with an external RF switch (WIO-SX1262, Heltec V3 WIO, RAK4631)
+     * install their own switch table from main.cpp. Gate on a build flag so
+     * the two mechanisms don't fight each other. */
+#if !defined(NX_LORA_RF_SWITCH_EXTERNAL) || (NX_LORA_RF_SWITCH_EXTERNAL == 0)
     rl->setDio2AsRfSwitch(true);
+#endif
 
     if (config->crc_on) {
         rl->setCRC(2); /* 2-byte CRC */
@@ -54,8 +88,12 @@ static nx_err_t rl_init(nx_lora_radio_t *radio, const nx_lora_config_t *config)
         rl->explicitHeader();
     }
 
+    /* Interrupt-driven RX: wire DIO1 -> ISR, arm continuous receive. */
+    rl->setPacketReceivedAction(rl_dio1_isr);
+    rl_arm_rx(rl);
+
     memcpy(&radio->config, config, sizeof(nx_lora_config_t));
-    radio->state = NX_RADIO_STANDBY;
+    radio->state = NX_RADIO_RX;
     return NX_OK;
 }
 
@@ -66,9 +104,18 @@ static nx_err_t rl_transmit(nx_lora_radio_t *radio,
 {
     SX1262 *rl = get_rl(radio);
 
+    /* Park RX before TX (SX1262 can't do both). */
+    if (s_rx_armed) {
+        rl->standby();
+        s_rx_armed = false;
+    }
+
     radio->state = NX_RADIO_TX;
     int state = rl->transmit((uint8_t *)data, len);
-    radio->state = NX_RADIO_STANDBY;
+
+    /* Re-arm RX regardless of TX result. */
+    rl_arm_rx(rl);
+    radio->state = NX_RADIO_RX;
 
     if (state == RADIOLIB_ERR_NONE) return NX_OK;
     if (state == RADIOLIB_ERR_TX_TIMEOUT) return NX_ERR_TIMEOUT;
@@ -84,26 +131,39 @@ static nx_err_t rl_receive(nx_lora_radio_t *radio,
 {
     SX1262 *rl = get_rl(radio);
 
+    if (!s_rx_armed) rl_arm_rx(rl);
     radio->state = NX_RADIO_RX;
 
-    /* Start receiving with timeout */
-    int state = rl->receive(buf, buf_len);
+    /* Non-blocking poll: cooperative yield while we wait for the DIO1 ISR.
+     * Loop runs at least once so a flag set between calls is caught. */
+    uint32_t t0 = millis();
+    do {
+        if (s_rx_flag) break;
+        if ((millis() - t0) >= timeout_ms) {
+            *out_len = 0;
+            return NX_ERR_TIMEOUT;
+        }
+        yield();
+        delay(1);
+    } while (true);
 
-    radio->state = NX_RADIO_STANDBY;
+    s_rx_flag = false;
+    size_t plen = rl->getPacketLength();
+    if (plen > buf_len) plen = buf_len;
+
+    int state = rl->readData(buf, plen);
+
+    /* Re-arm for the next packet. */
+    rl_arm_rx(rl);
 
     if (state == RADIOLIB_ERR_NONE) {
-        *out_len = rl->getPacketLength();
+        *out_len = plen;
         if (rx_info) {
             rx_info->rssi = (int16_t)rl->getRSSI();
             rx_info->snr = (int8_t)rl->getSNR();
             rx_info->freq_error = (uint32_t)rl->getFrequencyError();
         }
         return NX_OK;
-    }
-
-    if (state == RADIOLIB_ERR_RX_TIMEOUT) {
-        *out_len = 0;
-        return NX_ERR_TIMEOUT;
     }
 
     *out_len = 0;
@@ -135,6 +195,7 @@ static nx_err_t rl_cad(nx_lora_radio_t *radio, bool *activity)
 static nx_err_t rl_sleep(nx_lora_radio_t *radio)
 {
     SX1262 *rl = get_rl(radio);
+    s_rx_armed = false;
     int state = rl->sleep(true); /* warm start */
     radio->state = NX_RADIO_SLEEP;
     return (state == RADIOLIB_ERR_NONE) ? NX_OK : NX_ERR_IO;
@@ -143,6 +204,7 @@ static nx_err_t rl_sleep(nx_lora_radio_t *radio)
 static nx_err_t rl_standby(nx_lora_radio_t *radio)
 {
     SX1262 *rl = get_rl(radio);
+    s_rx_armed = false;
     int state = rl->standby();
     radio->state = NX_RADIO_STANDBY;
     return (state == RADIOLIB_ERR_NONE) ? NX_OK : NX_ERR_IO;
@@ -175,6 +237,10 @@ static nx_err_t rl_reconfigure(nx_lora_radio_t *radio,
     if (err != 0) return NX_ERR_IO;
 
     memcpy(&radio->config, config, sizeof(nx_lora_config_t));
+
+    /* Re-arm RX so live reconfigure (Android settings UI) keeps listening. */
+    rl_arm_rx(rl);
+    radio->state = NX_RADIO_RX;
     return NX_OK;
 }
 
