@@ -49,6 +49,7 @@ typedef enum {
 #define NX_MSG_FLAG_URGENT      0x08  /* High priority */
 #define NX_MSG_FLAG_REPLY       0x10  /* Contains reply-to field */
 #define NX_MSG_FLAG_GROUP       0x20  /* Group message */
+#define NX_MSG_FLAG_STAMPED     0x40  /* Message carries a proof-of-work stamp */
 
 /* ── Field types (TLV fields within message) ────────────────────────── */
 typedef enum {
@@ -71,6 +72,7 @@ typedef enum {
     NX_FIELD_CODEC       = 0x11,  /* uint8: audio codec ID */
     NX_FIELD_SIGNATURE   = 0x12,  /* 64-byte Ed25519 signature */
     NX_FIELD_TITLE       = 0x13,  /* UTF-8 subject / title (LXMF parity) */
+    NX_FIELD_STAMP       = 0x14,  /* PoW stamp: [difficulty(1)][nonce(8 BE)] */
 } nx_field_type_t;
 
 /* ── Size limits ────────────────────────────────────────────────────── */
@@ -229,5 +231,37 @@ size_t nx_msg_sign(uint8_t *buf, size_t len, size_t buf_cap,
  */
 nx_err_t nx_msg_verify(const uint8_t *buf, size_t len,
                        const uint8_t sign_pubkey[NX_PUBKEY_SIZE]);
+
+/* ── API: Proof-of-work stamp ───────────────────────────────────────── */
+
+#define NX_MSG_STAMP_VALUE_SIZE   9   /* difficulty(1) + nonce(8 BE)  */
+#define NX_MSG_STAMP_OVERHEAD     (NX_MSG_FIELD_HEADER + NX_MSG_STAMP_VALUE_SIZE)
+#define NX_MSG_STAMP_MAX_BITS     32  /* Hard cap so brute force stays bounded */
+
+/*
+ * Append a proof-of-work stamp to a serialized NXM message.
+ *
+ * The hash input is buf[0..len) concatenated with difficulty(1) || nonce(8 BE).
+ * The stamp is accepted when the leading `difficulty` bits of
+ * BLAKE2b-256(hash_input) are zero. On success the STAMP field is appended,
+ * the STAMPED flag is set, field_count is incremented, and the new total
+ * length is returned.
+ *
+ * Returns 0 if the buffer is too small, the message has no room for another
+ * field, or max_iterations expires before a solution is found.
+ */
+size_t nx_msg_stamp(uint8_t *buf, size_t len, size_t buf_cap,
+                    uint8_t difficulty, uint64_t max_iterations);
+
+/*
+ * Verify a stamp meets the requested minimum difficulty.
+ *
+ * Returns NX_OK if the trailing STAMP field hashes with at least
+ * `min_difficulty` leading zero bits, NX_ERR_AUTH_FAIL if the stamp is
+ * present but fails to verify, NX_ERR_INVALID_ARG if the stamp is
+ * missing / malformed / not the last field.
+ */
+nx_err_t nx_msg_verify_stamp(const uint8_t *buf, size_t len,
+                             uint8_t min_difficulty);
 
 #endif /* NEXUS_MESSAGE_H */

@@ -467,3 +467,118 @@ nx_err_t nx_msg_verify(const uint8_t *buf, size_t len,
     int ret = crypto_eddsa_check(sig, sign_pubkey, verify_buf, verify_len);
     return (ret == 0) ? NX_OK : NX_ERR_AUTH_FAIL;
 }
+
+/* ── Proof-of-work stamp ────────────────────────────────────────────── */
+
+static void write_u64_be(uint8_t *p, uint64_t v)
+{
+    p[0] = (uint8_t)(v >> 56);
+    p[1] = (uint8_t)(v >> 48);
+    p[2] = (uint8_t)(v >> 40);
+    p[3] = (uint8_t)(v >> 32);
+    p[4] = (uint8_t)(v >> 24);
+    p[5] = (uint8_t)(v >> 16);
+    p[6] = (uint8_t)(v >> 8);
+    p[7] = (uint8_t)(v);
+}
+
+static unsigned leading_zero_bits(const uint8_t *hash, size_t hash_len)
+{
+    unsigned bits = 0;
+    for (size_t i = 0; i < hash_len; i++) {
+        uint8_t b = hash[i];
+        if (b == 0) { bits += 8; continue; }
+        for (int s = 7; s >= 0; s--) {
+            if (b & (uint8_t)(1u << s)) return bits;
+            bits++;
+        }
+        return bits;
+    }
+    return bits;
+}
+
+size_t nx_msg_stamp(uint8_t *buf, size_t len, size_t buf_cap,
+                    uint8_t difficulty, uint64_t max_iterations)
+{
+    if (!buf) return 0;
+    if (len < NX_MSG_HEADER_SIZE) return 0;
+    if (len + NX_MSG_STAMP_OVERHEAD > buf_cap) return 0;
+    if (buf[7] >= NX_MSG_MAX_FIELDS) return 0;
+    if (difficulty > NX_MSG_STAMP_MAX_BITS) return 0;
+
+    /* Build hash input: buf[0..len) || difficulty || nonce_be(8) */
+    uint8_t hash_input[NX_MSG_MAX_SIZE + 9];
+    if (len + 9 > sizeof(hash_input)) return 0;
+    memcpy(hash_input, buf, len);
+    hash_input[len] = difficulty;
+
+    uint8_t hash[32];
+    uint64_t nonce = 0;
+    for (uint64_t i = 0; i < max_iterations; i++) {
+        write_u64_be(&hash_input[len + 1], nonce);
+        crypto_blake2b(hash, sizeof(hash), hash_input, len + 9);
+        if (leading_zero_bits(hash, sizeof(hash)) >= difficulty) {
+            /* Append stamp TLV: [type(1)][len(2 LE)][difficulty(1)][nonce_be(8)] */
+            size_t pos = len;
+            buf[pos++] = (uint8_t)NX_FIELD_STAMP;
+            write_u16(&buf[pos], NX_MSG_STAMP_VALUE_SIZE);
+            pos += 2;
+            buf[pos++] = difficulty;
+            write_u64_be(&buf[pos], nonce);
+            pos += 8;
+
+            buf[2] |= NX_MSG_FLAG_STAMPED;
+            buf[7]++;
+            return pos;
+        }
+        nonce++;
+    }
+    return 0;
+}
+
+nx_err_t nx_msg_verify_stamp(const uint8_t *buf, size_t len,
+                             uint8_t min_difficulty)
+{
+    if (!buf) return NX_ERR_INVALID_ARG;
+    if (len < NX_MSG_HEADER_SIZE + NX_MSG_STAMP_OVERHEAD)
+        return NX_ERR_INVALID_ARG;
+    if (!(buf[2] & NX_MSG_FLAG_STAMPED))
+        return NX_ERR_INVALID_ARG;
+
+    /* Stamp field is the last 12 bytes: [type][len(2)][diff(1)][nonce(8)] */
+    size_t stamp_start = len - NX_MSG_STAMP_OVERHEAD;
+    if (buf[stamp_start] != (uint8_t)NX_FIELD_STAMP)
+        return NX_ERR_INVALID_ARG;
+    uint16_t value_len = read_u16(&buf[stamp_start + 1]);
+    if (value_len != NX_MSG_STAMP_VALUE_SIZE)
+        return NX_ERR_INVALID_ARG;
+
+    uint8_t difficulty = buf[stamp_start + NX_MSG_FIELD_HEADER];
+    const uint8_t *nonce_be = &buf[stamp_start + NX_MSG_FIELD_HEADER + 1];
+    if (difficulty < min_difficulty)
+        return NX_ERR_AUTH_FAIL;
+    if (difficulty > NX_MSG_STAMP_MAX_BITS)
+        return NX_ERR_INVALID_ARG;
+
+    /* Reconstruct hash input: scratch_hdr (STAMPED cleared, field_count -1)
+     * || buf[HEADER..stamp_start) || difficulty || nonce */
+    uint8_t hash_input[NX_MSG_MAX_SIZE + 9];
+    size_t body_len = stamp_start - NX_MSG_HEADER_SIZE;
+    size_t input_len = NX_MSG_HEADER_SIZE + body_len + 9;
+    if (input_len > sizeof(hash_input))
+        return NX_ERR_BUFFER_TOO_SMALL;
+
+    memcpy(hash_input, buf, NX_MSG_HEADER_SIZE);
+    hash_input[2] &= (uint8_t)~NX_MSG_FLAG_STAMPED;
+    hash_input[7]--;
+    memcpy(hash_input + NX_MSG_HEADER_SIZE,
+           buf + NX_MSG_HEADER_SIZE, body_len);
+    hash_input[NX_MSG_HEADER_SIZE + body_len] = difficulty;
+    memcpy(hash_input + NX_MSG_HEADER_SIZE + body_len + 1, nonce_be, 8);
+
+    uint8_t hash[32];
+    crypto_blake2b(hash, sizeof(hash), hash_input, input_len);
+    if (leading_zero_bits(hash, sizeof(hash)) >= difficulty)
+        return NX_OK;
+    return NX_ERR_AUTH_FAIL;
+}

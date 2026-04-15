@@ -578,6 +578,85 @@ static void test_title_field(void)
     PASS();
 }
 
+static void test_stamp_roundtrip(void)
+{
+    TEST("PoW stamp round-trip (low difficulty)");
+
+    uint8_t buf[256];
+    size_t len = nx_msg_build_text(buf, sizeof(buf), "stamp me", NULL);
+    ASSERT(len > 0, "build");
+
+    size_t stamped = nx_msg_stamp(buf, len, sizeof(buf), 8, 1000000ULL);
+    ASSERT(stamped == len + NX_MSG_STAMP_OVERHEAD, "stamp length");
+    ASSERT(buf[2] & NX_MSG_FLAG_STAMPED, "STAMPED flag set");
+
+    nx_err_t err = nx_msg_verify_stamp(buf, stamped, 8);
+    ASSERT(err == NX_OK, "verify accepted");
+
+    /* parse should still see the stamp field */
+    nx_message_t msg;
+    ASSERT(nx_msg_parse(buf, stamped, &msg) == NX_OK, "parse");
+    const nx_msg_field_t *s = nx_msg_find_field(&msg, NX_FIELD_STAMP);
+    ASSERT(s != NULL && s->len == NX_MSG_STAMP_VALUE_SIZE, "stamp field");
+
+    PASS();
+}
+
+static void test_stamp_min_difficulty_rejects(void)
+{
+    TEST("verify rejects stamp below requested difficulty");
+
+    uint8_t buf[256];
+    size_t len = nx_msg_build_text(buf, sizeof(buf), "weak stamp", NULL);
+    size_t stamped = nx_msg_stamp(buf, len, sizeof(buf), 4, 1000000ULL);
+    ASSERT(stamped > 0, "stamp");
+
+    /* Asking for a higher minimum than the stamp carries should fail. */
+    nx_err_t err = nx_msg_verify_stamp(buf, stamped, 16);
+    ASSERT(err == NX_ERR_AUTH_FAIL, "min difficulty enforced");
+    PASS();
+}
+
+static void test_stamp_unstamped_rejected(void)
+{
+    TEST("verify rejects unstamped message");
+
+    uint8_t buf[256];
+    size_t len = nx_msg_build_text(buf, sizeof(buf), "no stamp", NULL);
+    nx_err_t err = nx_msg_verify_stamp(buf, len, 1);
+    ASSERT(err == NX_ERR_INVALID_ARG, "unstamped rejected");
+    PASS();
+}
+
+static void test_stamp_tampered_rejected(void)
+{
+    TEST("verify rejects tampered stamped message");
+
+    uint8_t buf[256];
+    size_t len = nx_msg_build_text(buf, sizeof(buf), "tamper", NULL);
+    size_t stamped = nx_msg_stamp(buf, len, sizeof(buf), 8, 1000000ULL);
+    ASSERT(stamped > 0, "stamp");
+
+    /* Flip a payload byte after the header but before the stamp field. */
+    buf[NX_MSG_HEADER_SIZE + 4] ^= 0x01;
+
+    nx_err_t err = nx_msg_verify_stamp(buf, stamped, 8);
+    ASSERT(err == NX_ERR_AUTH_FAIL, "tamper detected");
+    PASS();
+}
+
+static void test_stamp_buffer_too_small(void)
+{
+    TEST("stamp rejects insufficient buffer");
+
+    uint8_t buf[64];
+    size_t len = nx_msg_build_text(buf, sizeof(buf), "short", NULL);
+    /* No spare room for stamp overhead. */
+    size_t stamped = nx_msg_stamp(buf, len, len, 4, 100);
+    ASSERT(stamped == 0, "no-room rejected");
+    PASS();
+}
+
 /* ── Main ───────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -610,6 +689,11 @@ int main(void)
     test_unsigned_verify();
     test_sign_buffer_too_small();
     test_title_field();
+    test_stamp_roundtrip();
+    test_stamp_min_difficulty_rejects();
+    test_stamp_unstamped_rejected();
+    test_stamp_tampered_rejected();
+    test_stamp_buffer_too_small();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
