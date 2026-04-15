@@ -17,6 +17,36 @@ Shorthand:
 
 ## Now in flight
 
+### Firmware: session resume across reboots `[done 2026-04-15, unverified]`
+- Core serialize/deserialize already landed in `0558bc6`
+  (`lib/src/session.c` + `nx_session_store_serialize/deserialize`).
+- `firmware/common/session_store.{h,cpp}`: platform-conditional persistence
+  of `nx_session_store_t`. ESP32 uses NVS (`Preferences`, namespace
+  `nexus_sess`, one blob per slot `s0..s15`). nRF52 uses InternalFS
+  (`/nxs_0..`) via Adafruit LittleFS. Save iterates all slots; invalid
+  slots are erased from flash so the file set tracks valid sessions.
+- Wired into all four firmware targets (`heltec_v3`, `rak4631`,
+  `xiao_esp32s3`, `xiao_nrf52840` — the heltec wiring was already staged
+  from the prior session, the other three are new this session):
+  `nx_session_store_load(&node.sessions)` after the anchor-load block in
+  `setup()`, and `nx_session_store_save(&node.sessions)` in `loop()` when
+  `nx_session_count(&node.sessions)` changes. Save-on-count-change (not
+  per-message) keeps flash wear bounded — ratchet keys evolve every
+  message but we only snapshot when a new handshake completes or a peer
+  is forgotten. Trade-off: if the device reboots between a handshake and
+  the next send, the last few messages replay as skipped keys on the
+  other side, which the existing skip-ahead code already handles.
+- `firmware/common/link_sources.py` globs `*.cpp`/`*.h` in `common/` and
+  symlinks them into each project's `src/`, so no `platformio.ini`
+  changes were needed.
+- SECURITY NOTE (also in header): flash contents of `nexus_sess` are as
+  sensitive as the identity key. Physical flash dump enables decryption
+  of past ciphertext captured off-air. Encrypt-at-rest is a later task.
+- Closes P1 "Link/session resume across reboots (persisted ratchet
+  state)" from `docs/FEATURES.md` §4.
+- Not yet verified on hardware; needs a flash, handshake, power-cycle,
+  and confirm the peer's next message decrypts.
+
 ### Firmware: region-aware default LoRa frequency `[done 2026-04-14]`
 - `lib/include/nexus/lora_radio.h`: `NX_LORA_CONFIG_DEFAULT` now pulls
   `frequency_hz` from a compile-time-selectable `NX_LORA_DEFAULT_FREQ_HZ`

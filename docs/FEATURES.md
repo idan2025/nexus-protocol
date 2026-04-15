@@ -87,7 +87,7 @@ Grouped by subsystem. Priority: **P0** blocker, **P1** parity, **P2** polish.
 - **P1** LXMF parity fields in NXM: title, content-type mime, source-nickname.
 - **P1** Paper-message envelope (offline single-hop, 2kB cap, QR friendly).
 - **P1** PoW stamp field on envelope (LXMF-style, difficulty in announce).
-- **P1** Link/session resume across reboots (persisted ratchet state).
+- **P1 ✅** Link/session resume across reboots (persisted ratchet state).
 - **P2** Multi-hop path selection metric (RSSI-weighted, not just hop count).
 - **P2** Opportunistic forwarding (store pkt for N seconds even without mailbox slot).
 - **P2** Rate-limited broadcast storm suppression (announce jitter + backoff).

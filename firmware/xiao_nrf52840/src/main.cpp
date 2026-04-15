@@ -32,6 +32,7 @@ extern "C" {
 #include "anchor_store.h"
 #include "battery.h"
 #include "event_ring.h"
+#include "session_store.h"
 
 /* -- Pin definitions (XIAO nRF52840 + WIO-SX1262 expansion) -------------- */
 /*
@@ -136,6 +137,7 @@ static char ble_name[20];
 static uint32_t rx_count = 0;
 static uint32_t neighbor_count = 0;
 static int last_anchor_count = 0;
+static int last_session_count = 0;
 
 /* LED blink state */
 static uint32_t led_off_ms = 0;
@@ -601,6 +603,13 @@ void setup()
         last_anchor_count = count;
     }
 
+    /* Resume Double Ratchet sessions from flash */
+    if (nx_session_store_load(&node.sessions) == NX_OK) {
+        last_session_count = nx_session_count(&node.sessions);
+        Serial.printf("[NEXUS] Resumed %d sessions from flash\n",
+                      last_session_count);
+    }
+
     /* Initial announcement (only if LoRa is up) */
     if (lora_ok) {
         nx_node_announce(&node);
@@ -660,6 +669,16 @@ void loop()
         nx_anchor_store_save(&node.anchor);
         Serial.printf("[ANCHOR] Saved %d messages to flash\n", cur_anchor);
         last_anchor_count = cur_anchor;
+    }
+
+    /* Persist session store when a new handshake lands. Ratchet keys
+     * evolve on every message; saving per-message burns flash too fast,
+     * so we only snapshot on count change — good enough for resume. */
+    int cur_sessions = nx_session_count(&node.sessions);
+    if (cur_sessions != last_session_count) {
+        nx_session_store_save(&node.sessions);
+        Serial.printf("[SESSION] Saved %d sessions to flash\n", cur_sessions);
+        last_session_count = cur_sessions;
     }
 
     /* LED auto-off after blink */
