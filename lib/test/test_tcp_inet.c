@@ -554,6 +554,146 @@ static void test_recv_timeout(void)
     PASS();
 }
 
+/* ── PSK mutual authentication ───────────────────────────────────────── */
+
+static void test_psk_matching(void)
+{
+    TEST("PSK matching: handshake succeeds, traffic flows");
+
+    uint8_t psk[32];
+    memset(psk, 0xA7, sizeof(psk));
+
+    nx_transport_t *srv = nx_tcp_inet_transport_create();
+    nx_tcp_inet_config_t scfg;
+    memset(&scfg, 0, sizeof(scfg));
+    scfg.listen_port = 19120;
+    scfg.listen_host = "127.0.0.1";
+    memcpy(scfg.psk, psk, sizeof(psk));
+    scfg.psk_len = sizeof(psk);
+    ASSERT(srv->ops->init(srv, &scfg) == NX_OK, "srv init");
+
+    nx_transport_t *cli = nx_tcp_inet_transport_create();
+    nx_tcp_inet_config_t ccfg;
+    memset(&ccfg, 0, sizeof(ccfg));
+    ccfg.peers[0].host = "127.0.0.1";
+    ccfg.peers[0].port = 19120;
+    ccfg.peer_count = 1;
+    memcpy(ccfg.psk, psk, sizeof(psk));
+    ccfg.psk_len = sizeof(psk);
+    ASSERT(cli->ops->init(cli, &ccfg) == NX_OK, "cli init");
+
+    /* Pump handshake: each side needs recv calls to drive auth_pump through
+     * SEND_HELLO → RECV_HELLO → RECV_TAG → DONE. Four alternating rounds cover
+     * the worst case where neither peer has bytes waiting on the first pump. */
+    uint8_t scratch[64];
+    size_t out_len = 0;
+    for (int i = 0; i < 4; i++) {
+        srv->ops->recv(srv, scratch, sizeof(scratch), &out_len, 200);
+        cli->ops->recv(cli, scratch, sizeof(scratch), &out_len, 200);
+    }
+
+    uint8_t msg[] = "authed hello";
+    ASSERT(cli->ops->send(cli, msg, sizeof(msg)) == NX_OK, "send after auth");
+
+    uint8_t buf[256];
+    nx_err_t err = srv->ops->recv(srv, buf, sizeof(buf), &out_len, 2000);
+    ASSERT(err == NX_OK, "recv");
+    ASSERT(out_len == sizeof(msg) && memcmp(buf, msg, sizeof(msg)) == 0, "payload match");
+
+    cli->ops->destroy(cli);
+    nx_platform_free(cli);
+    srv->ops->destroy(srv);
+    nx_platform_free(srv);
+    PASS();
+}
+
+static void test_psk_mismatch(void)
+{
+    TEST("PSK mismatch: peer rejected, no traffic");
+
+    uint8_t psk_srv[32], psk_cli[32];
+    memset(psk_srv, 0x11, sizeof(psk_srv));
+    memset(psk_cli, 0x22, sizeof(psk_cli));
+
+    nx_transport_t *srv = nx_tcp_inet_transport_create();
+    nx_tcp_inet_config_t scfg;
+    memset(&scfg, 0, sizeof(scfg));
+    scfg.listen_port = 19121;
+    scfg.listen_host = "127.0.0.1";
+    memcpy(scfg.psk, psk_srv, sizeof(psk_srv));
+    scfg.psk_len = sizeof(psk_srv);
+    ASSERT(srv->ops->init(srv, &scfg) == NX_OK, "srv init");
+
+    nx_transport_t *cli = nx_tcp_inet_transport_create();
+    nx_tcp_inet_config_t ccfg;
+    memset(&ccfg, 0, sizeof(ccfg));
+    ccfg.peers[0].host = "127.0.0.1";
+    ccfg.peers[0].port = 19121;
+    ccfg.peer_count = 1;
+    memcpy(ccfg.psk, psk_cli, sizeof(psk_cli));
+    ccfg.psk_len = sizeof(psk_cli);
+    ASSERT(cli->ops->init(cli, &ccfg) == NX_OK, "cli init");
+
+    uint8_t scratch[64];
+    size_t out_len = 0;
+    srv->ops->recv(srv, scratch, sizeof(scratch), &out_len, 300);
+    cli->ops->recv(cli, scratch, sizeof(scratch), &out_len, 300);
+    srv->ops->recv(srv, scratch, sizeof(scratch), &out_len, 300);
+
+    uint8_t msg[] = "should be dropped";
+    cli->ops->send(cli, msg, sizeof(msg));
+
+    uint8_t buf[256];
+    nx_err_t err = srv->ops->recv(srv, buf, sizeof(buf), &out_len, 400);
+    ASSERT(err == NX_ERR_TIMEOUT, "no packet delivered on PSK mismatch");
+
+    cli->ops->destroy(cli);
+    nx_platform_free(cli);
+    srv->ops->destroy(srv);
+    nx_platform_free(srv);
+    PASS();
+}
+
+static void test_allow_list_blocks(void)
+{
+    TEST("allow-list blocks non-listed peer");
+
+    const char *allowed[1] = { "10.255.255.254" };
+
+    nx_transport_t *srv = nx_tcp_inet_transport_create();
+    nx_tcp_inet_config_t scfg;
+    memset(&scfg, 0, sizeof(scfg));
+    scfg.listen_port = 19122;
+    scfg.listen_host = "127.0.0.1";
+    scfg.allow_list[0] = allowed[0];
+    scfg.allow_count = 1;
+    ASSERT(srv->ops->init(srv, &scfg) == NX_OK, "srv init");
+
+    nx_transport_t *cli = nx_tcp_inet_transport_create();
+    nx_tcp_inet_config_t ccfg;
+    memset(&ccfg, 0, sizeof(ccfg));
+    ccfg.peers[0].host = "127.0.0.1";
+    ccfg.peers[0].port = 19122;
+    ccfg.peer_count = 1;
+    ASSERT(cli->ops->init(cli, &ccfg) == NX_OK, "cli init");
+
+    usleep(100000);
+
+    uint8_t msg[] = "blocked";
+    cli->ops->send(cli, msg, sizeof(msg));
+
+    uint8_t buf[256];
+    size_t out_len = 0;
+    nx_err_t err = srv->ops->recv(srv, buf, sizeof(buf), &out_len, 400);
+    ASSERT(err == NX_ERR_TIMEOUT, "loopback IP not allow-listed, peer dropped");
+
+    cli->ops->destroy(cli);
+    nx_platform_free(cli);
+    srv->ops->destroy(srv);
+    nx_platform_free(srv);
+    PASS();
+}
+
 /* ── Main ────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -572,6 +712,9 @@ int main(void)
     test_hybrid_mode();
     test_packet_roundtrip();
     test_recv_timeout();
+    test_psk_matching();
+    test_psk_mismatch();
+    test_allow_list_blocks();
 
     printf("\n  %d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

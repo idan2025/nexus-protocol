@@ -92,7 +92,12 @@ nx_transport_t *nx_tcp_transport_create(void);
 
 /* ── TCP Internet Transport (Reticulum-style) ────────────────────────── */
 
-#define NX_TCP_INET_MAX_PEERS 16
+#define NX_TCP_INET_MAX_PEERS        16
+#define NX_TCP_INET_MAX_ALLOW        16
+#define NX_TCP_INET_PSK_SIZE         32
+#define NX_TCP_INET_AUTH_HELLO_SIZE  40  /* 8 magic + 32 nonce */
+#define NX_TCP_INET_AUTH_TAG_SIZE    32  /* BLAKE2b-keyed tag */
+#define NX_TCP_INET_AUTH_TIMEOUT_MS  10000
 
 typedef struct {
     const char *listen_host;       /* Bind address, NULL = "0.0.0.0" */
@@ -105,6 +110,18 @@ typedef struct {
     int peer_count;
 
     uint32_t    reconnect_interval_ms; /* Auto-reconnect delay (default 5000) */
+
+    /* Optional PSK for challenge-response mutual authentication.
+     * If psk_len > 0, all inbound and outbound connections must complete
+     * BLAKE2b-keyed handshake before normal traffic is exchanged. */
+    uint8_t     psk[NX_TCP_INET_PSK_SIZE];
+    size_t      psk_len;
+
+    /* Optional IP allow-list (exact-match IPv4 strings). If allow_count > 0,
+     * inbound connections from peers not on the list are dropped. Does not
+     * restrict outbound connects. */
+    const char *allow_list[NX_TCP_INET_MAX_ALLOW];
+    int         allow_count;
 } nx_tcp_inet_config_t;
 
 /* Create a TCP Internet transport (multi-peer, auto-reconnect). */

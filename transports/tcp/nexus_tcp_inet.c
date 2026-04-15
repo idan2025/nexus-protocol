@@ -15,6 +15,7 @@
 
 #include "nexus/transport.h"
 #include "nexus/platform.h"
+#include "monocypher/monocypher.h"
 
 #include <string.h>
 #include <unistd.h>
@@ -28,6 +29,18 @@
 
 #define TCP_FRAME_DELIM   0x7E
 #define TCP_MAX_FRAME     (NX_MAX_PACKET + 4)
+
+static const uint8_t AUTH_MAGIC[8] = { 'N','X','A','U','T','H','\0','\0' };
+
+typedef enum {
+    AUTH_NONE = 0,     /* No auth required; treat as authed */
+    AUTH_SEND_HELLO,   /* Need to send our hello */
+    AUTH_RECV_HELLO,   /* Hello sent; waiting for peer hello */
+    AUTH_SEND_TAG,     /* Peer hello received; need to send response tag */
+    AUTH_RECV_TAG,     /* Tag sent; waiting for peer tag */
+    AUTH_DONE,         /* Mutually authenticated */
+    AUTH_FAIL,         /* Authentication failed; connection will be closed */
+} auth_state_t;
 
 /* ── Per-connection receive state machine ────────────────────────────── */
 
@@ -56,6 +69,14 @@ typedef struct {
     uint16_t    peer_port;
     uint64_t    last_reconnect_ms; /* When we last tried to reconnect */
     rx_ctx_t    rx;                /* Per-connection framing state */
+
+    auth_state_t auth_state;
+    uint64_t     auth_deadline_ms;
+    uint8_t      my_nonce[32];
+    uint8_t      peer_nonce[32];
+    uint8_t      auth_rx[NX_TCP_INET_AUTH_HELLO_SIZE];
+    size_t       auth_rx_pos;
+    size_t       auth_rx_need;
 } tcp_inet_conn_t;
 
 /* ── Transport state ─────────────────────────────────────────────────── */
@@ -69,6 +90,12 @@ typedef struct {
     int                conn_count;
 
     uint32_t           reconnect_interval_ms;
+
+    uint8_t            psk[NX_TCP_INET_PSK_SIZE];
+    size_t             psk_len;
+
+    char               allow_list[NX_TCP_INET_MAX_ALLOW][64];
+    int                allow_count;
 } tcp_inet_state_t;
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
@@ -98,6 +125,65 @@ static void conn_init(tcp_inet_conn_t *c)
     c->fd = -1;
     c->active = false;
     c->rx.state = RX_WAIT_START;
+    c->auth_state = AUTH_NONE;
+}
+
+static void auth_compute_tag(const uint8_t psk[NX_TCP_INET_PSK_SIZE], size_t psk_len,
+                             const uint8_t first[32], const uint8_t second[32],
+                             uint8_t out_tag[NX_TCP_INET_AUTH_TAG_SIZE])
+{
+    uint8_t input[64];
+    memcpy(input, first, 32);
+    memcpy(input + 32, second, 32);
+    crypto_blake2b_keyed(out_tag, NX_TCP_INET_AUTH_TAG_SIZE, psk, psk_len,
+                         input, sizeof(input));
+    crypto_wipe(input, sizeof(input));
+}
+
+static bool auth_write_all(int fd, const uint8_t *buf, size_t len)
+{
+    size_t written = 0;
+    while (written < len) {
+        ssize_t n = write(fd, buf + written, len - written);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+                if (poll(&pfd, 1, 500) <= 0) return false;
+                continue;
+            }
+            return false;
+        }
+        written += (size_t)n;
+    }
+    return true;
+}
+
+static void conn_auth_arm(tcp_inet_conn_t *c, size_t psk_len)
+{
+    if (psk_len == 0) {
+        c->auth_state = AUTH_NONE;
+        return;
+    }
+    c->auth_state = AUTH_SEND_HELLO;
+    c->auth_rx_pos = 0;
+    c->auth_rx_need = NX_TCP_INET_AUTH_HELLO_SIZE;
+    c->auth_deadline_ms = nx_platform_time_ms() + NX_TCP_INET_AUTH_TIMEOUT_MS;
+    nx_platform_random(c->my_nonce, sizeof(c->my_nonce));
+}
+
+static bool conn_is_authed(const tcp_inet_conn_t *c)
+{
+    return c->auth_state == AUTH_NONE || c->auth_state == AUTH_DONE;
+}
+
+static bool ip_allowed(const tcp_inet_state_t *s, const char *ip)
+{
+    if (s->allow_count == 0) return true;
+    for (int i = 0; i < s->allow_count; i++) {
+        if (strcmp(s->allow_list[i], ip) == 0) return true;
+    }
+    return false;
 }
 
 static void conn_close(tcp_inet_conn_t *c)
@@ -182,6 +268,24 @@ static nx_err_t tcp_inet_init(nx_transport_t *t, const void *config)
     if (s->reconnect_interval_ms == 0)
         s->reconnect_interval_ms = 5000;
 
+    if (cfg->psk_len > 0) {
+        if (cfg->psk_len > NX_TCP_INET_PSK_SIZE) {
+            nx_platform_free(s);
+            return NX_ERR_INVALID_ARG;
+        }
+        memcpy(s->psk, cfg->psk, cfg->psk_len);
+        s->psk_len = cfg->psk_len;
+    }
+
+    for (int i = 0; i < cfg->allow_count && i < NX_TCP_INET_MAX_ALLOW; i++) {
+        if (!cfg->allow_list[i]) continue;
+        size_t alen = strlen(cfg->allow_list[i]);
+        if (alen >= sizeof(s->allow_list[0])) alen = sizeof(s->allow_list[0]) - 1;
+        memcpy(s->allow_list[s->allow_count], cfg->allow_list[i], alen);
+        s->allow_list[s->allow_count][alen] = '\0';
+        s->allow_count++;
+    }
+
     for (int i = 0; i < NX_TCP_INET_MAX_PEERS; i++)
         conn_init(&s->conns[i]);
 
@@ -234,6 +338,7 @@ static nx_err_t tcp_inet_init(nx_transport_t *t, const void *config)
         if (fd >= 0) {
             c->fd = fd;
             c->active = true;
+            conn_auth_arm(c, s->psk_len);
             s->conn_count++;
         } else {
             /* Will auto-reconnect later */
@@ -263,6 +368,14 @@ static void accept_pending(tcp_inet_state_t *s)
         int fd = accept(s->listen_fd, (struct sockaddr *)&peer_addr, &peer_len);
         if (fd < 0) break; /* EAGAIN or error */
 
+        char ip_str[64];
+        inet_ntop(AF_INET, &peer_addr.sin_addr, ip_str, sizeof(ip_str));
+
+        if (!ip_allowed(s, ip_str)) {
+            close(fd);
+            continue;
+        }
+
         tcp_inet_conn_t *c = find_free_slot(s);
         if (!c) {
             /* No room, reject */
@@ -279,9 +392,10 @@ static void accept_pending(tcp_inet_state_t *s)
         c->is_outbound = false;
 
         /* Store peer address for logging/debugging */
-        inet_ntop(AF_INET, &peer_addr.sin_addr, c->peer_host, sizeof(c->peer_host));
+        memcpy(c->peer_host, ip_str, sizeof(c->peer_host));
         c->peer_port = ntohs(peer_addr.sin_port);
 
+        conn_auth_arm(c, s->psk_len);
         s->conn_count++;
     }
 }
@@ -308,9 +422,91 @@ static void reconnect_outbound(tcp_inet_state_t *s)
             c->fd = fd;
             c->active = true;
             c->rx.state = RX_WAIT_START;
+            conn_auth_arm(c, s->psk_len);
             s->conn_count++;
         }
     }
+}
+
+/* Drive the PSK challenge-response state machine for one connection.
+ * Returns true if connection is still usable, false if it should be dropped. */
+static bool auth_pump(tcp_inet_state_t *s, tcp_inet_conn_t *c)
+{
+    if (conn_is_authed(c)) return true;
+    if (c->auth_state == AUTH_FAIL) return false;
+
+    if (nx_platform_time_ms() > c->auth_deadline_ms) {
+        c->auth_state = AUTH_FAIL;
+        return false;
+    }
+
+    /* Send hello once */
+    if (c->auth_state == AUTH_SEND_HELLO) {
+        uint8_t hello[NX_TCP_INET_AUTH_HELLO_SIZE];
+        memcpy(hello, AUTH_MAGIC, 8);
+        memcpy(hello + 8, c->my_nonce, 32);
+        if (!auth_write_all(c->fd, hello, sizeof(hello))) {
+            c->auth_state = AUTH_FAIL;
+            return false;
+        }
+        c->auth_state = AUTH_RECV_HELLO;
+        c->auth_rx_pos = 0;
+        c->auth_rx_need = NX_TCP_INET_AUTH_HELLO_SIZE;
+    }
+
+    /* Read any available handshake bytes */
+    while (c->auth_state == AUTH_RECV_HELLO || c->auth_state == AUTH_RECV_TAG) {
+        ssize_t n = read(c->fd, c->auth_rx + c->auth_rx_pos,
+                         c->auth_rx_need - c->auth_rx_pos);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return true;
+            c->auth_state = AUTH_FAIL;
+            return false;
+        }
+        if (n == 0) {
+            c->auth_state = AUTH_FAIL;
+            return false;
+        }
+        c->auth_rx_pos += (size_t)n;
+        if (c->auth_rx_pos < c->auth_rx_need) return true;
+
+        if (c->auth_state == AUTH_RECV_HELLO) {
+            if (memcmp(c->auth_rx, AUTH_MAGIC, 8) != 0) {
+                c->auth_state = AUTH_FAIL;
+                return false;
+            }
+            memcpy(c->peer_nonce, c->auth_rx + 8, 32);
+
+            uint8_t tag[NX_TCP_INET_AUTH_TAG_SIZE];
+            auth_compute_tag(s->psk, s->psk_len, c->my_nonce, c->peer_nonce, tag);
+            if (!auth_write_all(c->fd, tag, sizeof(tag))) {
+                crypto_wipe(tag, sizeof(tag));
+                c->auth_state = AUTH_FAIL;
+                return false;
+            }
+            crypto_wipe(tag, sizeof(tag));
+
+            c->auth_rx_pos = 0;
+            c->auth_rx_need = NX_TCP_INET_AUTH_TAG_SIZE;
+            c->auth_state = AUTH_RECV_TAG;
+            continue;
+        }
+
+        /* AUTH_RECV_TAG: verify peer's tag */
+        uint8_t expected[NX_TCP_INET_AUTH_TAG_SIZE];
+        auth_compute_tag(s->psk, s->psk_len, c->peer_nonce, c->my_nonce, expected);
+        int diff = crypto_verify32(expected, c->auth_rx);
+        crypto_wipe(expected, sizeof(expected));
+        if (diff != 0) {
+            c->auth_state = AUTH_FAIL;
+            return false;
+        }
+        c->auth_state = AUTH_DONE;
+        return true;
+    }
+
+    return true;
 }
 
 /* ── Send (broadcast to all peers) ───────────────────────────────────── */
@@ -336,6 +532,7 @@ static nx_err_t tcp_inet_send(nx_transport_t *t, const uint8_t *data, size_t len
     for (int i = 0; i < NX_TCP_INET_MAX_PEERS; i++) {
         tcp_inet_conn_t *c = &s->conns[i];
         if (!c->active || c->fd < 0) continue;
+        if (!conn_is_authed(c)) continue;
 
         size_t written = 0;
         bool failed = false;
@@ -381,6 +578,17 @@ static nx_err_t tcp_inet_recv(nx_transport_t *t, uint8_t *buf, size_t buf_len,
         /* Accept new connections + reconnect dropped ones */
         accept_pending(s);
         reconnect_outbound(s);
+
+        /* Drive PSK handshake for any pending connections */
+        for (int i = 0; i < NX_TCP_INET_MAX_PEERS; i++) {
+            tcp_inet_conn_t *c = &s->conns[i];
+            if (!c->active || c->fd < 0) continue;
+            if (conn_is_authed(c)) continue;
+            if (!auth_pump(s, c)) {
+                conn_close(c);
+                s->conn_count--;
+            }
+        }
 
         /* Build poll set: listen_fd + all active connections */
         struct pollfd pfds[NX_TCP_INET_MAX_PEERS + 1];
@@ -443,6 +651,15 @@ static nx_err_t tcp_inet_recv(nx_transport_t *t, uint8_t *buf, size_t buf_len,
 
             int ci = fd_map[p];
             tcp_inet_conn_t *c = &s->conns[ci];
+
+            /* If not yet authenticated, route bytes through auth state machine */
+            if (!conn_is_authed(c)) {
+                if (!auth_pump(s, c)) {
+                    conn_close(c);
+                    s->conn_count--;
+                }
+                continue;
+            }
 
             /* Read available bytes and run framing state machine */
             uint8_t chunk[256];

@@ -62,6 +62,10 @@ typedef struct {
     int      verbose;
     int      no_multicast;
     char     uds_path[128];
+    uint8_t  psk[NX_TCP_INET_PSK_SIZE];
+    size_t   psk_len;
+    char     allow_list[NX_TCP_INET_MAX_ALLOW][64];
+    int      allow_count;
 } daemon_config_t;
 
 /* ── Globals ─────────────────────────────────────────────────────────── */
@@ -445,6 +449,9 @@ static void print_usage(const char *prog)
         "  -p HOST:PORT   Connect to a remote TCP peer (repeatable, max %d)\n"
         "  -i FILE        Identity file (default: ~/.nexus/identity)\n"
         "  -r ROLE        Node role: 0=leaf 1=relay 2=gateway 3=anchor (default: 2)\n"
+        "  -u SOCK        UDS control socket path (default: /tmp/nexusd.sock)\n"
+        "  -k HEX         32-byte PSK as 64 hex chars; enables TCP auth\n"
+        "  -A IP          TCP inbound IP allow-list entry (repeatable, exact match)\n"
         "  -n             Disable UDP multicast (TCP only)\n"
         "  -v             Verbose output\n"
         "  -h             Show this help\n"
@@ -482,7 +489,7 @@ int main(int argc, char **argv)
 
     int opt;
     strncpy(cfg.uds_path, "/tmp/nexusd.sock", sizeof(cfg.uds_path) - 1);
-    while ((opt = getopt(argc, argv, "l:p:i:r:u:nvh")) != -1) {
+    while ((opt = getopt(argc, argv, "l:p:i:r:u:k:A:nvh")) != -1) {
         switch (opt) {
         case 'l':
             cfg.listen_port = (uint16_t)atoi(optarg);
@@ -518,6 +525,34 @@ int main(int argc, char **argv)
             break;
         case 'u':
             strncpy(cfg.uds_path, optarg, sizeof(cfg.uds_path) - 1);
+            break;
+        case 'k': {
+            size_t len = strlen(optarg);
+            if (len != 2 * NX_TCP_INET_PSK_SIZE) {
+                fprintf(stderr, "Invalid PSK: expected %d hex chars, got %zu\n",
+                        2 * NX_TCP_INET_PSK_SIZE, len);
+                return 1;
+            }
+            for (size_t i = 0; i < NX_TCP_INET_PSK_SIZE; i++) {
+                unsigned v;
+                if (sscanf(optarg + 2 * i, "%2x", &v) != 1) {
+                    fprintf(stderr, "Invalid hex in PSK at char %zu\n", 2 * i);
+                    return 1;
+                }
+                cfg.psk[i] = (uint8_t)v;
+            }
+            cfg.psk_len = NX_TCP_INET_PSK_SIZE;
+            break;
+        }
+        case 'A':
+            if (cfg.allow_count >= NX_TCP_INET_MAX_ALLOW) {
+                fprintf(stderr, "Too many allow entries (max %d)\n",
+                        NX_TCP_INET_MAX_ALLOW);
+                return 1;
+            }
+            strncpy(cfg.allow_list[cfg.allow_count], optarg,
+                    sizeof(cfg.allow_list[0]) - 1);
+            cfg.allow_count++;
             break;
         case 'n':
             cfg.no_multicast = 1;
@@ -584,6 +619,14 @@ int main(int argc, char **argv)
     }
     tcp_cfg.peer_count = cfg.peer_count;
 
+    if (cfg.psk_len > 0) {
+        memcpy(tcp_cfg.psk, cfg.psk, cfg.psk_len);
+        tcp_cfg.psk_len = cfg.psk_len;
+    }
+    for (int i = 0; i < cfg.allow_count; i++)
+        tcp_cfg.allow_list[i] = cfg.allow_list[i];
+    tcp_cfg.allow_count = cfg.allow_count;
+
     nx_err_t err = tcp->ops->init(tcp, &tcp_cfg);
     if (err != NX_OK) {
         fprintf(stderr, "TCP init failed: %d\n", err);
@@ -591,10 +634,16 @@ int main(int argc, char **argv)
     }
     nx_transport_register(tcp);
 
-    printf("TCP inet: listening on :%u, %d outbound peer(s)\n",
-           cfg.listen_port, cfg.peer_count);
+    printf("TCP inet: listening on :%u, %d outbound peer(s)%s\n",
+           cfg.listen_port, cfg.peer_count,
+           cfg.psk_len ? " [PSK auth enabled]" : "");
     for (int i = 0; i < cfg.peer_count; i++)
         printf("  peer: %s:%u\n", cfg.peers[i].host, cfg.peers[i].port);
+    if (cfg.allow_count > 0) {
+        printf("TCP allow-list (%d):\n", cfg.allow_count);
+        for (int i = 0; i < cfg.allow_count; i++)
+            printf("  allow: %s\n", cfg.allow_list[i]);
+    }
 
     printf("Transports: %d active", nx_transport_count());
     if (udp) printf(" [UDP-multicast]");
