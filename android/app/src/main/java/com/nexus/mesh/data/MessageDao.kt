@@ -40,4 +40,12 @@ interface MessageDao {
 
     @Query("DELETE FROM messages WHERE groupId = :groupId")
     suspend fun deleteAllForGroup(groupId: String)
+
+    @Query(
+        "SELECT messages.* FROM messages " +
+        "JOIN messages_fts ON messages.id = messages_fts.rowid " +
+        "WHERE messages_fts MATCH :query " +
+        "ORDER BY messages.timestamp DESC LIMIT :limit"
+    )
+    suspend fun searchMessages(query: String, limit: Int = 200): List<MessageEntity>
 }

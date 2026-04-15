@@ -35,6 +35,24 @@ class MessageRepository(private val db: NexusDatabase) {
     suspend fun findByNxmMsgId(msgId: String): MessageEntity? =
         messageDao.findByNxmMsgId(msgId)
 
+    suspend fun searchMessages(query: String, limit: Int = 200): List<MessageEntity> {
+        val cleaned = query.trim()
+        if (cleaned.isEmpty()) return emptyList()
+        // Prefix-match every whitespace-delimited token so partial words still hit FTS4.
+        val fts = cleaned.split(Regex("\\s+"))
+            .filter { it.isNotEmpty() }
+            .joinToString(" ") { token ->
+                val escaped = token.replace("\"", "")
+                "\"$escaped\"*"
+            }
+        if (fts.isEmpty()) return emptyList()
+        return try {
+            messageDao.searchMessages(fts, limit)
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     suspend fun deleteMessage(id: Long) = messageDao.deleteById(id)
 
     suspend fun clearMessages(peerAddr: String) = messageDao.deleteAllForPeer(peerAddr)

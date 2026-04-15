@@ -8,12 +8,13 @@ import androidx.room.RoomDatabase
 @Database(
     entities = [
         MessageEntity::class,
+        MessageFts::class,
         ConversationEntity::class,
         ContactEntity::class,
         GroupEntity::class,
         GroupMemberEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class NexusDatabase : RoomDatabase() {
