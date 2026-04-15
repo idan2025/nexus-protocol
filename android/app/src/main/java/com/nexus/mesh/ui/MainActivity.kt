@@ -243,6 +243,8 @@ fun NexusApp(activity: MainActivity) {
                     ConversationScreen(activity, navController, address)
                 }
                 composable("qr") { QrScreen(activity, navController) }
+                composable("announce_stream") { AnnounceStreamScreen(activity, navController) }
+                composable("contacts") { ContactsScreen(activity, navController) }
                 composable(
                     "map/{lat}/{lon}",
                     arguments = listOf(

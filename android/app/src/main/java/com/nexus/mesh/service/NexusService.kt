@@ -92,6 +92,14 @@ class NexusService : Service(), NexusNode.Callback {
 
     data class Neighbor(val addr: String, val role: Int)
 
+    data class AnnounceEvent(
+        val addr: String,
+        val role: Int,
+        val firstSeenMs: Long,
+        val lastSeenMs: Long,
+        val count: Int
+    )
+
     data class RouteInfo(
         val hopCount: Int,
         val viaTransport: Int,
@@ -103,6 +111,9 @@ class NexusService : Service(), NexusNode.Callback {
 
     private val _neighbors = MutableStateFlow<List<Neighbor>>(emptyList())
     val neighbors: StateFlow<List<Neighbor>> = _neighbors
+
+    private val _announceStream = MutableStateFlow<List<AnnounceEvent>>(emptyList())
+    val announceStream: StateFlow<List<AnnounceEvent>> = _announceStream
 
     private val _address = MutableStateFlow("--------")
     val address: StateFlow<String> = _address
@@ -552,6 +563,26 @@ class NexusService : Service(), NexusNode.Callback {
         existing.removeAll { it.addr == addrHex }
         existing.add(Neighbor(addrHex, role))
         _neighbors.value = existing
+
+        // Bump lastSeen on known contacts (don't auto-create).
+        scope.launch {
+            repository.getContact(addrHex)?.let {
+                repository.upsertContact(it.copy(lastSeen = System.currentTimeMillis()))
+            }
+        }
+
+        // Announce stream: keep most-recent 200 events, coalesce by addr.
+        val nowMs = System.currentTimeMillis()
+        val stream = _announceStream.value.toMutableList()
+        val existingIdx = stream.indexOfFirst { it.addr == addrHex }
+        if (existingIdx >= 0) {
+            val prior = stream.removeAt(existingIdx)
+            stream.add(0, prior.copy(role = role, lastSeenMs = nowMs, count = prior.count + 1))
+        } else {
+            stream.add(0, AnnounceEvent(addrHex, role, nowMs, nowMs, 1))
+        }
+        if (stream.size > 200) stream.subList(200, stream.size).clear()
+        _announceStream.value = stream
 
         // Pull any stored-and-forward packets held for us by pillars/vaults/anchors.
         // Request once per neighbor per session.

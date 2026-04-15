@@ -28,7 +28,17 @@ fun MeshScreen(activity: MainActivity, navController: NavController) {
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("Mesh Network") })
+            TopAppBar(
+                title = { Text("Mesh Network") },
+                actions = {
+                    TextButton(onClick = { navController.navigate("contacts") }) {
+                        Text("Contacts")
+                    }
+                    TextButton(onClick = { navController.navigate("announce_stream") }) {
+                        Text("Announces")
+                    }
+                }
+            )
         }
     ) { padding ->
         LazyColumn(

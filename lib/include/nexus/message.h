@@ -70,6 +70,7 @@ typedef enum {
     NX_FIELD_CONTACT_PUB  = 0x10, /* 32-byte Ed25519 pubkey */
     NX_FIELD_CODEC       = 0x11,  /* uint8: audio codec ID */
     NX_FIELD_SIGNATURE   = 0x12,  /* 64-byte Ed25519 signature */
+    NX_FIELD_TITLE       = 0x13,  /* UTF-8 subject / title (LXMF parity) */
 } nx_field_type_t;
 
 /* ── Size limits ────────────────────────────────────────────────────── */
@@ -78,6 +79,7 @@ typedef enum {
 #define NX_MSG_MAX_FIELDS     16     /* Max fields per message */
 #define NX_MSG_MAX_TEXT       200     /* Max text per single-packet message */
 #define NX_MSG_MAX_NICKNAME    32     /* Max nickname length */
+#define NX_MSG_MAX_TITLE      128     /* Max title length (LXMF parity) */
 #define NX_MSG_MAX_SIZE      3800     /* Max serialized message (fits in fragmentation) */
 
 /* ── Message ID ─────────────────────────────────────────────────────── */
@@ -135,6 +137,9 @@ nx_err_t nx_msg_builder_add_reply(nx_msg_builder_t *b, const nx_msg_id_t *reply_
 
 /* Convenience: add a nickname. */
 nx_err_t nx_msg_builder_add_nickname(nx_msg_builder_t *b, const char *name);
+
+/* Convenience: add a title (LXMF parity). Truncated to NX_MSG_MAX_TITLE. */
+nx_err_t nx_msg_builder_add_title(nx_msg_builder_t *b, const char *title);
 
 /* Finalize and get the serialized buffer. Writes the header.
  * Returns pointer to internal buffer and sets *out_len. */

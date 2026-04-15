@@ -6,12 +6,17 @@ import java.nio.ByteOrder
 object NxmBuilder {
 
     fun buildText(text: String, msgId: ByteArray? = null,
-                  replyTo: ByteArray? = null): ByteArray {
+                  replyTo: ByteArray? = null,
+                  title: String? = null): ByteArray {
         var flags = 0
         val fields = mutableListOf<Pair<NxmFieldType, ByteArray>>()
 
         val id = msgId ?: generateMsgId()
         fields.add(NxmFieldType.MSG_ID to id)
+        if (title != null) {
+            val tb = title.toByteArray(Charsets.UTF_8)
+            fields.add(NxmFieldType.TITLE to (if (tb.size > 128) tb.copyOf(128) else tb))
+        }
         fields.add(NxmFieldType.TEXT to text.toByteArray(Charsets.UTF_8))
 
         if (replyTo != null) {

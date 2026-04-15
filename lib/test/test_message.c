@@ -551,6 +551,33 @@ static void test_sign_buffer_too_small(void)
     PASS();
 }
 
+static void test_title_field(void)
+{
+    TEST("title field round-trip (LXMF parity)");
+
+    nx_msg_builder_t b;
+    nx_msg_builder_init(&b, NX_MSG_TEXT, 0);
+
+    nx_msg_id_t id;
+    nx_msg_id_generate(&id);
+    ASSERT(nx_msg_builder_add(&b, NX_FIELD_MSG_ID, id.bytes, 4) == NX_OK, "add msg_id");
+    ASSERT(nx_msg_builder_add_title(&b, "Re: meeting") == NX_OK, "add title");
+    ASSERT(nx_msg_builder_add_text(&b, "see you at 10") == NX_OK, "add text");
+
+    size_t out_len;
+    const uint8_t *out = nx_msg_builder_finish(&b, &out_len);
+    ASSERT(out != NULL && out_len > 0, "finish");
+
+    nx_message_t msg;
+    ASSERT(nx_msg_parse(out, out_len, &msg) == NX_OK, "parse");
+    const nx_msg_field_t *t = nx_msg_find_field(&msg, NX_FIELD_TITLE);
+    ASSERT(t != NULL, "title field missing");
+    ASSERT(t->len == 11, "title length");
+    ASSERT(memcmp(t->data, "Re: meeting", 11) == 0, "title bytes");
+
+    PASS();
+}
+
 /* ── Main ───────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -582,6 +609,7 @@ int main(void)
     test_verify_wrong_key();
     test_unsigned_verify();
     test_sign_buffer_too_small();
+    test_title_field();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

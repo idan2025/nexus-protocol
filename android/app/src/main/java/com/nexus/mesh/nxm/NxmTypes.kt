@@ -37,7 +37,8 @@ enum class NxmFieldType(val value: Int) {
     CONTACT_ADDR(0x0F),
     CONTACT_PUB(0x10),
     CODEC(0x11),
-    SIGNATURE(0x12);
+    SIGNATURE(0x12),
+    TITLE(0x13);
 
     companion object {
         fun fromValue(v: Int): NxmFieldType? = entries.find { it.value == v }
@@ -87,6 +88,9 @@ data class NxmMessage(
 
     val nickname: String?
         get() = findField(NxmFieldType.NICKNAME)?.data?.toString(Charsets.UTF_8)
+
+    val title: String?
+        get() = findField(NxmFieldType.TITLE)?.data?.toString(Charsets.UTF_8)
 
     val filename: String?
         get() = findField(NxmFieldType.FILENAME)?.data?.toString(Charsets.UTF_8)

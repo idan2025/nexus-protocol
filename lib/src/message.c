@@ -126,6 +126,14 @@ nx_err_t nx_msg_builder_add_nickname(nx_msg_builder_t *b, const char *name)
     return nx_msg_builder_add(b, NX_FIELD_NICKNAME, (const uint8_t *)name, (uint16_t)slen);
 }
 
+nx_err_t nx_msg_builder_add_title(nx_msg_builder_t *b, const char *title)
+{
+    if (!title) return NX_ERR_INVALID_ARG;
+    size_t slen = strlen(title);
+    if (slen > NX_MSG_MAX_TITLE) slen = NX_MSG_MAX_TITLE;
+    return nx_msg_builder_add(b, NX_FIELD_TITLE, (const uint8_t *)title, (uint16_t)slen);
+}
+
 const uint8_t *nx_msg_builder_finish(nx_msg_builder_t *b, size_t *out_len)
 {
     /* Write header at the beginning */

@@ -28,6 +28,7 @@ MAX_FIELDS = 16
 MAX_SIZE = 3800
 MAX_TEXT = 200
 MAX_NICKNAME = 32
+MAX_TITLE = 128
 
 
 # ── Message types ──────────────────────────────────────────────────────
@@ -79,6 +80,7 @@ class FieldType(IntEnum):
     CONTACT_PUB = 0x10
     CODEC = 0x11
     SIGNATURE = 0x12
+    TITLE = 0x13
 
 
 # ── Field data class ──────────────────────────────────────────────────
@@ -136,6 +138,18 @@ class Message:
     def nickname(self) -> Optional[str]:
         """Get nickname, or None."""
         f = self.find_field(FieldType.NICKNAME)
+        return f.data.decode('utf-8', errors='replace') if f else None
+
+    @property
+    def title(self) -> Optional[str]:
+        """Get title / subject (LXMF parity), or None."""
+        f = self.find_field(FieldType.TITLE)
+        return f.data.decode('utf-8', errors='replace') if f else None
+
+    @property
+    def mimetype(self) -> Optional[str]:
+        """Get MIME type string, or None."""
+        f = self.find_field(FieldType.MIMETYPE)
         return f.data.decode('utf-8', errors='replace') if f else None
 
     @property
@@ -283,6 +297,11 @@ class MessageBuilder:
         """Add a nickname field."""
         encoded = name.encode('utf-8')[:MAX_NICKNAME]
         return self.add(FieldType.NICKNAME, encoded)
+
+    def add_title(self, title: str) -> 'MessageBuilder':
+        """Add a subject/title field (LXMF parity)."""
+        encoded = title.encode('utf-8')[:MAX_TITLE]
+        return self.add(FieldType.TITLE, encoded)
 
     def add_location(self, lat: float, lon: float,
                      alt_m: int = 0, accuracy_m: int = 0) -> 'MessageBuilder':

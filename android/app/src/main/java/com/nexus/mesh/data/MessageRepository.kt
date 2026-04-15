@@ -70,6 +70,10 @@ class MessageRepository(private val db: NexusDatabase) {
 
     suspend fun upsertContact(contact: ContactEntity) = contactDao.upsert(contact)
 
+    suspend fun deleteContact(contact: ContactEntity) = contactDao.delete(contact.address)
+
+    suspend fun getContact(address: String): ContactEntity? = contactDao.getByAddress(address)
+
     // --- Groups ---
 
     fun getGroups(): Flow<List<GroupEntity>> = groupDao.getAll()
