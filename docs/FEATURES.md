@@ -52,7 +52,7 @@ Grouped by subsystem. Priority: **P0** blocker, **P1** parity, **P2** polish.
 - **P1 ✅** Optional peer auth — X25519 pre-shared cert or allow-list of short addrs.
 - **P1 ✅** HTTP stats endpoint (`/metrics`, Prometheus text format): connected_peers, mailbox_depth, bytes/sec, dedup_hits.
 - **P1** Multi-pillar mailbox sync — on federation, gossip message IDs + pull missing.
-- **P1** systemd `ExecReload` wired to `SIGHUP` re-announce (done) + `/reload` admin UDS.
+- **P1 ✅** systemd `ExecReload` wired to `SIGHUP` re-announce (done) + `/reload` admin UDS.
 - **P2** GeoIP / ASN aware peer selection hints.
 - **P2** TLS wrap option (pillard listens on 4242 + 4243-TLS for hostile networks).
 - **P2** Web admin (read-only, journal-style dashboard).

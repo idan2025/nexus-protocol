@@ -48,6 +48,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -75,6 +76,7 @@ typedef struct {
     uint16_t metrics_port;       /* 0 = off */
     uint32_t peer_rate_window_s; /* announces-per-window threshold window */
     uint32_t peer_rate_limit;    /* warn when a peer exceeds this in window */
+    char     admin_socket[256];  /* UDS path for admin commands; "" disables */
 } pillard_config_t;
 
 /* Per-peer rate-limit tracker. Keyed by 4-byte short address. Not a hard
@@ -110,6 +112,11 @@ static pthread_mutex_t  g_rate_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t g_metrics_thread;
 static int       g_metrics_running = 0;
 static int       g_metrics_fd = -1;
+
+static pthread_t g_admin_thread;
+static int       g_admin_running = 0;
+static int       g_admin_fd = -1;
+static char      g_admin_bound_path[256] = {0}; /* so we know what to unlink */
 
 /* ── Logging ─────────────────────────────────────────────────────────── */
 
@@ -461,6 +468,162 @@ static void metrics_stop(void)
     pthread_join(g_metrics_thread, NULL);
 }
 
+/* ── Admin UDS ───────────────────────────────────────────────────────────
+ *
+ * A tiny Unix-domain control socket. Line-based protocol, one command per
+ * connection. Intended for local operators and systemd ExecReload (which
+ * can just `echo reload | socat - UNIX-CONNECT:/run/nexus/pillard.sock`).
+ *
+ * Commands:
+ *   ping           -> pong
+ *   stats          -> logs stats, returns a one-line summary
+ *   reload         -> same as SIGHUP (re-announce on all transports)
+ *   shutdown|quit  -> graceful exit
+ *   help           -> command list
+ *
+ * Access control is filesystem-based: the socket is created with mode 0660
+ * so only processes in the owner+group (typically the systemd unit's user
+ * and a nexus-admin group) can open it. No auth beyond that.
+ */
+
+static void admin_reply(int cfd, const char *s)
+{
+    (void)send(cfd, s, strlen(s), MSG_NOSIGNAL);
+}
+
+static void admin_handle_client(int cfd)
+{
+    char buf[128];
+    ssize_t n = recv(cfd, buf, sizeof(buf) - 1, 0);
+    if (n <= 0) {
+        close(cfd);
+        return;
+    }
+    buf[n] = '\0';
+    /* strip trailing newline/CR/whitespace */
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' ||
+                     buf[n - 1] == ' '  || buf[n - 1] == '\t')) {
+        buf[--n] = '\0';
+    }
+
+    if (strcmp(buf, "ping") == 0) {
+        admin_reply(cfd, "pong\n");
+    } else if (strcmp(buf, "reload") == 0) {
+        g_reannounce = 1;
+        admin_reply(cfd, "ok reload\n");
+        LOG_INFO("admin: reload requested");
+    } else if (strcmp(buf, "stats") == 0) {
+        g_dump_stats = 1;
+        char line[160];
+        snprintf(line, sizeof(line),
+                 "ok stats rx_data=%llu rx_session=%llu rx_group=%llu "
+                 "announces=%llu rate_warn=%llu\n",
+                 (unsigned long long)g_msgs_data,
+                 (unsigned long long)g_msgs_session,
+                 (unsigned long long)g_msgs_group,
+                 (unsigned long long)g_announces,
+                 (unsigned long long)g_rate_warnings);
+        admin_reply(cfd, line);
+    } else if (strcmp(buf, "shutdown") == 0 || strcmp(buf, "quit") == 0) {
+        g_running = 0;
+        admin_reply(cfd, "ok shutdown\n");
+        LOG_INFO("admin: shutdown requested");
+    } else if (strcmp(buf, "help") == 0 || buf[0] == '\0') {
+        admin_reply(cfd,
+            "commands: ping reload stats shutdown help\n");
+    } else {
+        admin_reply(cfd, "error unknown-command\n");
+    }
+    close(cfd);
+}
+
+static void *admin_thread_main(void *arg)
+{
+    (void)arg;
+    while (g_admin_running && g_admin_fd >= 0) {
+        int cfd = accept(g_admin_fd, NULL, NULL);
+        if (cfd < 0) {
+            if (errno == EINTR) continue;
+            if (!g_admin_running) break;
+            usleep(100000);
+            continue;
+        }
+        admin_handle_client(cfd);
+    }
+    return NULL;
+}
+
+static int admin_start(const char *path)
+{
+    if (!path || !*path) return -1;
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sun_family = AF_UNIX;
+    if (strlen(path) >= sizeof(sa.sun_path)) {
+        close(fd);
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    strncpy(sa.sun_path, path, sizeof(sa.sun_path) - 1);
+
+    /* ensure parent dir exists (best effort) */
+    ensure_parent_dir(path);
+
+    /* Stale socket from a crashed previous run would refuse to bind;
+     * unlink only if it's actually a socket so we don't nuke arbitrary files. */
+    struct stat st;
+    if (lstat(path, &st) == 0 && S_ISSOCK(st.st_mode)) {
+        unlink(path);
+    }
+
+    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        close(fd);
+        return -1;
+    }
+    /* 0660: owner + group. Group membership gates operator access. */
+    (void)chmod(path, 0660);
+
+    if (listen(fd, 4) < 0) {
+        close(fd);
+        unlink(path);
+        return -1;
+    }
+
+    g_admin_fd = fd;
+    g_admin_running = 1;
+    strncpy(g_admin_bound_path, path, sizeof(g_admin_bound_path) - 1);
+
+    if (pthread_create(&g_admin_thread, NULL, admin_thread_main, NULL) != 0) {
+        close(fd);
+        unlink(path);
+        g_admin_fd = -1;
+        g_admin_running = 0;
+        g_admin_bound_path[0] = '\0';
+        return -1;
+    }
+    return 0;
+}
+
+static void admin_stop(void)
+{
+    if (!g_admin_running) return;
+    g_admin_running = 0;
+    if (g_admin_fd >= 0) {
+        shutdown(g_admin_fd, SHUT_RDWR);
+        close(g_admin_fd);
+        g_admin_fd = -1;
+    }
+    pthread_join(g_admin_thread, NULL);
+    if (g_admin_bound_path[0]) {
+        unlink(g_admin_bound_path);
+        g_admin_bound_path[0] = '\0';
+    }
+}
+
 /* ── Stats ───────────────────────────────────────────────────────────── */
 
 static void dump_stats(void)
@@ -502,6 +665,9 @@ static void print_usage(const char *prog)
         "  -M PORT        Expose Prometheus /metrics on this TCP port (default: off)\n"
         "  -r N/WINDOW    Warn when a peer exceeds N announces per WINDOW seconds\n"
         "                 (e.g. '-r 60/60' = 60/min). 0 disables (default).\n"
+        "  -u PATH        Admin control socket (default: /run/nexus/pillard.sock,\n"
+        "                 fallback $HOME/.nexus/pillard.sock). 'off' disables.\n"
+        "                 Commands: ping reload stats shutdown (newline terminated).\n"
         "  -v             Verbose debug logging\n"
         "  -h             Show this help\n"
         "\n"
@@ -556,8 +722,24 @@ int main(int argc, char **argv)
     g_cfg.foreground = 0;
     resolve_default_identity_path(g_cfg.identity_file, sizeof(g_cfg.identity_file));
 
+    /* Default admin socket: /run/nexus/pillard.sock when writable, else
+     * $HOME/.nexus/pillard.sock for unprivileged dev runs. */
+    if (access("/run/nexus", W_OK) == 0 || access("/run", W_OK) == 0) {
+        snprintf(g_cfg.admin_socket, sizeof(g_cfg.admin_socket),
+                 "/run/nexus/pillard.sock");
+    } else {
+        const char *home = getenv("HOME");
+        if (home) {
+            snprintf(g_cfg.admin_socket, sizeof(g_cfg.admin_socket),
+                     "%s/.nexus/pillard.sock", home);
+        } else {
+            snprintf(g_cfg.admin_socket, sizeof(g_cfg.admin_socket),
+                     "/tmp/pillard.sock");
+        }
+    }
+
     int opt;
-    while ((opt = getopt(argc, argv, "p:i:c:mVfM:r:vh")) != -1) {
+    while ((opt = getopt(argc, argv, "p:i:c:mVfM:r:u:vh")) != -1) {
         switch (opt) {
         case 'p':
             g_cfg.listen_port = (uint16_t)atoi(optarg);
@@ -600,6 +782,15 @@ int main(int argc, char **argv)
             g_cfg.peer_rate_window_s = (uint32_t)atoi(slash + 1);
             break;
         }
+        case 'u':
+            if (strcmp(optarg, "off") == 0) {
+                g_cfg.admin_socket[0] = '\0';
+            } else {
+                strncpy(g_cfg.admin_socket, optarg,
+                        sizeof(g_cfg.admin_socket) - 1);
+                g_cfg.admin_socket[sizeof(g_cfg.admin_socket) - 1] = '\0';
+            }
+            break;
         case 'v': g_cfg.verbose = 1; break;
         case 'h': print_usage(argv[0]); return 0;
         default:  print_usage(argv[0]); return 1;
@@ -725,6 +916,18 @@ int main(int argc, char **argv)
                  g_cfg.peer_rate_limit, g_cfg.peer_rate_window_s);
     }
 
+    /* ── Admin UDS (optional) ────────────────────────────────────────── */
+
+    if (g_cfg.admin_socket[0]) {
+        if (admin_start(g_cfg.admin_socket) == 0) {
+            LOG_INFO("admin socket at %s (commands: ping reload stats shutdown)",
+                     g_cfg.admin_socket);
+        } else {
+            LOG_WARN("admin socket %s bind failed: %s",
+                     g_cfg.admin_socket, strerror(errno));
+        }
+    }
+
     /* ── Announce + event loop ───────────────────────────────────────── */
 
     g_start_time = time(NULL);
@@ -756,6 +959,7 @@ int main(int argc, char **argv)
 
     LOG_INFO("shutting down");
     dump_stats();
+    admin_stop();
     metrics_stop();
     nx_node_stop(&g_node);
     LOG_INFO("stopped");

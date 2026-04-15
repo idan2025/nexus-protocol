@@ -13,6 +13,11 @@
 #   journalctl -u nexus-pillar -f
 #   sudo systemctl kill --signal=SIGUSR1 nexus-pillar   # dump stats
 #   sudo systemctl reload nexus-pillar                   # re-announce (SIGHUP)
+#
+# Admin UDS (non-root if your user is in the `nexus` group):
+#   echo reload   | socat - UNIX-CONNECT:/run/nexus/pillard.sock
+#   echo stats    | socat - UNIX-CONNECT:/run/nexus/pillard.sock
+#   echo shutdown | socat - UNIX-CONNECT:/run/nexus/pillard.sock
 
 [Unit]
 Description=NEXUS Pillar Server (public mesh relay)
@@ -28,8 +33,14 @@ WorkingDirectory=/var/lib/nexus
 
 # Foreground (-f) is required under Type=simple so systemd tracks the PID.
 # Adjust port/peers/flags as needed.
-ExecStart=/usr/local/bin/pillard -f -p 4242 -i /var/lib/nexus/pillar.identity
+ExecStart=/usr/local/bin/pillard -f -p 4242 -i /var/lib/nexus/pillar.identity -u /run/nexus/pillard.sock
 ExecReload=/bin/kill -HUP $MAINPID
+
+# systemd creates /run/nexus at start (mode 0755, owned by User+Group) and
+# removes it on stop. The admin UDS lives there so operators in the `nexus`
+# group can issue reload/stats without sudo.
+RuntimeDirectory=nexus
+RuntimeDirectoryMode=0750
 
 Restart=on-failure
 RestartSec=5s

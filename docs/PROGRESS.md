@@ -17,6 +17,28 @@ Shorthand:
 
 ## Now in flight
 
+### Pillar: admin UDS (`/reload` et al.) `[done 2026-04-15]`
+- New Unix-domain control socket in `app/pillard.c`: line-based protocol,
+  one command per connection. Commands: `ping`, `reload` (same as SIGHUP),
+  `stats`, `shutdown`/`quit`, `help`. Access control via filesystem perms
+  (0660, owner+group).
+- CLI: `-u PATH` overrides default. `-u off` disables. Default picks
+  `/run/nexus/pillard.sock` when `/run` is writable, else
+  `$HOME/.nexus/pillard.sock`, else `/tmp/pillard.sock`.
+- Accept thread lifecycle mirrors the metrics thread
+  (`admin_start`/`admin_stop` with pthread + shutdown via `shutdown(fd)`).
+  Stale sockets from crashed runs are unlinked iff they're actually sockets
+  (lstat + S_ISSOCK) so we never nuke arbitrary files.
+- `scripts/nexus-pillar.service` updated: adds `RuntimeDirectory=nexus`
+  (systemd creates `/run/nexus` 0750, cleans up on stop), ExecStart now
+  passes `-u /run/nexus/pillard.sock`, and header comments document the
+  `socat - UNIX-CONNECT:...` one-liners operators can use without sudo.
+- Smoke-tested locally with `-p 24242 -u /tmp/pillard-test.sock`:
+  `ping` → `pong`, `stats` → one-line summary + journal dump,
+  `reload` → `ok reload` + INFO log, `shutdown` → clean exit and socket
+  unlink. Socket file gone after process exits.
+- Closes P1 "`/reload` admin UDS" from `docs/FEATURES.md` §2.
+
 ### Testing: fuzz harnesses for wire-format parsers `[done 2026-04-15]`
 - Three libFuzzer-style targets under `lib/test/fuzz/`:
   - `fuzz_packet.c` → `nx_packet_deserialize` (13-byte header + framing)
