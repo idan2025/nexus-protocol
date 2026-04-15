@@ -8,9 +8,9 @@ Grouped by subsystem. Priority: **P0** blocker, **P1** parity, **P2** polish.
 ## 1. Android Client
 
 ### Messaging / UX
-- **P0** File & image attachments end-to-end (picker → chunked `nx_node_send_large` → fragment reassembly → inline render).
-- **P0** Voice-note recorder (AMR-WB or Opus, 3kB/s target, attach as `VOICE_NOTE` NXM field).
-- **P0** Delivery receipts UI — show sent/relayed/delivered/read states per bubble (hook `ACK` NXM type).
+- **P0 ✅** File & image attachments end-to-end (picker → chunked `nx_node_send_large` → fragment reassembly → inline render).
+- **P0 ✅** Voice-note recorder (AMR_NB 4750 bps, attach as `VOICE_NOTE` NXM field).
+- **P0 ✅** Delivery receipts UI — sent/relayed/delivered/read states per bubble (hooks `ACK` + `READ` NXM types).
 - **P1** Message search across conversations (Room FTS4 index on plaintext).
 - **P1** Announce Stream screen — live feed of announces received, tap to add contact.
 - **P1** Contacts / Address Book with nicknames, sync via `CONTACT` NXM type.
@@ -20,14 +20,14 @@ Grouped by subsystem. Priority: **P0** blocker, **P1** parity, **P2** polish.
 - **P2** Dark theme + Material You dynamic color.
 
 ### Identity & Storage
-- **P0** Identity backup/export (encrypted keystore → QR or file, passphrase-wrapped).
-- **P0** Identity restore on new device + migration of conversations.
+- **P0 ✅** Identity backup/export (encrypted file, passphrase-wrapped).
+- **P0 ✅** Identity restore on new device + migration of conversations.
 - **P1** Secondary identities (multi-account switcher).
 - **P1** Per-conversation encryption at rest (passphrase unlock gate).
 
 ### Transport / Connectivity
-- **P0** Pillar **inbox pull** — after connecting, request stored-and-forward messages tagged for us (currently only receives live relay).
-- **P0** Battery-optimization whitelist prompt on first run (Android 12+ silently kills foreground service otherwise).
+- **P0 ✅** Pillar **inbox pull** — auto-requests on discovery of anchor/pillar/vault neighbor (once per session).
+- **P0 ✅** Battery-optimization whitelist prompt on first run.
 - **P1** Wi-Fi-only / metered-aware Pillar connect policy.
 - **P1** Multi-Pillar failover (try next on timeout, currently connects to all in parallel).
 - **P2** In-app Pillar discovery (scan a well-known list / DNS-SD).
@@ -47,8 +47,8 @@ Grouped by subsystem. Priority: **P0** blocker, **P1** parity, **P2** polish.
 
 ## 2. Pillar Server (`pillard`)
 
-- **P0** Pillar **inbox fetch protocol** — client sends `NX_EXTHDR_INBOX_REQ`, pillar replays stored packets addressed to sender.
-- **P0** Per-peer rate limiting (tokens/sec, drop & log).
+- **P0 ✅** Pillar **inbox fetch protocol** — client sends `NX_EXTHDR_INBOX_REQ`, pillar replays stored packets addressed to sender.
+- **P0 ✅** Per-peer rate limiting (token bucket, WARN on overflow).
 - **P1** Optional peer auth — X25519 pre-shared cert or allow-list of short addrs.
 - **P1** HTTP stats endpoint (`/metrics`, Prometheus text format): connected_peers, mailbox_depth, bytes/sec, dedup_hits.
 - **P1** Multi-pillar mailbox sync — on federation, gossip message IDs + pull missing.
@@ -62,9 +62,9 @@ Grouped by subsystem. Priority: **P0** blocker, **P1** parity, **P2** polish.
 ## 3. Firmware (ESP32-S3 / nRF52840 / XIAO / Heltec / RAK)
 
 ### Correctness (see FIRMWARE_DEBUG.md)
-- **P0** Non-blocking LoRa RX in `radiolib_hal.cpp` (replace synchronous `rl->receive()`).
-- **P0** Resolve `setDio2AsRfSwitch` vs external RXEN conflict for WIO-SX1262 boards.
-- **P0** Region-aware default LoRa config (EU868 vs US915 build flag).
+- **P0 ✅** Non-blocking LoRa RX in `radiolib_hal.cpp` (DIO1 ISR + `yield()` poll, no blocking `receive()`).
+- **P0 ✅** Resolve `setDio2AsRfSwitch` vs external RXEN conflict — gated on `NX_LORA_RF_SWITCH_EXTERNAL` per board.
+- **P0 ✅** Region-aware default LoRa config (EU868/US915/AU915/AS923/KR920/IN865 build flags).
 
 ### Features
 - **P1** OLED status pages (Heltec V3 / T-Beam): address, RSSI last, battery, tx/rx counters.
@@ -83,7 +83,7 @@ Grouped by subsystem. Priority: **P0** blocker, **P1** parity, **P2** polish.
 
 ## 4. Protocol Core (libnexus)
 
-- **P0** Inbox pull request/response exthdr types + mailbox query API.
+- **P0 ✅** Inbox pull request exthdr (`NX_EXTHDR_INBOX_REQ=0x30`) + `nx_node_request_inbox()` + mailbox replay.
 - **P1** LXMF parity fields in NXM: title, content-type mime, source-nickname.
 - **P1** Paper-message envelope (offline single-hop, 2kB cap, QR friendly).
 - **P1** PoW stamp field on envelope (LXMF-style, difficulty in announce).

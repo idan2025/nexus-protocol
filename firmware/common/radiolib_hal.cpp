@@ -68,10 +68,12 @@ static nx_err_t rl_init(nx_lora_radio_t *radio, const nx_lora_config_t *config)
     int state = rl->begin(freq, bw, sf, cr, sw, power, pre, tcxo);
     if (state != RADIOLIB_ERR_NONE) return NX_ERR_IO;
 
-    /* DIO2-as-RF-switch: bare SX1262 modules use DIO2 to drive T/R select.
-     * Boards with an external RF switch (WIO-SX1262, Heltec V3 WIO, RAK4631)
-     * install their own switch table from main.cpp. Gate on a build flag so
-     * the two mechanisms don't fight each other. */
+    /* DIO2-as-RF-switch: bare SX1262 modules (Heltec V3, Seeed WIO-SX1262 on
+     * XIAO ESP32S3) use DIO2 to drive the chip's internal T/R select.
+     * Boards with a discrete external RXEN/TXEN switch (RAK4631, XIAO
+     * nRF52840 + WIO-SX1262) set -DNX_LORA_RF_SWITCH_EXTERNAL=1 and install
+     * their own RadioLib switch table from main.cpp. Gate on the build flag
+     * so the two mechanisms don't fight each other. */
 #if !defined(NX_LORA_RF_SWITCH_EXTERNAL) || (NX_LORA_RF_SWITCH_EXTERNAL == 0)
     rl->setDio2AsRfSwitch(true);
 #endif
