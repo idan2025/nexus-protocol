@@ -106,7 +106,7 @@ Grouped by subsystem. Priority: **P0** blocker, **P1** parity, **P2** polish.
 ## 6. Testing / CI
 
 - **P1** Integration test: Android emulator ↔ nexusd ↔ pillard ↔ second emulator.
-- **P1** Fuzzer on packet parser (libFuzzer + Monocypher stub).
+- **P1 ✅** Fuzzer on packet parser (libFuzzer + Monocypher stub).
 - **P2** Soak test rig: 32-node Docker swarm, 1M-packet torture.
 - **P2** Interop harness against Reticulum `rnsd` (shared TCP only — different crypto, won't decode, but proves framing coexistence).
 

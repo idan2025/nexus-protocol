@@ -17,6 +17,29 @@ Shorthand:
 
 ## Now in flight
 
+### Testing: fuzz harnesses for wire-format parsers `[done 2026-04-15]`
+- Three libFuzzer-style targets under `lib/test/fuzz/`:
+  - `fuzz_packet.c` → `nx_packet_deserialize` (13-byte header + framing)
+  - `fuzz_announce.c` → `nx_announce_parse` (130-byte announce payload + sig)
+  - `fuzz_message.c` → `nx_msg_parse` + accessors (`get_text`, `get_location`,
+    `get_msg_id`) so corrupt TLV length prefixes surface as OOB reads
+    under ASan.
+- Dual-mode CMake: `-DNX_FUZZ=ON` builds with clang
+  `-fsanitize=fuzzer,address,undefined` for real coverage-guided runs;
+  `-DNX_FUZZ_STANDALONE=ON` links `fuzz_standalone.c` (a plain `main()`
+  that walks a corpus dir) so GCC-only hosts and CI can replay the seed
+  corpus as regression tests. Both off by default — normal test builds
+  are unchanged.
+- Seed corpus at `lib/test/fuzz/corpus/{fuzz_packet,fuzz_announce,fuzz_message}/`
+  (empty file + a minimal truncated-header sample each). Shrunk crash
+  reproducers should be committed here alongside the fix.
+- Smoke-tested: `cmake .. -DNX_FUZZ_STANDALONE=ON && make && ctest -R fuzz_`
+  passes all three on GCC. Main test suite (`ctest` in `build/`) still
+  20/20 green with no fuzz flag.
+- See `lib/test/fuzz/README.md` for build + run instructions.
+- Closes P1 "Fuzzer on packet parser (libFuzzer + Monocypher stub)" from
+  `docs/FEATURES.md` §6.
+
 ### Firmware: session resume across reboots `[done 2026-04-15, unverified]`
 - Core serialize/deserialize already landed in `0558bc6`
   (`lib/src/session.c` + `nx_session_store_serialize/deserialize`).
