@@ -31,6 +31,7 @@ import androidx.navigation.navArgument
 import com.nexus.mesh.service.NexusService
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.launch
 
 private const val PREFS_STARTUP = "nexus_startup"
 private const val KEY_BATTERY_DISMISSED = "battery_opt_dismissed"
@@ -68,12 +69,17 @@ class MainActivity : ComponentActivity() {
 
         // Register QR scanner launcher
         qrScanLauncher = registerForActivityResult(ScanContract()) { result ->
-            val contents = result.contents
-            if (contents != null && contents.startsWith("nexus://")) {
-                // Parse nexus://ADDRESS/PUBKEY format
-                val parts = contents.removePrefix("nexus://").split("/")
-                if (parts.isNotEmpty() && parts[0].length == 8) {
-                    qrScanCallback?.invoke(parts[0])
+            val contents = result.contents ?: return@registerForActivityResult
+            when {
+                contents.startsWith("nexus://") -> {
+                    // Parse nexus://ADDRESS/PUBKEY format (identity exchange)
+                    val parts = contents.removePrefix("nexus://").split("/")
+                    if (parts.isNotEmpty() && parts[0].length == 8) {
+                        qrScanCallback?.invoke(parts[0])
+                    }
+                }
+                contents.startsWith(com.nexus.mesh.data.PaperMessage.URI_PREFIX) -> {
+                    importPaperMessage(contents)
                 }
             }
         }
@@ -129,6 +135,26 @@ class MainActivity : ComponentActivity() {
 
     fun setQrScanCallback(callback: (String?) -> Unit) {
         qrScanCallback = callback
+    }
+
+    private fun importPaperMessage(uri: String) {
+        val env = com.nexus.mesh.data.PaperMessage.decode(uri) ?: return
+        val svc = nexusService ?: return
+        val repo = svc.repository
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            repo.ensureConversation(env.fromAddr)
+            repo.insertMessage(
+                com.nexus.mesh.data.MessageEntity(
+                    peerAddr = env.fromAddr,
+                    text = env.text,
+                    timestamp = env.timestampMs,
+                    isOutgoing = false,
+                    isDirect = false,
+                    deliveryStatus = com.nexus.mesh.data.DeliveryStatus.DELIVERED,
+                    messageType = com.nexus.mesh.data.MessageType.TEXT
+                )
+            )
+        }
     }
 
     private fun requestPermissions() {
@@ -246,6 +272,7 @@ fun NexusApp(activity: MainActivity) {
                 composable("announce_stream") { AnnounceStreamScreen(activity, navController) }
                 composable("contacts") { ContactsScreen(activity, navController) }
                 composable("search") { SearchScreen(activity, navController) }
+                composable("paper") { PaperMessageScreen(activity, navController) }
                 composable(
                     "map/{lat}/{lon}",
                     arguments = listOf(

@@ -59,6 +59,9 @@ fun ChatScreen(activity: MainActivity, navController: NavController) {
                     IconButton(onClick = { navController.navigate("search") }) {
                         Icon(Icons.Default.Search, contentDescription = "Search messages")
                     }
+                    TextButton(onClick = { navController.navigate("paper") }) {
+                        Text("Paper")
+                    }
                 }
             )
         },
