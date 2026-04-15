@@ -273,6 +273,7 @@ fun NexusApp(activity: MainActivity) {
                 composable("contacts") { ContactsScreen(activity, navController) }
                 composable("search") { SearchScreen(activity, navController) }
                 composable("paper") { PaperMessageScreen(activity, navController) }
+                composable("telemetry") { TelemetryScreen(activity, navController) }
                 composable(
                     "map/{lat}/{lon}",
                     arguments = listOf(

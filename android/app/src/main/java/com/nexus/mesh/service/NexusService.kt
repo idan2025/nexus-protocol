@@ -1095,6 +1095,8 @@ class NexusService : Service(), NexusNode.Callback {
         return node.isNeighbor(bytes) >= 0
     }
 
+    fun getTelemetry(): NexusNode.Telemetry? = node.getTelemetry()
+
     // --- TCP Internet Transport ---
 
     fun startTcpInet(listenPort: Int, peers: String): Boolean {

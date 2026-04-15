@@ -544,6 +544,51 @@ Java_com_nexus_mesh_service_NexusNode_nativeIsNeighbor(JNIEnv *env,
     return nb ? (jint)nb->role : -1;
 }
 
+/*
+ * Live telemetry snapshot. Returns int[10]:
+ *   0: neighbor count
+ *   1: active routes
+ *   2: NX_MAX_ROUTES
+ *   3: anchor stored slots
+ *   4: anchor capacity (NX_ANCHOR_MAX_STORED)
+ *   5: session count
+ *   6: NX_SESSION_MAX
+ *   7: transport count
+ *   8: node role
+ *   9: 1 if running, else 0
+ */
+JNIEXPORT jintArray JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeGetTelemetry(JNIEnv *env,
+                                                          jobject thiz)
+{
+    (void)thiz;
+    jintArray result = env->NewIntArray(10);
+    if (!result) return nullptr;
+
+    jint vals[10] = {0};
+    vals[2] = NX_MAX_ROUTES;
+    vals[4] = NX_ANCHOR_MAX_STORED;
+    vals[6] = NX_SESSION_MAX;
+
+    if (g_running) {
+        const nx_route_table_t *rt = nx_node_route_table(&g_node);
+        vals[0] = nx_neighbor_count(rt);
+        int active = 0;
+        for (int i = 0; i < NX_MAX_ROUTES; i++) {
+            if (rt->routes[i].valid) active++;
+        }
+        vals[1] = active;
+        vals[3] = nx_anchor_count(&g_node.anchor);
+        vals[5] = nx_session_count(&g_node.sessions);
+        vals[7] = nx_transport_count();
+        vals[8] = (jint)g_node.config.role;
+        vals[9] = 1;
+    }
+
+    env->SetIntArrayRegion(result, 0, 10, vals);
+    return result;
+}
+
 /* ── UDP Multicast (auto-discovery on all interfaces) ────────────────── */
 
 JNIEXPORT jboolean JNICALL

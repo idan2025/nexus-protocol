@@ -172,6 +172,37 @@ class NexusNode {
     private external fun nativeStartUdpMulticast(): Boolean
     private external fun nativeStopUdpMulticast()
     private external fun nativeIsUdpMulticastActive(): Boolean
+    private external fun nativeGetTelemetry(): IntArray?
+
+    data class Telemetry(
+        val neighbors: Int,
+        val routesActive: Int,
+        val routesMax: Int,
+        val anchorUsed: Int,
+        val anchorMax: Int,
+        val sessions: Int,
+        val sessionsMax: Int,
+        val transports: Int,
+        val role: Int,
+        val running: Boolean,
+    )
+
+    fun getTelemetry(): Telemetry? {
+        val v = nativeGetTelemetry() ?: return null
+        if (v.size < 10) return null
+        return Telemetry(
+            neighbors = v[0],
+            routesActive = v[1],
+            routesMax = v[2],
+            anchorUsed = v[3],
+            anchorMax = v[4],
+            sessions = v[5],
+            sessionsMax = v[6],
+            transports = v[7],
+            role = v[8],
+            running = v[9] == 1,
+        )
+    }
     private external fun nativeGetRouteInfo(dest: ByteArray): IntArray?
     private external fun nativeIsNeighbor(addr: ByteArray): Int
     private external fun nativeGetSignPubkey(): ByteArray

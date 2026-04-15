@@ -37,6 +37,9 @@ fun MeshScreen(activity: MainActivity, navController: NavController) {
                     TextButton(onClick = { navController.navigate("announce_stream") }) {
                         Text("Announces")
                     }
+                    TextButton(onClick = { navController.navigate("telemetry") }) {
+                        Text("Stats")
+                    }
                 }
             )
         }
