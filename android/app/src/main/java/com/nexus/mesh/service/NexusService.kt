@@ -45,6 +45,9 @@ data class NetworkState(
     }
 
     val canMulticast: Boolean get() = hasWifi || hasEthernet
+
+    /** True if any active network is unmetered (WiFi/Ethernet without quota). */
+    val hasUnmetered: Boolean get() = interfaces.any { !it.isMetered }
 }
 
 class NexusService : Service(), NexusNode.Callback {
@@ -64,6 +67,7 @@ class NexusService : Service(), NexusNode.Callback {
         private const val PREFS_PILLARS = "nexus_pillars"
         private const val KEY_PILLAR_LIST = "pillar_list"
         private const val KEY_PILLARS_ENABLED = "pillars_enabled"
+        private const val KEY_PILLARS_ALLOW_METERED = "pillars_allow_metered"
         val DEFAULT_PILLARS = ""
         private const val NETWORK_DEBOUNCE_MS = 1500L
     }
@@ -135,6 +139,9 @@ class NexusService : Service(), NexusNode.Callback {
 
     private val _pillarConnected = MutableStateFlow(false)
     val pillarConnected: StateFlow<Boolean> = _pillarConnected
+
+    private val _pillarsAllowMetered = MutableStateFlow(false)
+    val pillarsAllowMetered: StateFlow<Boolean> = _pillarsAllowMetered
 
     private val _networkState = MutableStateFlow(NetworkState())
     val networkState: StateFlow<NetworkState> = _networkState
@@ -309,10 +316,21 @@ class NexusService : Service(), NexusNode.Callback {
             }
         }
 
+        // --- Pillar metered policy: disconnect on metered-only when disallowed ---
+        val pillarsEnabled = _pillarsEnabled.value
+        val pillarList = _pillarList.value
+        val allowMetered = _pillarsAllowMetered.value
+        val onlyMetered = state.hasAnyInternet && !state.hasUnmetered
+
+        if (_pillarConnected.value && pillarsEnabled && !allowMetered && onlyMetered) {
+            Log.i(TAG, "Network change: dropped to metered-only, stopping pillars")
+            node.stopTcpInet()
+            _tcpActive.value = false
+            _pillarConnected.value = false
+        }
+
         // --- Reconnect pillars if we have internet but lost connection ---
         if (state.hasAnyInternet) {
-            val pillarsEnabled = _pillarsEnabled.value
-            val pillarList = _pillarList.value
             if (pillarsEnabled && pillarList.isNotBlank() && !_pillarConnected.value) {
                 Log.i(TAG, "Network change: reconnecting pillars")
                 connectToPillars()
@@ -426,9 +444,18 @@ class NexusService : Service(), NexusNode.Callback {
         _pillarsEnabled.value = enabled
         val savedPillars = prefs.getString(KEY_PILLAR_LIST, DEFAULT_PILLARS) ?: ""
         _pillarList.value = savedPillars
+        val allowMetered = prefs.getBoolean(KEY_PILLARS_ALLOW_METERED, false)
+        _pillarsAllowMetered.value = allowMetered
 
         if (!enabled || savedPillars.isBlank()) {
             Log.i(TAG, "Pillars: disabled or no pillars configured")
+            return
+        }
+
+        if (!allowMetered && !_networkState.value.hasUnmetered &&
+                _networkState.value.hasAnyInternet) {
+            Log.i(TAG, "Pillars: skipping auto-connect (metered network and policy disallows)")
+            _pillarConnected.value = false
             return
         }
 
@@ -1189,6 +1216,29 @@ class NexusService : Service(), NexusNode.Callback {
         }
         if (enabled && pillars.isNotBlank()) {
             connectToPillars()
+        }
+    }
+
+    fun setPillarsAllowMetered(allow: Boolean) {
+        val prefs = getSharedPreferences(PREFS_PILLARS, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_PILLARS_ALLOW_METERED, allow).apply()
+        val previous = _pillarsAllowMetered.value
+        _pillarsAllowMetered.value = allow
+        if (previous == allow) return
+
+        val state = _networkState.value
+        val onlyMetered = state.hasAnyInternet && !state.hasUnmetered
+        if (onlyMetered) {
+            if (allow && _pillarsEnabled.value && !_pillarConnected.value &&
+                    _pillarList.value.isNotBlank()) {
+                Log.i(TAG, "Pillars: metered now allowed, attempting connect")
+                connectToPillars()
+            } else if (!allow && _pillarConnected.value) {
+                Log.i(TAG, "Pillars: metered now disallowed, dropping connection")
+                node.stopTcpInet()
+                _tcpActive.value = false
+                _pillarConnected.value = false
+            }
         }
     }
 

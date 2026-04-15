@@ -25,6 +25,7 @@ fun SettingsScreen(activity: MainActivity, navController: NavController? = null)
     val pillarsEnabled by service?.pillarsEnabled?.collectAsState() ?: remember { mutableStateOf(true) }
     val pillarList by service?.pillarList?.collectAsState() ?: remember { mutableStateOf("") }
     val pillarConnected by service?.pillarConnected?.collectAsState() ?: remember { mutableStateOf(false) }
+    val pillarsAllowMetered by service?.pillarsAllowMetered?.collectAsState() ?: remember { mutableStateOf(false) }
     val networkState by service?.networkState?.collectAsState()
         ?: remember { mutableStateOf(com.nexus.mesh.service.NetworkState()) }
 
@@ -244,6 +245,25 @@ fun SettingsScreen(activity: MainActivity, navController: NavController? = null)
                             onCheckedChange = { enabled ->
                                 service?.setPillars(enabled, editPillars)
                             }
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Use Pillars on metered networks")
+                            Text(
+                                "When off, NEXUS waits for WiFi/Ethernet before " +
+                                    "talking to Pillars over the Internet.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = pillarsAllowMetered,
+                            onCheckedChange = { service?.setPillarsAllowMetered(it) }
                         )
                     }
 
