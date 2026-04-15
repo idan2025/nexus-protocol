@@ -42,6 +42,10 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+
+#include "nexus/anchor.h"
 
 /* ── Configuration ───────────────────────────────────────────────────── */
 
@@ -57,6 +61,7 @@ typedef struct {
     int      role;
     int      verbose;
     int      no_multicast;
+    char     uds_path[128];
 } daemon_config_t;
 
 /* ── Globals ─────────────────────────────────────────────────────────── */
@@ -197,6 +202,116 @@ static void on_session(const nx_addr_short_t *src,
                src->bytes[2], src->bytes[3], len);
     }
     fflush(stdout);
+}
+
+/* ── Unix domain socket control plane ────────────────────────────────── */
+
+/* Write each response line to fd (nexus-cli parses them). */
+static void uds_process(int fd, const char *line)
+{
+    while (*line == ' ' || *line == '\t') line++;
+    if (*line == '\0' || *line == '\n') return;
+
+    if (strncmp(line, "send ", 5) == 0) {
+        const char *args = line + 5;
+        while (*args == ' ') args++;
+        if (strlen(args) < 9) {
+            dprintf(fd, "ERR usage: send AABBCCDD text\n");
+            return;
+        }
+        char hex[9];
+        memcpy(hex, args, 8);
+        hex[8] = '\0';
+        nx_addr_short_t dst;
+        if (hex_to_bytes(hex, dst.bytes, 4) != 0) {
+            dprintf(fd, "ERR bad address: %s\n", hex);
+            return;
+        }
+        const char *msg = args + 8;
+        while (*msg == ' ') msg++;
+        size_t msg_len = strlen(msg);
+        while (msg_len > 0 && (msg[msg_len-1] == '\n' || msg[msg_len-1] == '\r'))
+            msg_len--;
+        if (msg_len == 0) {
+            dprintf(fd, "ERR empty body\n");
+            return;
+        }
+        nx_err_t err = nx_node_send(&g_node, &dst, (const uint8_t *)msg, msg_len);
+        if (err == NX_OK) {
+            dprintf(fd, "OK sent %zu bytes to %02X%02X%02X%02X\n",
+                    msg_len, dst.bytes[0], dst.bytes[1], dst.bytes[2], dst.bytes[3]);
+        } else {
+            dprintf(fd, "ERR send failed err=%d\n", err);
+        }
+
+    } else if (strncmp(line, "inbox", 5) == 0) {
+        const nx_anchor_t *a = &g_node.anchor;
+        int total = nx_anchor_count(a);
+        dprintf(fd, "OK total=%d max=%d\n", total, a->max_slots);
+        for (int i = 0; i < NX_ANCHOR_MAX_STORED; i++) {
+            if (!a->msgs[i].valid) continue;
+            const nx_addr_short_t *d = &a->msgs[i].dest;
+            dprintf(fd, "  dst=%02X%02X%02X%02X stored_ms=%llu payload=%u\n",
+                    d->bytes[0], d->bytes[1], d->bytes[2], d->bytes[3],
+                    (unsigned long long)a->msgs[i].stored_ms,
+                    (unsigned)a->msgs[i].pkt.header.payload_len);
+        }
+        dprintf(fd, "END\n");
+
+    } else if (strncmp(line, "status", 6) == 0) {
+        const nx_identity_t *nid = nx_node_identity(&g_node);
+        const nx_route_table_t *rt = nx_node_route_table(&g_node);
+        int n_neighbors = 0, n_routes = 0;
+        for (int i = 0; i < NX_MAX_NEIGHBORS; i++)
+            if (rt->neighbors[i].valid) n_neighbors++;
+        for (int i = 0; i < NX_MAX_ROUTES; i++)
+            if (rt->routes[i].valid) n_routes++;
+        dprintf(fd, "OK addr=%02X%02X%02X%02X neighbors=%d routes=%d transports=%d mailbox=%d\n",
+                nid->short_addr.bytes[0], nid->short_addr.bytes[1],
+                nid->short_addr.bytes[2], nid->short_addr.bytes[3],
+                n_neighbors, n_routes, nx_transport_count(),
+                nx_anchor_count(&g_node.anchor));
+        for (int i = 0; i < NX_MAX_NEIGHBORS; i++) {
+            if (!rt->neighbors[i].valid) continue;
+            const nx_addr_short_t *a = &rt->neighbors[i].addr;
+            dprintf(fd, "  neighbor %02X%02X%02X%02X role=%d\n",
+                    a->bytes[0], a->bytes[1], a->bytes[2], a->bytes[3],
+                    rt->neighbors[i].role);
+        }
+        dprintf(fd, "END\n");
+
+    } else if (strncmp(line, "announce", 8) == 0) {
+        nx_node_announce(&g_node);
+        dprintf(fd, "OK announced\n");
+
+    } else if (strncmp(line, "quit", 4) == 0) {
+        g_running = 0;
+        dprintf(fd, "OK stopping\n");
+
+    } else {
+        dprintf(fd, "ERR unknown command (try: send|inbox|status|announce|quit)\n");
+    }
+}
+
+static int uds_listen(const char *path)
+{
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un sa = {0};
+    sa.sun_family = AF_UNIX;
+    strncpy(sa.sun_path, path, sizeof(sa.sun_path) - 1);
+    unlink(path);
+    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        close(fd);
+        return -1;
+    }
+    chmod(path, 0600);
+    if (listen(fd, 4) < 0) {
+        close(fd);
+        unlink(path);
+        return -1;
+    }
+    return fd;
 }
 
 /* ── Interactive commands ────────────────────────────────────────────── */
@@ -366,7 +481,8 @@ int main(int argc, char **argv)
     }
 
     int opt;
-    while ((opt = getopt(argc, argv, "l:p:i:r:nvh")) != -1) {
+    strncpy(cfg.uds_path, "/tmp/nexusd.sock", sizeof(cfg.uds_path) - 1);
+    while ((opt = getopt(argc, argv, "l:p:i:r:u:nvh")) != -1) {
         switch (opt) {
         case 'l':
             cfg.listen_port = (uint16_t)atoi(optarg);
@@ -399,6 +515,9 @@ int main(int argc, char **argv)
                 fprintf(stderr, "Invalid role: %d\n", cfg.role);
                 return 1;
             }
+            break;
+        case 'u':
+            strncpy(cfg.uds_path, optarg, sizeof(cfg.uds_path) - 1);
             break;
         case 'n':
             cfg.no_multicast = 1;
@@ -531,6 +650,18 @@ int main(int argc, char **argv)
     int flags = fcntl(stdin_fd, F_GETFL, 0);
     fcntl(stdin_fd, F_SETFL, flags | O_NONBLOCK);
 
+    /* ── Unix domain socket (control plane for nexus-cli) ────────────── */
+    int uds_fd = -1;
+    if (cfg.uds_path[0]) {
+        uds_fd = uds_listen(cfg.uds_path);
+        if (uds_fd < 0) {
+            fprintf(stderr, "Warning: could not open UDS %s: %s\n",
+                    cfg.uds_path, strerror(errno));
+        } else {
+            printf("UDS control: %s\n", cfg.uds_path);
+        }
+    }
+
     /* ── Event loop ──────────────────────────────────────────────────── */
 
     uint64_t last_status = nx_platform_time_ms();
@@ -551,6 +682,27 @@ int main(int argc, char **argv)
                     cmd_pos = 0;
                 } else if (cmd_pos < (int)sizeof(cmd_buf) - 1) {
                     cmd_buf[cmd_pos++] = c;
+                }
+            }
+        }
+
+        /* Accept + service one UDS command per tick (one-shot clients). */
+        if (uds_fd >= 0) {
+            struct pollfd upfd = { .fd = uds_fd, .events = POLLIN };
+            if (poll(&upfd, 1, 0) > 0 && (upfd.revents & POLLIN)) {
+                int cfd = accept(uds_fd, NULL, NULL);
+                if (cfd >= 0) {
+                    char ubuf[1024];
+                    ssize_t n = recv(cfd, ubuf, sizeof(ubuf) - 1, 0);
+                    if (n > 0) {
+                        ubuf[n] = '\0';
+                        /* One line at a time; handle only the first. */
+                        char *nl = strchr(ubuf, '\n');
+                        if (nl) *nl = '\0';
+                        uds_process(cfd, ubuf);
+                    }
+                    shutdown(cfd, SHUT_RDWR);
+                    close(cfd);
                 }
             }
         }
