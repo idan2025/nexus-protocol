@@ -172,4 +172,36 @@ nx_err_t nx_session_decrypt(nx_session_t *s,
                             uint8_t *plaintext, size_t plaintext_buf_len,
                             size_t *plaintext_len);
 
+/* ── Persistence ─────────────────────────────────────────────────────── */
+
+/*
+ * Resume across reboots. The blob contains every established session's
+ * ratchet state verbatim — treat it as sensitive key material and encrypt
+ * it at rest before writing to flash.
+ *
+ * Wire format: ['N','X','S','1'][version=1][count][nx_session_t × count]
+ */
+#define NX_SESSION_BLOB_MAGIC    0x4E585331u   /* 'N','X','S','1' */
+#define NX_SESSION_BLOB_VERSION  0x01
+#define NX_SESSION_BLOB_HEADER   6             /* magic(4)+version(1)+count(1) */
+
+/* Upper bound for serialize output: header + NX_SESSION_MAX full sessions. */
+size_t nx_session_store_blob_max(void);
+
+/*
+ * Serialize all valid sessions into buf. On success, *out_len holds the
+ * bytes written. Returns NX_ERR_BUFFER_TOO_SMALL if buf_cap is insufficient.
+ */
+nx_err_t nx_session_store_serialize(const nx_session_store_t *store,
+                                    uint8_t *buf, size_t buf_cap,
+                                    size_t *out_len);
+
+/*
+ * Replace the contents of `store` with the sessions encoded in buf. The
+ * store is fully re-initialised first; partial decoding wipes the store
+ * and returns an error. Sessions with unknown magic/version are rejected.
+ */
+nx_err_t nx_session_store_deserialize(nx_session_store_t *store,
+                                      const uint8_t *buf, size_t len);
+
 #endif /* NEXUS_SESSION_H */

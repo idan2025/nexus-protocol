@@ -459,3 +459,76 @@ nx_err_t nx_session_decrypt(nx_session_t *s,
     *plaintext_len = ct_len;
     return NX_OK;
 }
+
+/* ── Persistence ─────────────────────────────────────────────────────── */
+
+size_t nx_session_store_blob_max(void)
+{
+    return NX_SESSION_BLOB_HEADER + (size_t)NX_SESSION_MAX * sizeof(nx_session_t);
+}
+
+nx_err_t nx_session_store_serialize(const nx_session_store_t *store,
+                                    uint8_t *buf, size_t buf_cap,
+                                    size_t *out_len)
+{
+    if (!store || !buf || !out_len) return NX_ERR_INVALID_ARG;
+
+    uint8_t valid_count = 0;
+    for (int i = 0; i < NX_SESSION_MAX; i++) {
+        if (store->sessions[i].valid) valid_count++;
+    }
+
+    size_t need = NX_SESSION_BLOB_HEADER + (size_t)valid_count * sizeof(nx_session_t);
+    if (buf_cap < need) return NX_ERR_BUFFER_TOO_SMALL;
+
+    buf[0] = 'N';
+    buf[1] = 'X';
+    buf[2] = 'S';
+    buf[3] = '1';
+    buf[4] = NX_SESSION_BLOB_VERSION;
+    buf[5] = valid_count;
+
+    size_t off = NX_SESSION_BLOB_HEADER;
+    for (int i = 0; i < NX_SESSION_MAX; i++) {
+        if (!store->sessions[i].valid) continue;
+        memcpy(buf + off, &store->sessions[i], sizeof(nx_session_t));
+        off += sizeof(nx_session_t);
+    }
+
+    *out_len = off;
+    return NX_OK;
+}
+
+nx_err_t nx_session_store_deserialize(nx_session_store_t *store,
+                                      const uint8_t *buf, size_t len)
+{
+    if (!store || !buf) return NX_ERR_INVALID_ARG;
+    if (len < NX_SESSION_BLOB_HEADER) return NX_ERR_INVALID_ARG;
+
+    if (buf[0] != 'N' || buf[1] != 'X' || buf[2] != 'S' || buf[3] != '1') {
+        return NX_ERR_INVALID_ARG;
+    }
+    if (buf[4] != NX_SESSION_BLOB_VERSION) return NX_ERR_INVALID_ARG;
+
+    uint8_t count = buf[5];
+    if (count > NX_SESSION_MAX) return NX_ERR_INVALID_ARG;
+
+    size_t expected = NX_SESSION_BLOB_HEADER + (size_t)count * sizeof(nx_session_t);
+    if (len != expected) return NX_ERR_INVALID_ARG;
+
+    /* Reset the store before populating so a partial/corrupt load never
+     * leaves stale state behind. */
+    nx_session_store_init(store);
+
+    size_t off = NX_SESSION_BLOB_HEADER;
+    for (uint8_t i = 0; i < count; i++) {
+        nx_session_t s;
+        memcpy(&s, buf + off, sizeof(s));
+        off += sizeof(s);
+
+        if (!s.valid) continue;  /* skip slots we shouldn't have written */
+        if (i >= NX_SESSION_MAX) break;
+        memcpy(&store->sessions[i], &s, sizeof(s));
+    }
+    return NX_OK;
+}

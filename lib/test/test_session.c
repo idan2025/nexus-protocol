@@ -7,6 +7,7 @@
 #include "monocypher/monocypher.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int tests_run = 0;
@@ -359,6 +360,88 @@ static void test_unestablished_session_rejected(void)
     PASS();
 }
 
+static void test_persistence_roundtrip(void)
+{
+    TEST("session persistence round-trip");
+
+    nx_identity_t id_a, id_b;
+    ASSERT(nx_identity_generate(&id_a) == NX_OK, "id_a");
+    ASSERT(nx_identity_generate(&id_b) == NX_OK, "id_b");
+
+    nx_session_store_t alice_store, bob_store;
+    nx_session_store_init(&alice_store);
+    nx_session_store_init(&bob_store);
+
+    nx_session_t *a = nx_session_alloc(&alice_store, &id_b.short_addr);
+    nx_session_t *b = nx_session_alloc(&bob_store, &id_a.short_addr);
+    ASSERT(a && b, "alloc");
+    ASSERT(do_handshake(a, b, &id_a, &id_b) == NX_OK, "handshake");
+
+    /* Serialize Bob's store */
+    size_t cap = nx_session_store_blob_max();
+    uint8_t *blob = (uint8_t *)malloc(cap);
+    ASSERT(blob != NULL, "alloc blob");
+    size_t blob_len = 0;
+    ASSERT(nx_session_store_serialize(&bob_store, blob, cap, &blob_len) == NX_OK, "serialize");
+    ASSERT(blob_len == NX_SESSION_BLOB_HEADER + sizeof(nx_session_t), "blob size");
+
+    /* Restore into a fresh store */
+    nx_session_store_t restored;
+    ASSERT(nx_session_store_deserialize(&restored, blob, blob_len) == NX_OK, "deserialize");
+    ASSERT(nx_session_count(&restored) == 1, "one session restored");
+
+    nx_session_t *r = nx_session_find(&restored, &id_a.short_addr);
+    ASSERT(r != NULL && r->established, "found established");
+    ASSERT(memcmp(r->root_key, b->root_key, 32) == 0, "root key intact");
+
+    /* Alice sends a fresh message; restored Bob must decrypt it. */
+    uint8_t ct[NX_SESSION_OVERHEAD + 32];
+    size_t ct_len = 0;
+    ASSERT(nx_session_encrypt(a, (const uint8_t *)"resume-ok", 9,
+                              ct, sizeof(ct), &ct_len) == NX_OK, "encrypt");
+
+    uint8_t pt[32];
+    size_t pt_len = 0;
+    ASSERT(nx_session_decrypt(r, ct, ct_len, pt, sizeof(pt), &pt_len) == NX_OK, "decrypt after resume");
+    ASSERT(pt_len == 9 && memcmp(pt, "resume-ok", 9) == 0, "plaintext intact");
+
+    free(blob);
+    PASS();
+}
+
+static void test_persistence_rejects_bad_blob(void)
+{
+    TEST("session persistence rejects bad blob");
+
+    nx_session_store_t store;
+    nx_session_store_init(&store);
+
+    /* Bad magic */
+    uint8_t bad[NX_SESSION_BLOB_HEADER] = {'X','X','X','X', NX_SESSION_BLOB_VERSION, 0};
+    ASSERT(nx_session_store_deserialize(&store, bad, sizeof(bad)) == NX_ERR_INVALID_ARG, "bad magic");
+
+    /* Wrong version */
+    uint8_t bad_ver[NX_SESSION_BLOB_HEADER] = {'N','X','S','1', 0xFF, 0};
+    ASSERT(nx_session_store_deserialize(&store, bad_ver, sizeof(bad_ver)) == NX_ERR_INVALID_ARG, "bad version");
+
+    /* Truncated (count says 1 but no body) */
+    uint8_t trunc[NX_SESSION_BLOB_HEADER] = {'N','X','S','1', NX_SESSION_BLOB_VERSION, 1};
+    ASSERT(nx_session_store_deserialize(&store, trunc, sizeof(trunc)) == NX_ERR_INVALID_ARG, "truncated");
+
+    /* Empty store serializes to header-only, deserializes cleanly */
+    uint8_t empty[NX_SESSION_BLOB_HEADER];
+    size_t n = 0;
+    ASSERT(nx_session_store_serialize(&store, empty, sizeof(empty), &n) == NX_OK, "serialize empty");
+    ASSERT(n == NX_SESSION_BLOB_HEADER, "empty size");
+    ASSERT(nx_session_store_deserialize(&store, empty, n) == NX_OK, "deserialize empty");
+
+    /* Buffer too small */
+    uint8_t tiny[3];
+    ASSERT(nx_session_store_serialize(&store, tiny, sizeof(tiny), &n) == NX_ERR_BUFFER_TOO_SMALL, "tiny buf");
+
+    PASS();
+}
+
 int main(void)
 {
     printf("=== NEXUS Session (Double Ratchet) Tests ===\n");
@@ -373,6 +456,8 @@ int main(void)
     test_tamper_detection();
     test_unique_ciphertexts();
     test_unestablished_session_rejected();
+    test_persistence_roundtrip();
+    test_persistence_rejects_bad_blob();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
