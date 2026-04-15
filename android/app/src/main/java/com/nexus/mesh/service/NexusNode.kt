@@ -173,6 +173,52 @@ class NexusNode {
     private external fun nativeStopUdpMulticast()
     private external fun nativeIsUdpMulticastActive(): Boolean
     private external fun nativeGetTelemetry(): IntArray?
+    private external fun nativeListRoutes(): Array<IntArray>
+    private external fun nativeListNeighbors(): Array<IntArray>
+
+    data class RouteRow(
+        val dest: String,
+        val nextHop: String,
+        val hopCount: Int,
+        val metric: Int,
+        val viaTransport: Int,
+        val expiresInSec: Int,
+    )
+
+    data class NeighborRow(
+        val addr: String,
+        val role: Int,
+        val rssi: Int,
+        val linkQuality: Int,
+        val ageSec: Int,
+    )
+
+    private fun bytesToHex4(v: IntArray, off: Int): String =
+        "%02X%02X%02X%02X".format(
+            v[off] and 0xFF, v[off + 1] and 0xFF,
+            v[off + 2] and 0xFF, v[off + 3] and 0xFF
+        )
+
+    fun listRoutes(): List<RouteRow> = nativeListRoutes().map { v ->
+        RouteRow(
+            dest = bytesToHex4(v, 0),
+            nextHop = bytesToHex4(v, 4),
+            hopCount = v[8],
+            metric = v[9],
+            viaTransport = v[10],
+            expiresInSec = v[11],
+        )
+    }
+
+    fun listNeighbors(): List<NeighborRow> = nativeListNeighbors().map { v ->
+        NeighborRow(
+            addr = bytesToHex4(v, 0),
+            role = v[4],
+            rssi = v[5],
+            linkQuality = v[6],
+            ageSec = v[7],
+        )
+    }
 
     data class Telemetry(
         val neighbors: Int,

@@ -47,6 +47,11 @@ fun TelemetryScreen(activity: MainActivity, navController: NavController) {
                     IconButton(onClick = { navController.popBackStack() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                     }
+                },
+                actions = {
+                    TextButton(onClick = { navController.navigate("routes") }) {
+                        Text("Routes")
+                    }
                 }
             )
         }

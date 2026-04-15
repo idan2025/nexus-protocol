@@ -1097,6 +1097,10 @@ class NexusService : Service(), NexusNode.Callback {
 
     fun getTelemetry(): NexusNode.Telemetry? = node.getTelemetry()
 
+    fun listRoutes(): List<NexusNode.RouteRow> = node.listRoutes()
+
+    fun listNeighborsDetailed(): List<NexusNode.NeighborRow> = node.listNeighbors()
+
     // --- TCP Internet Transport ---
 
     fun startTcpInet(listenPort: Int, peers: String): Boolean {

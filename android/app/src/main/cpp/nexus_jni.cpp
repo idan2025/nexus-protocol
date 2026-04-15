@@ -589,6 +589,95 @@ Java_com_nexus_mesh_service_NexusNode_nativeGetTelemetry(JNIEnv *env,
     return result;
 }
 
+/*
+ * Snapshot the route table.
+ * Returns Array<IntArray> -- each row is 12 ints:
+ *   [0..3]  dest bytes
+ *   [4..7]  next-hop bytes
+ *   [8]     hop count
+ *   [9]     metric
+ *   [10]    via_transport
+ *   [11]    seconds until expiry (0 if past, -1 if no monotonic clock)
+ */
+JNIEXPORT jobjectArray JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeListRoutes(JNIEnv *env, jobject thiz)
+{
+    (void)thiz;
+    jclass intArrCls = env->FindClass("[I");
+    if (!g_running) return env->NewObjectArray(0, intArrCls, nullptr);
+
+    const nx_route_table_t *rt = nx_node_route_table(&g_node);
+    int active = 0;
+    for (int i = 0; i < NX_MAX_ROUTES; i++) {
+        if (rt->routes[i].valid) active++;
+    }
+    jobjectArray result = env->NewObjectArray(active, intArrCls, nullptr);
+    if (!result) return nullptr;
+
+    uint64_t now_ms = nx_platform_time_ms();
+    int idx = 0;
+    for (int i = 0; i < NX_MAX_ROUTES && idx < active; i++) {
+        const nx_route_t *r = &rt->routes[i];
+        if (!r->valid) continue;
+        jintArray row = env->NewIntArray(12);
+        jint vals[12];
+        for (int k = 0; k < 4; k++) vals[k] = (jint)(uint8_t)r->dest.bytes[k];
+        for (int k = 0; k < 4; k++) vals[4 + k] = (jint)(uint8_t)r->next_hop.bytes[k];
+        vals[8]  = (jint)r->hop_count;
+        vals[9]  = (jint)r->metric;
+        vals[10] = (jint)r->via_transport;
+        vals[11] = (r->expires_ms > now_ms) ? (jint)((r->expires_ms - now_ms) / 1000) : 0;
+        env->SetIntArrayRegion(row, 0, 12, vals);
+        env->SetObjectArrayElement(result, idx++, row);
+        env->DeleteLocalRef(row);
+    }
+    return result;
+}
+
+/*
+ * Snapshot the neighbor table.
+ * Returns Array<IntArray> -- each row is 8 ints:
+ *   [0..3]  neighbor addr bytes
+ *   [4]     role
+ *   [5]     rssi (signed, transport-dependent)
+ *   [6]     link_quality (0-255)
+ *   [7]     seconds since last_seen
+ */
+JNIEXPORT jobjectArray JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeListNeighbors(JNIEnv *env, jobject thiz)
+{
+    (void)thiz;
+    jclass intArrCls = env->FindClass("[I");
+    if (!g_running) return env->NewObjectArray(0, intArrCls, nullptr);
+
+    const nx_route_table_t *rt = nx_node_route_table(&g_node);
+    int active = 0;
+    for (int i = 0; i < NX_MAX_NEIGHBORS; i++) {
+        if (rt->neighbors[i].valid) active++;
+    }
+    jobjectArray result = env->NewObjectArray(active, intArrCls, nullptr);
+    if (!result) return nullptr;
+
+    uint64_t now_ms = nx_platform_time_ms();
+    int idx = 0;
+    for (int i = 0; i < NX_MAX_NEIGHBORS && idx < active; i++) {
+        const nx_neighbor_t *nb = &rt->neighbors[i];
+        if (!nb->valid) continue;
+        jintArray row = env->NewIntArray(8);
+        jint vals[8];
+        for (int k = 0; k < 4; k++) vals[k] = (jint)(uint8_t)nb->addr.bytes[k];
+        vals[4] = (jint)nb->role;
+        vals[5] = (jint)nb->rssi;
+        vals[6] = (jint)nb->link_quality;
+        vals[7] = (now_ms > nb->last_seen_ms)
+                  ? (jint)((now_ms - nb->last_seen_ms) / 1000) : 0;
+        env->SetIntArrayRegion(row, 0, 8, vals);
+        env->SetObjectArrayElement(result, idx++, row);
+        env->DeleteLocalRef(row);
+    }
+    return result;
+}
+
 /* ── UDP Multicast (auto-discovery on all interfaces) ────────────────── */
 
 JNIEXPORT jboolean JNICALL
