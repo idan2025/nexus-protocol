@@ -30,6 +30,8 @@ extern "C" {
 #include "identity_store.h"
 #include "anchor_store.h"
 #include "settings_store.h"
+#include "battery.h"
+#include "event_ring.h"
 
 /* -- Pin definitions (XIAO ESP32S3 + WIO-SX1262 expansion) --------------- */
 /*
@@ -506,6 +508,9 @@ void setup()
     /* BLE bridge for phone connectivity */
     nx_ble_bridge_init(ble_name);
     nx_ble_bridge_start();
+
+    battery_init();
+    nx_event_log("boot");
 
     nx_node_announce(&node);
 

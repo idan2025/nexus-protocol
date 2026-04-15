@@ -30,6 +30,8 @@ extern "C" {
 #include "identity_store.h"
 #include "anchor_store.h"
 #include "settings_store.h"
+#include "battery.h"
+#include "event_ring.h"
 
 /* -- Pin definitions (Heltec V3) ---------------------------------------- */
 
@@ -446,6 +448,11 @@ static void on_data(const nx_addr_short_t *src,
                   src->bytes[0], src->bytes[1],
                   src->bytes[2], src->bytes[3], (int)len);
 
+    char ebuf[NX_EVENT_TEXT_MAX];
+    snprintf(ebuf, sizeof(ebuf), "rx %02X%02X%02X%02X %dB",
+             src->bytes[0], src->bytes[1], src->bytes[2], src->bytes[3], (int)len);
+    nx_event_log(ebuf);
+
     if (nx_ble_bridge_connected()) {
         uint8_t frame[NX_MAX_PACKET];
         if (len + 6 <= sizeof(frame)) {
@@ -467,6 +474,11 @@ static void on_neighbor(const nx_addr_short_t *addr,
     Serial.printf("[NBR] %02X%02X%02X%02X role=%d\n",
                   addr->bytes[0], addr->bytes[1],
                   addr->bytes[2], addr->bytes[3], role);
+
+    char ebuf[NX_EVENT_TEXT_MAX];
+    snprintf(ebuf, sizeof(ebuf), "nbr %02X%02X%02X%02X r=%d",
+             addr->bytes[0], addr->bytes[1], addr->bytes[2], addr->bytes[3], role);
+    nx_event_log(ebuf);
 }
 
 static void on_session(const nx_addr_short_t *src,
@@ -672,8 +684,20 @@ static void process_serial_command(const char *line)
                       settings.lora_config.spreading_factor,
                       settings.lora_config.coding_rate,
                       settings.lora_config.tx_power_dbm);
+    } else if (strcmp(line, "BATTERY") == 0) {
+        int32_t mv = battery_read_mv();
+        int pct = battery_percent();
+        if (mv < 0) Serial.println("[BATTERY] unsupported");
+        else Serial.printf("[BATTERY] %ld mV (%d%%)\n", (long)mv, pct);
+    } else if (strcmp(line, "EVENTS") == 0) {
+        nx_event_t ev[NX_EVENT_RING_SIZE];
+        size_t n = nx_event_recent(ev, NX_EVENT_RING_SIZE);
+        Serial.printf("[EVENTS] %u recent\n", (unsigned)n);
+        for (size_t i = 0; i < n; i++) {
+            Serial.printf("  +%lus  %s\n", (unsigned long)ev[i].timestamp_s, ev[i].text);
+        }
     } else if (strcmp(line, "HELP") == 0) {
-        Serial.println("Commands: STATUS ANNOUNCE NEIGHBORS MAILBOX RADIO SETTINGS HELP");
+        Serial.println("Commands: STATUS ANNOUNCE NEIGHBORS MAILBOX RADIO SETTINGS BATTERY EVENTS HELP");
     }
 }
 
@@ -803,6 +827,9 @@ void setup()
     nx_ble_bridge_init(ble_name);
     nx_ble_bridge_start();
 
+    battery_init();
+    nx_event_log("boot");
+
     nx_node_announce(&node);
 
     Serial.println("[NEXUS] Ready - press PRG to cycle screens, hold for announce");
@@ -896,12 +923,15 @@ void loop()
         last_status_ms = now;
 
         const nx_identity_t *id = nx_node_identity(&node);
-        Serial.printf("[STATUS] %02X%02X%02X%02X nbrs=%d msgs=%lu stored=%d BLE=%s\n",
+        int32_t bat_mv = battery_read_mv();
+        int bat_pct = battery_percent();
+        Serial.printf("[STATUS] %02X%02X%02X%02X nbrs=%d msgs=%lu stored=%d BLE=%s bat=%ldmV(%d%%)\n",
                       id->short_addr.bytes[0], id->short_addr.bytes[1],
                       id->short_addr.bytes[2], id->short_addr.bytes[3],
                       nx_neighbor_count(&node.route_table),
                       (unsigned long)rx_count,
                       nx_anchor_count(&node.anchor),
-                      nx_ble_bridge_connected() ? "yes" : "no");
+                      nx_ble_bridge_connected() ? "yes" : "no",
+                      (long)bat_mv, bat_pct);
     }
 }

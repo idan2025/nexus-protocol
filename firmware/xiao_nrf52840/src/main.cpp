@@ -30,6 +30,8 @@ extern "C" {
 #include "ble_bridge.h"
 #include "settings_store.h"
 #include "anchor_store.h"
+#include "battery.h"
+#include "event_ring.h"
 
 /* -- Pin definitions (XIAO nRF52840 + WIO-SX1262 expansion) -------------- */
 /*
@@ -508,6 +510,9 @@ void setup()
     nx_ble_bridge_init(ble_name);
     nx_ble_bridge_start();
     Serial.printf("[NEXUS] BLE advertising: %s\n", ble_name);
+
+    battery_init();
+    nx_event_log("boot");
 
     /* ── STEP 4: Node init ─────────────────────────────────────────────── */
     for (int i = 0; i < 4; i++) {

@@ -25,6 +25,8 @@ extern "C" {
 #include "ble_bridge.h"
 #include "settings_store.h"
 #include "anchor_store.h"
+#include "battery.h"
+#include "event_ring.h"
 
 /* ── Pin definitions (RAK4631 WisBlock) ───────────────────────────────── */
 /*
@@ -206,6 +208,9 @@ void setup()
     nx_ble_bridge_init(ble_name);
     nx_ble_bridge_start();
     Serial.printf("[NEXUS] BLE advertising: %s\n", ble_name);
+
+    battery_init();
+    nx_event_log("boot");
 
     /* ── Node init ───────────────────────────────────────────────────── */
 
