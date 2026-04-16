@@ -96,6 +96,14 @@ typedef struct {
 
     char               allow_list[NX_TCP_INET_MAX_ALLOW][64];
     int                allow_count;
+
+    /* Failover mode: try one outbound peer at a time */
+    bool               failover;
+    uint32_t           failover_timeout_ms;
+    int                failover_current;       /* Index into conns of next peer to try */
+    int                failover_peer_count;    /* How many outbound peers configured */
+    int                failover_first_slot;    /* conns index where outbound peers start */
+    uint64_t           failover_attempt_ms;    /* When we started trying current peer */
 } tcp_inet_state_t;
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
@@ -322,10 +330,23 @@ static nx_err_t tcp_inet_init(nx_transport_t *t, const void *config)
         set_nonblocking(s->listen_fd);
     }
 
+    /* ── Failover mode setup ────────────────────────────────────────── */
+    s->failover = cfg->failover;
+    s->failover_timeout_ms = cfg->failover_timeout_ms;
+    if (s->failover_timeout_ms == 0)
+        s->failover_timeout_ms = 10000;
+    s->failover_current = 0;
+    s->failover_peer_count = 0;
+    s->failover_first_slot = -1;
+
     /* ── Client: connect to configured peers ─────────────────────────── */
     for (int i = 0; i < cfg->peer_count && i < NX_TCP_INET_MAX_PEERS; i++) {
         tcp_inet_conn_t *c = find_free_slot(s);
         if (!c) break;
+
+        if (s->failover_first_slot < 0)
+            s->failover_first_slot = (int)(c - s->conns);
+        s->failover_peer_count++;
 
         size_t hlen = strlen(cfg->peers[i].host);
         if (hlen >= sizeof(c->peer_host)) hlen = sizeof(c->peer_host) - 1;
@@ -334,15 +355,22 @@ static nx_err_t tcp_inet_init(nx_transport_t *t, const void *config)
         c->peer_port = cfg->peers[i].port;
         c->is_outbound = true;
 
+        /* In failover mode, only connect to the first peer initially */
+        if (s->failover && i > 0) continue;
+
         int fd = try_connect(c->peer_host, c->peer_port);
         if (fd >= 0) {
             c->fd = fd;
             c->active = true;
             conn_auth_arm(c, s->psk_len);
             s->conn_count++;
+            if (s->failover)
+                s->failover_attempt_ms = nx_platform_time_ms();
         } else {
             /* Will auto-reconnect later */
             c->last_reconnect_ms = nx_platform_time_ms();
+            if (s->failover)
+                s->failover_attempt_ms = nx_platform_time_ms();
         }
     }
 
@@ -402,15 +430,24 @@ static void accept_pending(tcp_inet_state_t *s)
 
 /* ── Reconnect dropped outbound connections ──────────────────────────── */
 
-static void reconnect_outbound(tcp_inet_state_t *s)
+/* Check whether any outbound peer is currently connected. */
+static bool has_active_outbound(const tcp_inet_state_t *s)
 {
-    uint64_t now = nx_platform_time_ms();
+    for (int i = 0; i < NX_TCP_INET_MAX_PEERS; i++) {
+        const tcp_inet_conn_t *c = &s->conns[i];
+        if (c->is_outbound && c->active)
+            return true;
+    }
+    return false;
+}
 
+static void reconnect_outbound_parallel(tcp_inet_state_t *s, uint64_t now)
+{
     for (int i = 0; i < NX_TCP_INET_MAX_PEERS; i++) {
         tcp_inet_conn_t *c = &s->conns[i];
         if (!c->is_outbound) continue;
         if (c->active) continue;
-        if (c->peer_port == 0) continue; /* Not configured */
+        if (c->peer_port == 0) continue;
 
         if (now - c->last_reconnect_ms < s->reconnect_interval_ms)
             continue;
@@ -426,6 +463,57 @@ static void reconnect_outbound(tcp_inet_state_t *s)
             s->conn_count++;
         }
     }
+}
+
+static void reconnect_outbound_failover(tcp_inet_state_t *s, uint64_t now)
+{
+    if (s->failover_peer_count == 0 || s->failover_first_slot < 0)
+        return;
+
+    /* If already connected to a Pillar, nothing to do */
+    if (has_active_outbound(s))
+        return;
+
+    /* Respect reconnect interval between attempts */
+    int slot = s->failover_first_slot + s->failover_current;
+    tcp_inet_conn_t *c = &s->conns[slot];
+
+    if (now - c->last_reconnect_ms < s->reconnect_interval_ms)
+        return;
+
+    /* If we've been trying this peer too long, advance to the next */
+    if (s->failover_attempt_ms > 0 &&
+        now - s->failover_attempt_ms >= s->failover_timeout_ms) {
+        s->failover_current = (s->failover_current + 1) % s->failover_peer_count;
+        s->failover_attempt_ms = now;
+        slot = s->failover_first_slot + s->failover_current;
+        c = &s->conns[slot];
+    }
+
+    c->last_reconnect_ms = now;
+
+    int fd = try_connect(c->peer_host, c->peer_port);
+    if (fd >= 0) {
+        c->fd = fd;
+        c->active = true;
+        c->rx.state = RX_WAIT_START;
+        conn_auth_arm(c, s->psk_len);
+        s->conn_count++;
+        s->failover_attempt_ms = now;
+    } else if (s->failover_attempt_ms == 0) {
+        /* First attempt for this peer, start the timeout clock */
+        s->failover_attempt_ms = now;
+    }
+}
+
+static void reconnect_outbound(tcp_inet_state_t *s)
+{
+    uint64_t now = nx_platform_time_ms();
+
+    if (s->failover)
+        reconnect_outbound_failover(s, now);
+    else
+        reconnect_outbound_parallel(s, now);
 }
 
 /* Drive the PSK challenge-response state machine for one connection.

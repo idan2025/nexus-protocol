@@ -15,6 +15,8 @@
 #include "anchor.h"
 #include "session.h"
 #include "group.h"
+#include "announce.h"
+#include "msgring.h"
 
 /* ── Callback types ──────────────────────────────────────────────────── */
 
@@ -63,6 +65,12 @@ typedef struct {
     nx_group_store_t   groups;
     uint16_t           next_seq_id;
     bool               running;
+    /* Telemetry to attach to outbound announces. Populated when
+     * nx_node_set_telemetry() is called; cleared by passing NULL. */
+    bool                    has_telemetry;
+    nx_announce_telemetry_t telemetry;
+    /* Inbound message ring buffer for BLE resync after reboot. */
+    nx_msgring_t            msgring;
 } nx_node_t;
 
 /* ── Lifecycle ───────────────────────────────────────────────────────── */
@@ -122,6 +130,15 @@ nx_err_t nx_node_send_large(nx_node_t *node,
 
 /* Broadcast an announcement on all transports. */
 nx_err_t nx_node_announce(nx_node_t *node);
+
+/*
+ * Set (or clear, when telem==NULL) the telemetry snapshot attached to
+ * future announces from this node. Copied by value; caller may free or
+ * reuse the struct immediately. Firmware boards call this from loop()
+ * with the latest battery_read_mv() sample.
+ */
+void nx_node_set_telemetry(nx_node_t *node,
+                           const nx_announce_telemetry_t *telem);
 
 /*
  * Ask a pillar/anchor to replay any stored-and-forward packets it is

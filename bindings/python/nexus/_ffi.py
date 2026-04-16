@@ -454,11 +454,13 @@ class NodeState(ctypes.Structure):
         ("groups", GroupStore),              # off=91344
         ("next_seq_id", ctypes.c_uint16),   # off=97584
         ("running", ctypes.c_bool),          # off=97586
-        ("_pad1", ctypes.c_uint8 * 5),       # padding to 97592
+        ("has_telemetry", ctypes.c_bool),    # off=97587
+        ("telemetry", ctypes.c_uint8 * 4),   # off=97588  (nx_announce_telemetry_t)
+        ("msgring", ctypes.c_uint8 * 8200),  # off=97592  (nx_msgring_t)
     ]
 
 
-assert ctypes.sizeof(NodeState) == 97592
+assert ctypes.sizeof(NodeState) == 105792
 
 # ── Function signatures ──────────────────────────────────────────────
 

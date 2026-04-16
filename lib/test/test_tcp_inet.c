@@ -694,6 +694,129 @@ static void test_allow_list_blocks(void)
     PASS();
 }
 
+/* ── Test: Failover mode connects to first available ────────────────── */
+
+static void test_failover_connects_first(void)
+{
+    TEST("failover mode connects to first available peer");
+
+    /* Start a server only on the second port (first is unreachable) */
+    nx_transport_t *srv = nx_tcp_inet_transport_create();
+    nx_tcp_inet_config_t scfg;
+    memset(&scfg, 0, sizeof(scfg));
+    scfg.listen_port = 19120;
+    scfg.listen_host = "127.0.0.1";
+    ASSERT(srv->ops->init(srv, &scfg) == NX_OK, "srv init");
+
+    /* Client in failover mode: peer 0 is unreachable, peer 1 is the server */
+    nx_transport_t *cli = nx_tcp_inet_transport_create();
+    nx_tcp_inet_config_t ccfg;
+    memset(&ccfg, 0, sizeof(ccfg));
+    ccfg.peers[0].host = "127.0.0.1";
+    ccfg.peers[0].port = 19119;  /* Nothing listens here */
+    ccfg.peers[1].host = "127.0.0.1";
+    ccfg.peers[1].port = 19120;
+    ccfg.peer_count = 2;
+    ccfg.failover = true;
+    ccfg.failover_timeout_ms = 1500;
+    ccfg.reconnect_interval_ms = 300;
+    ASSERT(cli->ops->init(cli, &ccfg) == NX_OK, "cli init");
+
+    /* Initially tries peer 0 which is unreachable. Drive recv to pump
+     * reconnect logic and let failover timeout trigger a switch to peer 1. */
+    bool connected = false;
+    for (int i = 0; i < 20 && !connected; i++) {
+        uint8_t dummy[256];
+        size_t dummy_len;
+        cli->ops->recv(cli, dummy, sizeof(dummy), &dummy_len, 200);
+
+        uint8_t msg[] = "failover test";
+        if (cli->ops->send(cli, msg, sizeof(msg)) == NX_OK) {
+            uint8_t buf[256];
+            size_t out_len = 0;
+            if (srv->ops->recv(srv, buf, sizeof(buf), &out_len, 500) == NX_OK &&
+                memcmp(buf, msg, sizeof(msg)) == 0) {
+                connected = true;
+            }
+        }
+    }
+
+    ASSERT(connected, "failover reached second peer");
+
+    cli->ops->destroy(cli);
+    nx_platform_free(cli);
+    srv->ops->destroy(srv);
+    nx_platform_free(srv);
+    PASS();
+}
+
+static void test_failover_stays_connected(void)
+{
+    TEST("failover stays with working peer (no parallel)");
+
+    /* Two servers */
+    nx_transport_t *srv1 = nx_tcp_inet_transport_create();
+    nx_tcp_inet_config_t scfg1;
+    memset(&scfg1, 0, sizeof(scfg1));
+    scfg1.listen_port = 19121;
+    scfg1.listen_host = "127.0.0.1";
+    ASSERT(srv1->ops->init(srv1, &scfg1) == NX_OK, "srv1 init");
+
+    nx_transport_t *srv2 = nx_tcp_inet_transport_create();
+    nx_tcp_inet_config_t scfg2;
+    memset(&scfg2, 0, sizeof(scfg2));
+    scfg2.listen_port = 19122;
+    scfg2.listen_host = "127.0.0.1";
+    ASSERT(srv2->ops->init(srv2, &scfg2) == NX_OK, "srv2 init");
+
+    /* Client in failover mode: both peers available, should only use first */
+    nx_transport_t *cli = nx_tcp_inet_transport_create();
+    nx_tcp_inet_config_t ccfg;
+    memset(&ccfg, 0, sizeof(ccfg));
+    ccfg.peers[0].host = "127.0.0.1";
+    ccfg.peers[0].port = 19121;
+    ccfg.peers[1].host = "127.0.0.1";
+    ccfg.peers[1].port = 19122;
+    ccfg.peer_count = 2;
+    ccfg.failover = true;
+    ccfg.failover_timeout_ms = 2000;
+    ccfg.reconnect_interval_ms = 300;
+    ASSERT(cli->ops->init(cli, &ccfg) == NX_OK, "cli init");
+
+    usleep(200000);
+
+    /* Send a few messages; srv1 should get them all, srv2 should get none */
+    int srv1_count = 0, srv2_count = 0;
+    for (int i = 0; i < 3; i++) {
+        uint8_t msg[] = "only first";
+        ASSERT(cli->ops->send(cli, msg, sizeof(msg)) == NX_OK, "send");
+        usleep(30000);
+
+        uint8_t buf[256];
+        size_t out_len = 0;
+        if (srv1->ops->recv(srv1, buf, sizeof(buf), &out_len, 500) == NX_OK)
+            srv1_count++;
+    }
+    /* srv2 should have nothing */
+    {
+        uint8_t buf[256];
+        size_t out_len = 0;
+        if (srv2->ops->recv(srv2, buf, sizeof(buf), &out_len, 200) == NX_OK)
+            srv2_count++;
+    }
+
+    ASSERT(srv1_count == 3, "srv1 got all messages");
+    ASSERT(srv2_count == 0, "srv2 got no messages");
+
+    cli->ops->destroy(cli);
+    nx_platform_free(cli);
+    srv1->ops->destroy(srv1);
+    nx_platform_free(srv1);
+    srv2->ops->destroy(srv2);
+    nx_platform_free(srv2);
+    PASS();
+}
+
 /* ── Main ────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -715,6 +838,8 @@ int main(void)
     test_psk_matching();
     test_psk_mismatch();
     test_allow_list_blocks();
+    test_failover_connects_first();
+    test_failover_stays_connected();
 
     printf("\n  %d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

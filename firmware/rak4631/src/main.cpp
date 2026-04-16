@@ -380,13 +380,24 @@ void loop()
     if (now - last_status_ms > 30000) {
         last_status_ms = now;
 
+        /* Attach battery readings to outbound announces */
+        int32_t bat_mv = battery_read_mv();
+        int bat_pct = battery_percent();
+        if (bat_mv > 0) {
+            nx_announce_telemetry_t telem = {0};
+            telem.battery_mv  = (uint16_t)bat_mv;
+            telem.battery_pct = (uint8_t)bat_pct;
+            nx_node_set_telemetry(&node, &telem);
+        }
+
         const nx_identity_t *id = nx_node_identity(&node);
-        Serial.printf("[STATUS] %02X%02X%02X%02X nbrs=%lu msgs=%lu stored=%d BLE=%s\n",
+        Serial.printf("[STATUS] %02X%02X%02X%02X nbrs=%lu msgs=%lu stored=%d BLE=%s bat=%ldmV(%d%%)\n",
                       id->short_addr.bytes[0], id->short_addr.bytes[1],
                       id->short_addr.bytes[2], id->short_addr.bytes[3],
                       (unsigned long)neighbor_count,
                       (unsigned long)msg_count,
                       nx_anchor_count(&node.anchor),
-                      nx_ble_bridge_connected() ? "yes" : "no");
+                      nx_ble_bridge_connected() ? "yes" : "no",
+                      (long)bat_mv, bat_pct);
     }
 }

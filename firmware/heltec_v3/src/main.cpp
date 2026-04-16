@@ -937,13 +937,22 @@ void loop()
         ui_last_draw_ms = now;
     }
 
-    /* Periodic serial status */
+    /* Periodic serial status + battery telemetry */
     if (now - last_status_ms > 30000) {
         last_status_ms = now;
 
         const nx_identity_t *id = nx_node_identity(&node);
         int32_t bat_mv = battery_read_mv();
         int bat_pct = battery_percent();
+
+        /* Attach battery readings to outbound announces */
+        if (bat_mv > 0) {
+            nx_announce_telemetry_t telem = {0};
+            telem.battery_mv  = (uint16_t)bat_mv;
+            telem.battery_pct = (uint8_t)bat_pct;
+            nx_node_set_telemetry(&node, &telem);
+        }
+
         Serial.printf("[STATUS] %02X%02X%02X%02X nbrs=%d msgs=%lu stored=%d BLE=%s bat=%ldmV(%d%%)\n",
                       id->short_addr.bytes[0], id->short_addr.bytes[1],
                       id->short_addr.bytes[2], id->short_addr.bytes[3],

@@ -31,7 +31,7 @@ def create_pipe_pair():
 
 
 def create_tcp_inet(listen_port=0, listen_host="0.0.0.0", peers=None,
-                    reconnect_ms=5000):
+                    reconnect_ms=5000, failover=False, failover_timeout_ms=10000):
     """Create a TCP Internet transport (multi-peer, auto-reconnect).
 
     Args:
@@ -39,6 +39,8 @@ def create_tcp_inet(listen_port=0, listen_host="0.0.0.0", peers=None,
         listen_host: Bind address for server.
         peers: List of (host, port) tuples to connect to.
         reconnect_ms: Reconnect interval in ms.
+        failover: If True, try one peer at a time instead of all in parallel.
+        failover_timeout_ms: Max wait per peer before trying next (default 10s).
 
     Returns the transport pointer (already registered).
     """
@@ -58,19 +60,27 @@ def create_tcp_inet(listen_port=0, listen_host="0.0.0.0", peers=None,
 
     class TcpInetConfig(ctypes.Structure):
         _fields_ = [
-            ("listen_host", ctypes.c_char_p),
-            ("listen_port", ctypes.c_uint16),
-            ("_pad0", ctypes.c_uint8 * 6),
-            ("peers", PeerEntry * 16),
-            ("peer_count", ctypes.c_int),
-            ("_pad1", ctypes.c_uint8 * 4),
-            ("reconnect_interval_ms", ctypes.c_uint32),
+            ("listen_host", ctypes.c_char_p),       # offset 0
+            ("listen_port", ctypes.c_uint16),        # offset 8
+            ("_pad0", ctypes.c_uint8 * 6),           # offset 10..16
+            ("peers", PeerEntry * 16),               # offset 16..272
+            ("peer_count", ctypes.c_int),            # offset 272
+            ("reconnect_interval_ms", ctypes.c_uint32),  # offset 276
+            ("failover", ctypes.c_bool),             # offset 280
+            ("_pad1", ctypes.c_uint8 * 3),           # offset 281..284
+            ("failover_timeout_ms", ctypes.c_uint32),    # offset 284
+            ("psk", ctypes.c_uint8 * 32),            # offset 288
+            ("psk_len", ctypes.c_size_t),            # offset 320
+            ("allow_list", ctypes.c_char_p * 16),    # offset 328
+            ("allow_count", ctypes.c_int),           # offset 456
         ]
 
     cfg = TcpInetConfig()
     cfg.listen_host = listen_host.encode() if listen_host else None
     cfg.listen_port = listen_port
     cfg.reconnect_interval_ms = reconnect_ms
+    cfg.failover = failover
+    cfg.failover_timeout_ms = failover_timeout_ms
 
     if peers:
         cfg.peer_count = min(len(peers), 16)

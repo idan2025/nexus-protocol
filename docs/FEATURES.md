@@ -29,7 +29,7 @@ Grouped by subsystem. Priority: **P0** blocker, **P1** parity, **P2** polish.
 - **P0 ✅** Pillar **inbox pull** — auto-requests on discovery of anchor/pillar/vault neighbor (once per session).
 - **P0 ✅** Battery-optimization whitelist prompt on first run.
 - **P1 ✅** Wi-Fi-only / metered-aware Pillar connect policy.
-- **P1** Multi-Pillar failover (try next on timeout, currently connects to all in parallel).
+- **P1 ✅** Multi-Pillar failover (try next on timeout, currently connects to all in parallel).
 - **P2** In-app Pillar discovery (scan a well-known list / DNS-SD).
 - **P2** Tor / Orbot SOCKS proxy for Pillar connection.
 
@@ -68,9 +68,9 @@ Grouped by subsystem. Priority: **P0** blocker, **P1** parity, **P2** polish.
 
 ### Features
 - **P1 ✅** OLED status pages (Heltec V3 / T-Beam): address, RSSI last, battery, tx/rx counters.
-- **P1** Battery voltage reporting on announces (telemetry exthdr).
+- **P1 ✅** Battery voltage reporting on announces (telemetry exthdr).
 - **P1 ✅** Button UX: short = toggle screen, long = broadcast distress announce.
-- **P1** Persistent ring-buffer of last 32 inbound messages (NVS/InternalFS) for BLE resync after reboot.
+- **P1 ✅** Persistent ring-buffer of last 32 inbound messages (NVS/InternalFS) for BLE resync after reboot.
 - **P2** GPS integration (NEO-6M / built-in L76K on T-Beam) → auto `LOCATION` field.
 - **P2** Solar-power deep-sleep schedule with wake-on-LoRa-preamble.
 - **P2** OTA firmware update via BLE.

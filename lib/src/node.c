@@ -51,6 +51,7 @@ nx_err_t nx_node_init_with_identity(nx_node_t *node,
     nx_anchor_configure_for_role(&node->anchor, node->config.role);
     nx_session_store_init(&node->sessions);
     nx_group_store_init(&node->groups);
+    nx_msgring_init(&node->msgring);
     node->next_seq_id = 0;
     node->running = true;
 
@@ -221,6 +222,10 @@ static void handle_route(nx_node_t *node, const nx_packet_t *pkt)
 static void deliver_data(nx_node_t *node, const nx_addr_short_t *src,
                          const uint8_t *data, size_t len)
 {
+    /* Record in ring buffer for BLE resync */
+    uint32_t ts = (uint32_t)(nx_platform_time_ms() / 1000);
+    nx_msgring_push(&node->msgring, src, ts, data, len);
+
     if (node->config.on_data) {
         node->config.on_data(src, data, len, node->config.user_ctx);
     }
@@ -303,6 +308,11 @@ static void handle_session_msg(nx_node_t *node, const nx_packet_t *pkt)
                                        plaintext, sizeof(plaintext),
                                        &plaintext_len);
     if (err != NX_OK) return;
+
+    /* Record in ring buffer for BLE resync */
+    uint32_t ts = (uint32_t)(nx_platform_time_ms() / 1000);
+    nx_msgring_push(&node->msgring, &pkt->header.src, ts,
+                    plaintext, plaintext_len);
 
     /* Deliver via callback */
     if (node->config.on_session) {
@@ -683,14 +693,29 @@ nx_err_t nx_node_announce(nx_node_t *node)
     if (!node) return NX_ERR_INVALID_ARG;
 
     nx_packet_t pkt;
-    nx_err_t err = nx_announce_build_packet(&node->identity,
-                                            node->config.role,
-                                            node->config.default_ttl,
-                                            &pkt);
+    const nx_announce_telemetry_t *telem =
+        node->has_telemetry ? &node->telemetry : NULL;
+    nx_err_t err = nx_announce_build_packet_ex(&node->identity,
+                                               node->config.role,
+                                               node->config.default_ttl,
+                                               telem,
+                                               &pkt);
     if (err != NX_OK) return err;
 
     pkt.header.seq_id = node->next_seq_id++;
     return transmit_all(&pkt);
+}
+
+void nx_node_set_telemetry(nx_node_t *node,
+                           const nx_announce_telemetry_t *telem)
+{
+    if (!node) return;
+    if (telem) {
+        node->telemetry = *telem;
+        node->has_telemetry = true;
+    } else {
+        node->has_telemetry = false;
+    }
 }
 
 /* ── Session Sending ─────────────────────────────────────────────────── */

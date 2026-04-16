@@ -21,6 +21,7 @@ set(TESTS
     test_tcp_inet
     test_udp_mcast
     test_message
+    test_msgring
 )
 
 foreach(test ${TESTS})

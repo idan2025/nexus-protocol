@@ -111,6 +111,11 @@ typedef struct {
 
     uint32_t    reconnect_interval_ms; /* Auto-reconnect delay (default 5000) */
 
+    /* Failover mode: try one peer at a time, advance to the next on
+     * timeout. When false (default), all peers connect in parallel. */
+    bool        failover;
+    uint32_t    failover_timeout_ms;   /* Max wait per peer (default 10000) */
+
     /* Optional PSK for challenge-response mutual authentication.
      * If psk_len > 0, all inbound and outbound connections must complete
      * BLAKE2b-keyed handshake before normal traffic is exchanged. */

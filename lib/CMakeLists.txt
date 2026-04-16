@@ -15,6 +15,7 @@ add_library(nexus_objs OBJECT
     src/session.c
     src/group.c
     src/message.c
+    src/msgring.c
     src/node.c
     ../transports/serial/nexus_serial.c
     ../transports/tcp/nexus_tcp.c

@@ -171,6 +171,72 @@ static void test_buffer_too_small(void)
     PASS();
 }
 
+static void test_telemetry_roundtrip(void)
+{
+    TEST("telemetry trailer roundtrip via _ex");
+
+    nx_identity_t id;
+    ASSERT(nx_identity_generate(&id) == NX_OK, "gen");
+
+    nx_announce_telemetry_t tx = {
+        .battery_mv  = 3821,
+        .battery_pct = 62,
+        .flags       = NX_TELEMETRY_FLAG_NONE,
+    };
+    uint8_t payload[NX_ANNOUNCE_PAYLOAD_LEN_TELEMETRY];
+    size_t written = 0;
+    nx_err_t err = nx_announce_create_ex(&id, NX_ROLE_RELAY,
+                                         NX_ANNOUNCE_FLAG_NONE,
+                                         &tx, payload, sizeof(payload),
+                                         &written);
+    ASSERT(err == NX_OK, "create_ex");
+    ASSERT(written == NX_ANNOUNCE_PAYLOAD_LEN_TELEMETRY, "length with telem");
+
+    nx_announce_t ann;
+    ASSERT(nx_announce_parse(payload, written, &ann) == NX_OK, "parse");
+    ASSERT((ann.flags & NX_ANNOUNCE_FLAG_TELEMETRY) != 0, "telem flag set");
+    ASSERT(ann.has_telemetry, "has_telemetry");
+    ASSERT(ann.telemetry.battery_mv  == 3821, "battery_mv");
+    ASSERT(ann.telemetry.battery_pct == 62,   "battery_pct");
+
+    /* Legacy create still produces 130-byte wire with no telem bit. */
+    uint8_t legacy[NX_ANNOUNCE_PAYLOAD_LEN];
+    ASSERT(nx_announce_create(&id, NX_ROLE_RELAY, 0,
+                              legacy, sizeof(legacy)) == NX_OK, "legacy");
+    nx_announce_t legacy_ann;
+    ASSERT(nx_announce_parse(legacy, sizeof(legacy), &legacy_ann) == NX_OK,
+           "legacy parse");
+    ASSERT(!legacy_ann.has_telemetry, "no telemetry on legacy");
+
+    nx_identity_wipe(&id);
+    PASS();
+}
+
+static void test_telemetry_tamper(void)
+{
+    TEST("tampering telemetry bytes breaks signature");
+
+    nx_identity_t id;
+    ASSERT(nx_identity_generate(&id) == NX_OK, "gen");
+
+    nx_announce_telemetry_t tx = { .battery_mv = 4000, .battery_pct = 95 };
+    uint8_t payload[NX_ANNOUNCE_PAYLOAD_LEN_TELEMETRY];
+    size_t written = 0;
+    ASSERT(nx_announce_create_ex(&id, NX_ROLE_RELAY, 0, &tx,
+                                 payload, sizeof(payload), &written) == NX_OK,
+           "create_ex");
+
+    /* Flip a bit inside the telemetry bytes (offset 66 == batt_mv_hi). */
+    payload[NX_ANNOUNCE_SIGNED_LEN] ^= 0x01;
+
+    nx_announce_t ann;
+    ASSERT(nx_announce_parse(payload, written, &ann) == NX_ERR_AUTH_FAIL,
+           "telemetry must be signed");
+
+    nx_identity_wipe(&id);
+    PASS();
+}
+
 int main(void)
 {
     printf("=== NEXUS Announce Tests ===\n");
@@ -181,6 +247,8 @@ int main(void)
     test_build_packet();
     test_different_roles();
     test_buffer_too_small();
+    test_telemetry_roundtrip();
+    test_telemetry_tamper();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
