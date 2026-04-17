@@ -87,8 +87,6 @@ nx_err_t nx_settings_load(nx_settings_t *settings)
 {
     if (!settings) return NX_ERR_INVALID_ARG;
 
-    InternalFS.begin();
-
     File f(InternalFS);
     f.open(CFG_FILE, FILE_O_READ);
     if (!f) return NX_ERR_NOT_FOUND;
@@ -107,8 +105,6 @@ nx_err_t nx_settings_save(const nx_settings_t *settings)
 {
     if (!settings) return NX_ERR_INVALID_ARG;
 
-    InternalFS.begin();
-
     if (InternalFS.exists(CFG_FILE)) InternalFS.remove(CFG_FILE);
 
     File f(InternalFS);
@@ -124,7 +120,6 @@ nx_err_t nx_settings_save(const nx_settings_t *settings)
 
 nx_err_t nx_settings_erase(void)
 {
-    InternalFS.begin();
     if (InternalFS.exists(CFG_FILE)) InternalFS.remove(CFG_FILE);
     return NX_OK;
 }

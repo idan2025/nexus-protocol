@@ -86,7 +86,6 @@ static const char *ID_FILE = "/nexus_id";
 
 static nx_err_t load_identity(nx_identity_t *id)
 {
-    InternalFS.begin();
     File id_file(InternalFS);
     id_file.open(ID_FILE, FILE_O_READ);
     if (!id_file) return NX_ERR_NOT_FOUND;
@@ -104,7 +103,6 @@ static nx_err_t load_identity(nx_identity_t *id)
 
 static nx_err_t save_identity(const nx_identity_t *id)
 {
-    InternalFS.begin();
     if (InternalFS.exists(ID_FILE)) InternalFS.remove(ID_FILE);
 
     File id_file(InternalFS);
@@ -459,11 +457,53 @@ void setup()
      *   GREEN solid  = boot complete
      */
 
+    /* ── STEP 0: Mount InternalFS (once) ───────────────────────────────── */
+    /*
+     * On a fresh board the LittleFS region may be unformatted. Adafruit's
+     * begin() returns false in that case and any subsequent File op can
+     * hang. Format-on-failure once up-front and let all persistence calls
+     * below assume the FS is mounted.
+     *
+     * LED indicator: solid BLUE while mounting, brief GREEN pulse on
+     * success, or a magenta (RED+BLUE) burst on format fallback.
+     */
+    Serial.println("[BOOT] Mounting InternalFS...");
+    digitalWrite(LED_BLUE, LOW);
+    bool fs_ok = InternalFS.begin();
+    if (!fs_ok) {
+        Serial.println("[BOOT] InternalFS.begin() failed -- formatting...");
+        /* Magenta burst = formatting filesystem */
+        for (int i = 0; i < 4; i++) {
+            digitalWrite(LED_RED, LOW); delay(80);
+            digitalWrite(LED_RED, HIGH); delay(80);
+        }
+        InternalFS.format();
+        fs_ok = InternalFS.begin();
+    }
+    digitalWrite(LED_BLUE, HIGH);
+    if (!fs_ok) {
+        Serial.println("[BOOT] InternalFS UNAVAILABLE -- continuing without persistence");
+        /* Not fatal: defaults will be used in RAM. Flash 3x rapid red. */
+        for (int i = 0; i < 3; i++) {
+            digitalWrite(LED_RED, LOW); delay(60);
+            digitalWrite(LED_RED, HIGH); delay(60);
+        }
+    } else {
+        Serial.println("[BOOT] InternalFS ready");
+        digitalWrite(LED_GREEN, LOW); delay(120); digitalWrite(LED_GREEN, HIGH);
+    }
+    delay(300);
+
     /* ── STEP 1: Settings ──────────────────────────────────────────────── */
     digitalWrite(LED_RED, LOW); delay(400); digitalWrite(LED_RED, HIGH); delay(600);
     Serial.println("[BOOT] Step 1: Loading settings...");
 
-    if (nx_settings_load(&settings) != NX_OK) {
+    if (!fs_ok) {
+        Serial.println("[NEXUS] FS unavailable - using in-memory defaults");
+        nx_settings_t defaults = NX_SETTINGS_DEFAULT;
+        memcpy(&settings, &defaults, sizeof(settings));
+        settings.screen_timeout_ms = 0;
+    } else if (nx_settings_load(&settings) != NX_OK) {
         Serial.println("[NEXUS] First boot - using default settings");
         nx_settings_t defaults = NX_SETTINGS_DEFAULT;
         memcpy(&settings, &defaults, sizeof(settings));
