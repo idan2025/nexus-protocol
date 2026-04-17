@@ -51,6 +51,8 @@ c_sources = [
     "lib/src/session.c",
     "lib/src/group.c",
     "lib/src/node.c",
+    "lib/src/msgring.c",
+    "lib/src/message.c",
     "lib/vendor/monocypher/monocypher.c",
     "lib/vendor/monocypher/monocypher.h",
     "transports/lora/nexus_lora.c",

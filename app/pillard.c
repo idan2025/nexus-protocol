@@ -697,7 +697,10 @@ static int admin_start(const char *path)
 
     g_admin_fd = fd;
     g_admin_running = 1;
-    strncpy(g_admin_bound_path, path, sizeof(g_admin_bound_path) - 1);
+    size_t _plen = strlen(path);
+    if (_plen >= sizeof(g_admin_bound_path)) _plen = sizeof(g_admin_bound_path) - 1;
+    memcpy(g_admin_bound_path, path, _plen);
+    g_admin_bound_path[_plen] = '\0';
 
     if (pthread_create(&g_admin_thread, NULL, admin_thread_main, NULL) != 0) {
         close(fd);

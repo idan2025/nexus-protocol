@@ -299,11 +299,13 @@ static void uds_process(int fd, const char *line)
 
 static int uds_listen(const char *path)
 {
+    size_t plen = strlen(path);
+    struct sockaddr_un sa = {0};
+    if (plen >= sizeof(sa.sun_path)) return -1; /* path too long for UDS */
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
-    struct sockaddr_un sa = {0};
     sa.sun_family = AF_UNIX;
-    strncpy(sa.sun_path, path, sizeof(sa.sun_path) - 1);
+    memcpy(sa.sun_path, path, plen); /* sa was zero-initialized */
     unlink(path);
     if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         close(fd);
