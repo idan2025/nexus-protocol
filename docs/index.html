@@ -761,13 +761,21 @@ function hideFlashStatus() {
 /* ── Manifest & Release Loading ──────────────────────────────────────── */
 
 function makeManifestUrl(target, tag, base) {
+  /*
+   * Serve the webflash binary same-origin from docs/firmware/.
+   * GitHub release downloads (github.com → release-assets.githubusercontent.com)
+   * do not send Access-Control-Allow-Origin, so cross-origin fetch() from
+   * GitHub Pages fails with "Failed to fetch". The release workflow copies
+   * the merged webflash bins into docs/firmware/ on each tag push.
+   */
+  const localPath = new URL(`firmware/${target.file}`, document.baseURI).href;
   const manifest = {
     name: target.name,
     version: tag,
     new_install_prompt_erase: true,
     builds: [{
       chipFamily: target.chipFamily,
-      parts: [{ path: `${base}/${target.file}`, offset: 0 }]
+      parts: [{ path: localPath, offset: 0 }]
     }]
   };
   const blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });

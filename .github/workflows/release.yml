@@ -223,3 +223,45 @@ jobs:
         with:
           generate_release_notes: true
           files: release-files/*
+
+  update-pages:
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Copy webflash bins into docs/firmware/
+        run: |
+          mkdir -p docs/firmware
+          for target in heltec_v3 xiao_esp32s3; do
+            SRC=$(find "artifacts/firmware-${target}" -name "nexus-${target}-webflash.bin" 2>/dev/null | head -1)
+            if [ -n "$SRC" ]; then
+              cp "$SRC" "docs/firmware/nexus-${target}-webflash.bin"
+              echo "Copied ${target} webflash binary ($(stat -c%s "$SRC") bytes)"
+            else
+              echo "WARNING: ${target} webflash binary not found"
+            fi
+          done
+          ls -la docs/firmware/ || true
+
+      - name: Commit updated webflash bins
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/firmware/
+          if git diff --staged --quiet; then
+            echo "No webflash changes to commit"
+          else
+            git commit -m "chore(pages): update webflash bins for ${{ github.ref_name }} [skip ci]"
+            git push origin main
+          fi
