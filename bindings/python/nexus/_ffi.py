@@ -187,6 +187,14 @@ OnGroupFn = ctypes.CFUNCTYPE(
     ctypes.c_void_p,
 )
 
+OnFederationFn = ctypes.CFUNCTYPE(
+    None,
+    ctypes.POINTER(AddrShort),
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.c_int,
+    ctypes.c_void_p,
+)
+
 
 class NodeConfig(ctypes.Structure):
     _fields_ = [
@@ -199,11 +207,13 @@ class NodeConfig(ctypes.Structure):
         ("on_neighbor", OnNeighborFn),           # off=24
         ("on_session", OnSessionFn),             # off=32
         ("on_group", OnGroupFn),                 # off=40
-        ("user_ctx", ctypes.c_void_p),           # off=48
+        ("on_fed_digest", OnFederationFn),       # off=48
+        ("on_fed_fetch", OnFederationFn),        # off=56
+        ("user_ctx", ctypes.c_void_p),           # off=64
     ]
 
 
-assert ctypes.sizeof(NodeConfig) == 56
+assert ctypes.sizeof(NodeConfig) == 72
 
 
 class Neighbor(ctypes.Structure):
@@ -447,20 +457,20 @@ class NodeState(ctypes.Structure):
         ("identity", CIdentity),            # off=0
         ("_pad0", ctypes.c_uint8 * 4),      # padding (180 -> 184)
         ("config", NodeConfig),              # off=184
-        ("route_table", RouteTable),         # off=240
-        ("frag_buffer", FragBuffer),         # off=9344
-        ("anchor", Anchor),                  # off=41096
-        ("sessions", SessionStore),          # off=50576
-        ("groups", GroupStore),              # off=91344
-        ("next_seq_id", ctypes.c_uint16),   # off=97584
-        ("running", ctypes.c_bool),          # off=97586
-        ("has_telemetry", ctypes.c_bool),    # off=97587
-        ("telemetry", ctypes.c_uint8 * 4),   # off=97588  (nx_announce_telemetry_t)
-        ("msgring", ctypes.c_uint8 * 8200),  # off=97592  (nx_msgring_t)
+        ("route_table", RouteTable),         # off=256
+        ("frag_buffer", FragBuffer),         # off=9360
+        ("anchor", Anchor),                  # off=41112
+        ("sessions", SessionStore),          # off=50592
+        ("groups", GroupStore),              # off=91360
+        ("next_seq_id", ctypes.c_uint16),   # off=97600
+        ("running", ctypes.c_bool),          # off=97602
+        ("has_telemetry", ctypes.c_bool),    # off=97603
+        ("telemetry", ctypes.c_uint8 * 4),   # off=97604  (nx_announce_telemetry_t)
+        ("msgring", ctypes.c_uint8 * 8200),  # off=97608  (nx_msgring_t)
     ]
 
 
-assert ctypes.sizeof(NodeState) == 105792
+assert ctypes.sizeof(NodeState) == 105808
 
 # ── Function signatures ──────────────────────────────────────────────
 
