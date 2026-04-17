@@ -40,7 +40,7 @@ Grouped by subsystem. Priority: **P0** blocker, **P1** parity, **P2** polish.
 
 ### Security (LXMF parity)
 - **P1 ✅** Proof-of-Work stamps on outbound messages (configurable difficulty, anti-spam).
-- **P1** Stamp verification UI (reject / warn on under-difficulty inbound).
+- **P1 ✅** Stamp verification UI (reject / warn on under-difficulty inbound).
 - **P2** Per-contact trust levels (verified / seen / unknown).
 
 ---

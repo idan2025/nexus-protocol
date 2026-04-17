@@ -14,6 +14,7 @@ extern "C" {
 #include "nexus/transport.h"
 #include "nexus/group.h"
 #include "nexus/platform.h"
+#include "nexus/message.h"
 }
 
 #define TAG "NexusJNI"
@@ -869,6 +870,35 @@ Java_com_nexus_mesh_service_NexusNode_nativeGroupGetMembers(JNIEnv *env,
         }
     }
     return result;
+}
+
+/*
+ * Verify a proof-of-work stamp on a serialized NXM buffer.
+ * Returns: 0 = OK (>= min_difficulty), 1 = under difficulty / missing,
+ *          2 = present but hash does not verify, -1 = invalid input.
+ */
+JNIEXPORT jint JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeVerifyStamp(JNIEnv *env,
+                                                          jclass /*cls*/,
+                                                          jbyteArray buf,
+                                                          jint minDifficulty)
+{
+    if (!buf) return -1;
+    jsize len = env->GetArrayLength(buf);
+    if (len <= 0) return -1;
+    jbyte *data = env->GetByteArrayElements(buf, nullptr);
+    if (!data) return -1;
+
+    nx_err_t err = nx_msg_verify_stamp((const uint8_t *)data, (size_t)len,
+                                       (uint8_t)minDifficulty);
+    env->ReleaseByteArrayElements(buf, data, JNI_ABORT);
+
+    switch (err) {
+        case NX_OK:             return 0;
+        case NX_ERR_INVALID_ARG: return 1;
+        case NX_ERR_AUTH_FAIL:  return 2;
+        default:                return -1;
+    }
 }
 
 } /* extern "C" */

@@ -70,6 +70,11 @@ class NexusService : Service(), NexusNode.Callback {
         private const val KEY_PILLARS_ALLOW_METERED = "pillars_allow_metered"
         val DEFAULT_PILLARS = ""
         private const val NETWORK_DEBOUNCE_MS = 1500L
+
+        private const val PREFS_STAMP = "nexus_stamp"
+        private const val KEY_STAMP_MIN_DIFFICULTY = "stamp_min_difficulty"
+        private const val KEY_STAMP_REJECT = "stamp_reject_under"
+        const val DEFAULT_STAMP_MIN_DIFFICULTY = 0   // 0 = accept all, advisory counters only
     }
 
     private val node = NexusNode()
@@ -111,6 +116,12 @@ class NexusService : Service(), NexusNode.Callback {
         val isDirect: Boolean
     )
 
+    data class StampStats(
+        val accepted: Long = 0,
+        val warned: Long = 0,
+        val rejected: Long = 0,
+    )
+
     // --- Observable state ---
 
     private val _neighbors = MutableStateFlow<List<Neighbor>>(emptyList())
@@ -127,6 +138,13 @@ class NexusService : Service(), NexusNode.Callback {
 
     private val _udpActive = MutableStateFlow(false)
     val udpActive: StateFlow<Boolean> = _udpActive
+
+    private val _stampStats = MutableStateFlow(StampStats())
+    val stampStats: StateFlow<StampStats> = _stampStats
+    private val _stampMinDifficulty = MutableStateFlow(DEFAULT_STAMP_MIN_DIFFICULTY)
+    val stampMinDifficulty: StateFlow<Int> = _stampMinDifficulty
+    private val _stampReject = MutableStateFlow(false)
+    val stampReject: StateFlow<Boolean> = _stampReject
 
     private val _myName = MutableStateFlow("")
     val myName: StateFlow<String> = _myName
@@ -161,6 +179,7 @@ class NexusService : Service(), NexusNode.Callback {
 
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Starting..."))
+        loadStampPrefs()
         startNode()
         registerNetworkCallback()
     }
@@ -518,6 +537,81 @@ class NexusService : Service(), NexusNode.Callback {
         }
     }
 
+    // --- Proof-of-Work stamp enforcement ---
+
+    private fun loadStampPrefs() {
+        val prefs = getSharedPreferences(PREFS_STAMP, Context.MODE_PRIVATE)
+        _stampMinDifficulty.value = prefs.getInt(
+            KEY_STAMP_MIN_DIFFICULTY, DEFAULT_STAMP_MIN_DIFFICULTY
+        ).coerceIn(0, 32)
+        _stampReject.value = prefs.getBoolean(KEY_STAMP_REJECT, false)
+    }
+
+    fun setStampMinDifficulty(bits: Int) {
+        val clamped = bits.coerceIn(0, 32)
+        _stampMinDifficulty.value = clamped
+        getSharedPreferences(PREFS_STAMP, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_STAMP_MIN_DIFFICULTY, clamped).apply()
+    }
+
+    fun setStampReject(enabled: Boolean) {
+        _stampReject.value = enabled
+        getSharedPreferences(PREFS_STAMP, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_STAMP_REJECT, enabled).apply()
+    }
+
+    fun resetStampStats() { _stampStats.value = StampStats() }
+
+    /**
+     * Check the PoW stamp on a serialized NXM buffer against the user's
+     * minimum difficulty. Updates live counters and returns true if the
+     * caller should continue processing the message, or false if the
+     * "reject under difficulty" policy is on and the stamp failed.
+     */
+    private fun verifyInboundStamp(buf: ByteArray, srcHex: String): Boolean {
+        val minBits = _stampMinDifficulty.value
+        if (minBits <= 0) {
+            // Advisory mode: still count, but don't reject.
+            when (NexusNode.nativeVerifyStamp(buf, 1)) {
+                NexusNode.STAMP_OK -> _stampStats.value =
+                    _stampStats.value.copy(accepted = _stampStats.value.accepted + 1)
+                else -> { /* no stamp; stay silent */ }
+            }
+            return true
+        }
+        val result = NexusNode.nativeVerifyStamp(buf, minBits)
+        return when (result) {
+            NexusNode.STAMP_OK -> {
+                _stampStats.value = _stampStats.value.copy(
+                    accepted = _stampStats.value.accepted + 1
+                )
+                true
+            }
+            NexusNode.STAMP_UNDER_DIFFICULTY -> {
+                if (_stampReject.value) {
+                    _stampStats.value = _stampStats.value.copy(
+                        rejected = _stampStats.value.rejected + 1
+                    )
+                    Log.w(TAG, "Reject inbound from $srcHex: stamp below ${minBits} bits")
+                    false
+                } else {
+                    _stampStats.value = _stampStats.value.copy(
+                        warned = _stampStats.value.warned + 1
+                    )
+                    Log.w(TAG, "Warn inbound from $srcHex: stamp below ${minBits} bits")
+                    true
+                }
+            }
+            else -> {  // STAMP_INVALID or error: forged or malformed stamp -> always reject
+                _stampStats.value = _stampStats.value.copy(
+                    rejected = _stampStats.value.rejected + 1
+                )
+                Log.w(TAG, "Reject inbound from $srcHex: invalid stamp (err=$result)")
+                false
+            }
+        }
+    }
+
     // --- NexusNode.Callback ---
 
     override fun onGroup(groupId: ByteArray, src: ByteArray, data: ByteArray) {
@@ -527,6 +621,9 @@ class NexusService : Service(), NexusNode.Callback {
 
         // Try to parse as NXM
         if (NxmParser.isNxm(data)) {
+            if (data.size >= 3 && (data[2].toInt() and NxmFlag.STAMPED) != 0) {
+                if (!verifyInboundStamp(data, srcHex)) return
+            }
             val nxm = NxmParser.parse(data)
             if (nxm != null) {
                 val text = nxm.text ?: return
@@ -628,6 +725,9 @@ class NexusService : Service(), NexusNode.Callback {
 
         // Try to parse as NXM
         if (NxmParser.isNxm(data)) {
+            if (data.size >= 3 && (data[2].toInt() and NxmFlag.STAMPED) != 0) {
+                if (!verifyInboundStamp(data, srcHex)) return
+            }
             val nxm = NxmParser.parse(data)
             if (nxm != null) {
                 handleNxmMessage(srcHex, src, nxm, isDirect)

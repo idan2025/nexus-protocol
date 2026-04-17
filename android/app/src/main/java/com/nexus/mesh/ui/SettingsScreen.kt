@@ -28,6 +28,10 @@ fun SettingsScreen(activity: MainActivity, navController: NavController? = null)
     val pillarsAllowMetered by service?.pillarsAllowMetered?.collectAsState() ?: remember { mutableStateOf(false) }
     val networkState by service?.networkState?.collectAsState()
         ?: remember { mutableStateOf(com.nexus.mesh.service.NetworkState()) }
+    val stampStats by service?.stampStats?.collectAsState()
+        ?: remember { mutableStateOf(com.nexus.mesh.service.NexusService.StampStats()) }
+    val stampMinDifficulty by service?.stampMinDifficulty?.collectAsState() ?: remember { mutableStateOf(0) }
+    val stampReject by service?.stampReject?.collectAsState() ?: remember { mutableStateOf(false) }
 
     val tcpConfig = service?.getTcpConfig()
     var tcpPort by remember { mutableStateOf(tcpConfig?.first?.toString() ?: "4242") }
@@ -392,6 +396,83 @@ fun SettingsScreen(activity: MainActivity, navController: NavController? = null)
                         ) {
                             Text("Disable")
                         }
+                    }
+                }
+            }
+
+            // Proof-of-Work Stamps (anti-spam)
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "Stamp Verification",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Require inbound messages to carry a proof-of-work stamp. " +
+                        "Higher difficulty = more CPU for senders = less spam.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    Text(
+                        "Minimum difficulty: ${stampMinDifficulty} bits" +
+                            if (stampMinDifficulty == 0) " (advisory only)" else "",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Slider(
+                        value = stampMinDifficulty.toFloat(),
+                        onValueChange = {
+                            service?.setStampMinDifficulty(it.toInt())
+                        },
+                        valueRange = 0f..16f,
+                        steps = 15,
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Reject under-difficulty", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                if (stampReject) "Drop messages below the minimum"
+                                else "Warn only — still deliver the message",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = stampReject,
+                            onCheckedChange = { service?.setStampReject(it) },
+                            enabled = stampMinDifficulty > 0,
+                        )
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    Text("Inbound counters", style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text("Accepted: ${stampStats.accepted}",
+                            style = MaterialTheme.typography.bodySmall)
+                        Text("Warned: ${stampStats.warned}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.tertiary)
+                        Text("Rejected: ${stampStats.rejected}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { service?.resetStampStats() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Reset counters")
                     }
                 }
             }

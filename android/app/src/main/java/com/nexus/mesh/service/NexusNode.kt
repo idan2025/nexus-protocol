@@ -19,6 +19,13 @@ class NexusNode {
         const val ROLE_SENTINEL = 4
         const val ROLE_PILLAR = 5
         const val ROLE_VAULT = 6
+
+        const val STAMP_OK            = 0
+        const val STAMP_UNDER_DIFFICULTY = 1  // missing or leading zeros < min
+        const val STAMP_INVALID       = 2     // present but hash mismatch
+
+        @JvmStatic
+        external fun nativeVerifyStamp(buf: ByteArray, minDifficulty: Int): Int
     }
 
     interface Callback {

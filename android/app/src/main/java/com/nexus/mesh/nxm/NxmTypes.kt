@@ -38,7 +38,8 @@ enum class NxmFieldType(val value: Int) {
     CONTACT_PUB(0x10),
     CODEC(0x11),
     SIGNATURE(0x12),
-    TITLE(0x13);
+    TITLE(0x13),
+    STAMP(0x14);  // PoW stamp: [difficulty(1)][nonce(8 BE)]
 
     companion object {
         fun fromValue(v: Int): NxmFieldType? = entries.find { it.value == v }
@@ -52,6 +53,7 @@ object NxmFlag {
     const val URGENT = 0x08
     const val REPLY = 0x10
     const val GROUP = 0x20
+    const val STAMPED = 0x40  // Message carries a proof-of-work stamp
 }
 
 const val NXM_VERSION = 1
