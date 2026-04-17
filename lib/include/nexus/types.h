@@ -96,6 +96,8 @@ typedef enum {
 /* 0x10-0x12 defined in session.h (SESSION_SUB_*) */
 /* 0x20 defined in group.h (GROUP_MSG) */
 #define NX_EXTHDR_INBOX_REQ  0x30  /* Client asking a pillar/anchor to replay stored pkts for src */
+#define NX_EXTHDR_FED_DIGEST 0x31  /* Pillar gossiping msg-ids it currently stores */
+#define NX_EXTHDR_FED_FETCH  0x32  /* Pillar requesting specific msg-ids listed in a prior DIGEST */
 
 /* ── Addresses ───────────────────────────────────────────────────────── */
 typedef struct {

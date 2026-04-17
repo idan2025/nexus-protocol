@@ -28,6 +28,9 @@
 #define NX_ANCHOR_VAULT_STORED 256
 #define NX_ANCHOR_MAX_PER_DEST   8    /* Max messages per destination */
 
+/* Federation msg-id: BLAKE2b-8 fingerprint of a stored packet's wire bytes. */
+#define NX_ANCHOR_MSG_ID_SIZE    8
+
 /* TTL defaults per tier */
 #define NX_ANCHOR_RELAY_TTL_MS   1800000  /* 30 minutes */
 #define NX_ANCHOR_MSG_TTL_MS     3600000  /* 1 hour (ANCHOR default) */
@@ -86,5 +89,31 @@ int nx_anchor_count_for(const nx_anchor_t *a, const nx_addr_short_t *dest);
 
 /* Count total stored messages. */
 int nx_anchor_count(const nx_anchor_t *a);
+
+/* ── Federation helpers ──────────────────────────────────────────────── */
+
+/*
+ * Compute a stable 8-byte fingerprint of a packet's wire form. Used by
+ * pillar federation to gossip "which messages do you have?" digests.
+ * Two packets with identical serialized bytes produce the same id.
+ */
+void nx_anchor_msg_id(const nx_packet_t *pkt,
+                      uint8_t out[NX_ANCHOR_MSG_ID_SIZE]);
+
+/*
+ * Fill `ids` with the msg-id of every valid slot. Returns the number
+ * written (<= max). Order is implementation-defined but stable within
+ * one call. `ids` may be NULL iff max == 0 (count-only mode).
+ */
+int nx_anchor_list_ids(const nx_anchor_t *a,
+                       uint8_t (*ids)[NX_ANCHOR_MSG_ID_SIZE], int max);
+
+/* Non-destructive lookup by msg-id. Returns NULL if not found. */
+const nx_packet_t *nx_anchor_find_by_id(const nx_anchor_t *a,
+                                        const uint8_t id[NX_ANCHOR_MSG_ID_SIZE]);
+
+/* True if any stored slot matches `id`. */
+bool nx_anchor_has_id(const nx_anchor_t *a,
+                      const uint8_t id[NX_ANCHOR_MSG_ID_SIZE]);
 
 #endif /* NEXUS_ANCHOR_H */

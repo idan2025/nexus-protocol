@@ -416,6 +416,29 @@ static void handle_data(nx_node_t *node, const nx_packet_t *pkt,
                 }
                 break;
             }
+            case NX_EXTHDR_FED_DIGEST:
+            case NX_EXTHDR_FED_FETCH: {
+                /* Federation gossip from another pillar. Payload layout:
+                 *   [type(1)][count(1)][msg_id(8) * count]
+                 * We just hand the id list up to the registered callback;
+                 * pillard (or other listener) decides what to do with it. */
+                if (pkt->header.payload_len < 2) break;
+                int count = pkt->payload[1];
+                int max_by_len = (pkt->header.payload_len - 2)
+                                 / NX_ANCHOR_MSG_ID_SIZE;
+                if (count > max_by_len) count = max_by_len;
+                if (count > NX_FED_MAX_IDS_PER_PKT) count = NX_FED_MAX_IDS_PER_PKT;
+                const uint8_t *ids = &pkt->payload[2];
+
+                nx_on_federation_fn cb =
+                    (pkt->payload[0] == NX_EXTHDR_FED_DIGEST)
+                        ? node->config.on_fed_digest
+                        : node->config.on_fed_fetch;
+                if (cb && count > 0) {
+                    cb(&pkt->header.src, ids, count, node->config.user_ctx);
+                }
+                break;
+            }
             }
         } else {
             deliver_data(node, &pkt->header.src,
@@ -642,6 +665,57 @@ nx_err_t nx_node_request_inbox(nx_node_t *node,
     pkt.payload[0] = NX_EXTHDR_INBOX_REQ;
 
     return transmit_all(&pkt);
+}
+
+static nx_err_t send_fed_exthdr(nx_node_t *node,
+                                const nx_addr_short_t *target,
+                                uint8_t type,
+                                const uint8_t *ids, int count)
+{
+    if (!node || !target || !ids) return NX_ERR_INVALID_ARG;
+    if (count <= 0 || count > NX_FED_MAX_IDS_PER_PKT) return NX_ERR_INVALID_ARG;
+
+    nx_packet_t pkt;
+    memset(&pkt, 0, sizeof(pkt));
+
+    const nx_route_t *route = nx_route_lookup(&node->route_table, target);
+    nx_rtype_t rtype = route ? NX_RTYPE_ROUTED : NX_RTYPE_FLOOD;
+
+    pkt.header.flags = nx_packet_flags(false, true, NX_PRIO_NORMAL,
+                                       NX_PTYPE_DATA, rtype);
+    pkt.header.hop_count = 0;
+    pkt.header.ttl = node->config.default_ttl;
+    pkt.header.dst = *target;
+    pkt.header.src = node->identity.short_addr;
+    pkt.header.seq_id = node->next_seq_id++;
+
+    size_t id_bytes = (size_t)count * NX_ANCHOR_MSG_ID_SIZE;
+    pkt.header.payload_len = (uint8_t)(2 + id_bytes);
+    pkt.payload[0] = type;
+    pkt.payload[1] = (uint8_t)count;
+    memcpy(&pkt.payload[2], ids, id_bytes);
+
+    return transmit_all(&pkt);
+}
+
+nx_err_t nx_node_send_federation_digest(nx_node_t *node,
+                                        const nx_addr_short_t *target,
+                                        const uint8_t *ids, int count)
+{
+    return send_fed_exthdr(node, target, NX_EXTHDR_FED_DIGEST, ids, count);
+}
+
+nx_err_t nx_node_send_federation_fetch(nx_node_t *node,
+                                       const nx_addr_short_t *target,
+                                       const uint8_t *ids, int count)
+{
+    return send_fed_exthdr(node, target, NX_EXTHDR_FED_FETCH, ids, count);
+}
+
+nx_err_t nx_node_retransmit_packet(nx_node_t *node, const nx_packet_t *pkt)
+{
+    if (!node || !pkt) return NX_ERR_INVALID_ARG;
+    return transmit_all(pkt);
 }
 
 nx_err_t nx_node_send_large(nx_node_t *node,

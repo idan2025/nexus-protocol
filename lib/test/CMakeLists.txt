@@ -22,6 +22,7 @@ set(TESTS
     test_udp_mcast
     test_message
     test_msgring
+    test_federation
 )
 
 foreach(test ${TESTS})

@@ -3,7 +3,10 @@
  */
 #include "nexus/anchor.h"
 #include "nexus/identity.h"
+#include "nexus/packet.h"
+#include "monocypher/monocypher.h"
 
+#include <stddef.h>
 #include <string.h>
 
 void nx_anchor_init(nx_anchor_t *a)
@@ -135,4 +138,60 @@ int nx_anchor_count(const nx_anchor_t *a)
         if (a->msgs[i].valid) count++;
     }
     return count;
+}
+
+void nx_anchor_msg_id(const nx_packet_t *pkt,
+                      uint8_t out[NX_ANCHOR_MSG_ID_SIZE])
+{
+    if (!out) return;
+    if (!pkt) { memset(out, 0, NX_ANCHOR_MSG_ID_SIZE); return; }
+
+    uint8_t wire[NX_MAX_PACKET];
+    int n = nx_packet_serialize(pkt, wire, sizeof(wire));
+    if (n <= 0) {
+        memset(out, 0, NX_ANCHOR_MSG_ID_SIZE);
+        return;
+    }
+    uint8_t full[32];
+    crypto_blake2b(full, sizeof(full), wire, (size_t)n);
+    memcpy(out, full, NX_ANCHOR_MSG_ID_SIZE);
+}
+
+int nx_anchor_list_ids(const nx_anchor_t *a,
+                       uint8_t (*ids)[NX_ANCHOR_MSG_ID_SIZE], int max)
+{
+    if (!a || max <= 0 || !ids) return 0;
+    int out = 0;
+    int limit = a->max_slots < NX_ANCHOR_MAX_STORED ?
+                a->max_slots : NX_ANCHOR_MAX_STORED;
+    for (int i = 0; i < limit && out < max; i++) {
+        if (a->msgs[i].valid) {
+            nx_anchor_msg_id(&a->msgs[i].pkt, ids[out]);
+            out++;
+        }
+    }
+    return out;
+}
+
+const nx_packet_t *nx_anchor_find_by_id(const nx_anchor_t *a,
+                                        const uint8_t id[NX_ANCHOR_MSG_ID_SIZE])
+{
+    if (!a || !id) return NULL;
+    int limit = a->max_slots < NX_ANCHOR_MAX_STORED ?
+                a->max_slots : NX_ANCHOR_MAX_STORED;
+    uint8_t slot_id[NX_ANCHOR_MSG_ID_SIZE];
+    for (int i = 0; i < limit; i++) {
+        if (!a->msgs[i].valid) continue;
+        nx_anchor_msg_id(&a->msgs[i].pkt, slot_id);
+        if (memcmp(slot_id, id, NX_ANCHOR_MSG_ID_SIZE) == 0) {
+            return &a->msgs[i].pkt;
+        }
+    }
+    return NULL;
+}
+
+bool nx_anchor_has_id(const nx_anchor_t *a,
+                      const uint8_t id[NX_ANCHOR_MSG_ID_SIZE])
+{
+    return nx_anchor_find_by_id(a, id) != NULL;
 }

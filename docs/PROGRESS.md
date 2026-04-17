@@ -17,6 +17,28 @@ Shorthand:
 
 ## Now in flight
 
+### Pillar: multi-pillar mailbox sync (federation) `[done 2026-04-17]`
+- Two new exthdrs in `lib/include/nexus/types.h`: `NX_EXTHDR_FED_DIGEST`
+  (0x31) advertises stored msg-ids, `NX_EXTHDR_FED_FETCH` (0x32) requests
+  them back. Msg-id is BLAKE2b-8 of the serialized packet.
+- Anchor API additions (`lib/src/anchor.c`): `nx_anchor_msg_id`,
+  `nx_anchor_list_ids`, `nx_anchor_find_by_id`, `nx_anchor_has_id`.
+- Node-layer callbacks `on_fed_digest` / `on_fed_fetch` in
+  `nx_node_config_t`; dispatch cases added in `lib/src/node.c`.
+  Send helpers: `nx_node_send_federation_{digest,fetch}`,
+  `nx_node_retransmit_packet`. 30 ids per packet (payload budget).
+- `app/pillard.c` gossips every 30s to neighbors with role >= PILLAR.
+  On DIGEST: compute missing ids, reply with FETCH. On FETCH: replay
+  stored packets verbatim — peer's node-layer auto-stores via its
+  existing offline-destination path (node.c:454). Counters exposed in
+  `/metrics` and `dump_stats`: `pillard_fed_digests_sent_total`,
+  `pillard_fed_fetches_sent_total`, `pillard_fed_packets_served_total`,
+  `pillard_mailbox_depth`.
+- New `lib/test/test_federation.c`: msg-id determinism, anchor id
+  enumeration, full DIGEST→FETCH→retransmit round-trip through linked
+  pipe transports. 3/3 pass. Full suite still green.
+- Closes the last unchecked P1 in the Pillar section of `docs/FEATURES.md`.
+
 ### Pillar: admin UDS (`/reload` et al.) `[done 2026-04-15]`
 - New Unix-domain control socket in `app/pillard.c`: line-based protocol,
   one command per connection. Commands: `ping`, `reload` (same as SIGHUP),

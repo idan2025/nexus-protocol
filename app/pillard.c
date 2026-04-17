@@ -60,6 +60,7 @@
 #define PILLARD_POLL_MS        200
 #define PILLARD_STATS_EVERY_S  300   /* 5 min */
 #define PILLARD_REANNOUNCE_S   600   /* 10 min */
+#define PILLARD_FED_GOSSIP_S   30    /* digest cadence to peer pillars */
 
 typedef struct {
     uint16_t listen_port;
@@ -104,6 +105,9 @@ static uint64_t g_msgs_session = 0;
 static uint64_t g_msgs_group   = 0;
 static uint64_t g_announces    = 0;
 static uint64_t g_rate_warnings = 0;
+static uint64_t g_fed_digests_sent = 0;
+static uint64_t g_fed_fetches_sent = 0;
+static uint64_t g_fed_pkts_served  = 0;
 static time_t   g_start_time    = 0;
 
 static peer_rate_slot_t g_rate_slots[PILLARD_RATE_SLOTS];
@@ -250,6 +254,88 @@ static void on_group(const nx_addr_short_t *gid,
               src->bytes[0], src->bytes[1], src->bytes[2], src->bytes[3], len);
 }
 
+/* Peer pillar is telling us what ids it holds. Reply with a FETCH for
+ * everything we don't already store. */
+static void on_fed_digest(const nx_addr_short_t *src,
+                          const uint8_t *ids, int count, void *user)
+{
+    (void)user;
+    if (!ids || count <= 0) return;
+
+    uint8_t wanted[NX_FED_MAX_IDS_PER_PKT][NX_ANCHOR_MSG_ID_SIZE];
+    int want = 0;
+    for (int i = 0; i < count && want < NX_FED_MAX_IDS_PER_PKT; i++) {
+        const uint8_t *id = ids + (size_t)i * NX_ANCHOR_MSG_ID_SIZE;
+        if (!nx_anchor_has_id(&g_node.anchor, id)) {
+            memcpy(wanted[want++], id, NX_ANCHOR_MSG_ID_SIZE);
+        }
+    }
+    if (want == 0) {
+        LOG_DEBUG("fed: digest from %02X%02X%02X%02X (%d ids, all known)",
+                  src->bytes[0], src->bytes[1], src->bytes[2], src->bytes[3],
+                  count);
+        return;
+    }
+    LOG_DEBUG("fed: digest from %02X%02X%02X%02X (%d ids, %d missing)",
+              src->bytes[0], src->bytes[1], src->bytes[2], src->bytes[3],
+              count, want);
+    if (nx_node_send_federation_fetch(&g_node, src,
+                                      (const uint8_t *)wanted, want) == NX_OK) {
+        g_fed_fetches_sent++;
+    }
+}
+
+/* Peer pillar is asking us for packets behind specific msg-ids. Retransmit
+ * each one verbatim; peer's node layer will anchor-store via the normal
+ * offline-destination forwarding path. */
+static void on_fed_fetch(const nx_addr_short_t *src,
+                         const uint8_t *ids, int count, void *user)
+{
+    (void)src; (void)user;
+    if (!ids || count <= 0) return;
+    int served = 0;
+    for (int i = 0; i < count; i++) {
+        const uint8_t *id = ids + (size_t)i * NX_ANCHOR_MSG_ID_SIZE;
+        const nx_packet_t *p = nx_anchor_find_by_id(&g_node.anchor, id);
+        if (p && nx_node_retransmit_packet(&g_node, p) == NX_OK) {
+            served++;
+        }
+    }
+    g_fed_pkts_served += (uint64_t)served;
+    LOG_DEBUG("fed: fetch from %02X%02X%02X%02X (%d requested, %d served)",
+              src->bytes[0], src->bytes[1], src->bytes[2], src->bytes[3],
+              count, served);
+}
+
+/* Broadcast a DIGEST to every known peer pillar (role >= PILLAR). Called
+ * periodically from the main loop. */
+static void federation_gossip_tick(void)
+{
+    if (g_node.anchor.max_slots <= 0) return;
+
+    uint8_t ids[NX_FED_MAX_IDS_PER_PKT][NX_ANCHOR_MSG_ID_SIZE];
+    int have = nx_anchor_list_ids(&g_node.anchor, ids, NX_FED_MAX_IDS_PER_PKT);
+    if (have <= 0) return;
+
+    const nx_route_table_t *rt = nx_node_route_table(&g_node);
+    if (!rt) return;
+
+    int sent = 0;
+    for (int i = 0; i < NX_MAX_NEIGHBORS; i++) {
+        const nx_neighbor_t *n = &rt->neighbors[i];
+        if (!n->valid) continue;
+        if (n->role < NX_ROLE_PILLAR) continue;  /* only federate PILLAR/VAULT */
+        if (nx_node_send_federation_digest(&g_node, &n->addr,
+                                           (const uint8_t *)ids, have) == NX_OK) {
+            sent++;
+            g_fed_digests_sent++;
+        }
+    }
+    if (sent > 0) {
+        LOG_DEBUG("fed: digest -> %d peer pillar(s), %d id(s)", sent, have);
+    }
+}
+
 /* Returns 1 if this tick pushed the peer over the per-window threshold
  * (first crossing triggers a single WARN; further hits are silent until
  * the window rolls). */
@@ -365,14 +451,30 @@ static size_t metrics_render(char *buf, size_t buflen)
         "pillard_announces_total %llu\n"
         "# HELP pillard_rate_warnings_total Peers that crossed the rate threshold\n"
         "# TYPE pillard_rate_warnings_total counter\n"
-        "pillard_rate_warnings_total %llu\n",
+        "pillard_rate_warnings_total %llu\n"
+        "# HELP pillard_mailbox_depth Stored packets awaiting delivery\n"
+        "# TYPE pillard_mailbox_depth gauge\n"
+        "pillard_mailbox_depth %d\n"
+        "# HELP pillard_fed_digests_sent_total DIGEST exthdrs broadcast to peer pillars\n"
+        "# TYPE pillard_fed_digests_sent_total counter\n"
+        "pillard_fed_digests_sent_total %llu\n"
+        "# HELP pillard_fed_fetches_sent_total FETCH exthdrs sent in reply to DIGESTs\n"
+        "# TYPE pillard_fed_fetches_sent_total counter\n"
+        "pillard_fed_fetches_sent_total %llu\n"
+        "# HELP pillard_fed_packets_served_total Stored packets retransmitted in reply to FETCH\n"
+        "# TYPE pillard_fed_packets_served_total counter\n"
+        "pillard_fed_packets_served_total %llu\n",
         (unsigned long long)uptime,
         count_neighbors(), count_routes(), nx_transport_count(),
         (unsigned long long)g_msgs_data,
         (unsigned long long)g_msgs_session,
         (unsigned long long)g_msgs_group,
         (unsigned long long)g_announces,
-        (unsigned long long)g_rate_warnings);
+        (unsigned long long)g_rate_warnings,
+        nx_anchor_count(&g_node.anchor),
+        (unsigned long long)g_fed_digests_sent,
+        (unsigned long long)g_fed_fetches_sent,
+        (unsigned long long)g_fed_pkts_served);
 }
 
 static void metrics_handle_client(int cfd)
@@ -638,12 +740,17 @@ static void dump_stats(void)
     }
 
     LOG_INFO("stats neighbors=%d routes=%d transports=%d "
-             "rx_data=%llu rx_session=%llu rx_group=%llu announces=%llu",
+             "rx_data=%llu rx_session=%llu rx_group=%llu announces=%llu "
+             "fed_digest=%llu fed_fetch=%llu fed_served=%llu mailbox=%d",
              n_neighbors, n_routes, nx_transport_count(),
              (unsigned long long)g_msgs_data,
              (unsigned long long)g_msgs_session,
              (unsigned long long)g_msgs_group,
-             (unsigned long long)g_announces);
+             (unsigned long long)g_announces,
+             (unsigned long long)g_fed_digests_sent,
+             (unsigned long long)g_fed_fetches_sent,
+             (unsigned long long)g_fed_pkts_served,
+             nx_anchor_count(&g_node.anchor));
 }
 
 /* ── Usage ───────────────────────────────────────────────────────────── */
@@ -851,6 +958,8 @@ int main(int argc, char **argv)
     ncfg.on_neighbor = on_neighbor;
     ncfg.on_session  = on_session;
     ncfg.on_group    = on_group;
+    ncfg.on_fed_digest = on_fed_digest;
+    ncfg.on_fed_fetch  = on_fed_fetch;
 
     if (nx_node_init_with_identity(&g_node, &ncfg, &id) != NX_OK) {
         LOG_ERROR("node init failed");
@@ -936,6 +1045,7 @@ int main(int argc, char **argv)
 
     time_t last_stats = time(NULL);
     time_t last_announce = time(NULL);
+    time_t last_fed = time(NULL);
 
     while (g_running) {
         nx_node_poll(&g_node, PILLARD_POLL_MS);
@@ -950,6 +1060,10 @@ int main(int argc, char **argv)
             last_announce = now;
             nx_node_announce(&g_node);
             LOG_DEBUG("announced");
+        }
+        if ((now - last_fed) >= PILLARD_FED_GOSSIP_S) {
+            last_fed = now;
+            federation_gossip_tick();
         }
         if ((now - last_stats) >= PILLARD_STATS_EVERY_S) {
             last_stats = now;

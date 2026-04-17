@@ -40,6 +40,13 @@ typedef void (*nx_on_group_fn)(const nx_addr_short_t *group_id,
                                 const uint8_t *data, size_t len,
                                 void *user);
 
+/* Called when a federation DIGEST or FETCH exthdr arrives.
+ * `ids` points into the incoming packet payload and is only valid for
+ * the duration of the callback. Each id is NX_ANCHOR_MSG_ID_SIZE bytes. */
+typedef void (*nx_on_federation_fn)(const nx_addr_short_t *src,
+                                     const uint8_t *ids, int count,
+                                     void *user);
+
 /* ── Node Configuration ──────────────────────────────────────────────── */
 
 typedef struct {
@@ -50,6 +57,8 @@ typedef struct {
     nx_on_neighbor_fn on_neighbor;
     nx_on_session_fn  on_session;
     nx_on_group_fn    on_group;
+    nx_on_federation_fn on_fed_digest;  /* Peer is advertising stored msg-ids */
+    nx_on_federation_fn on_fed_fetch;   /* Peer is requesting stored msg-ids */
     void             *user_ctx;    /* Passed to callbacks */
 } nx_node_config_t;
 
@@ -147,6 +156,37 @@ void nx_node_set_telemetry(nx_node_t *node,
  */
 nx_err_t nx_node_request_inbox(nx_node_t *node,
                                const nx_addr_short_t *target);
+
+/* ── Federation (pillar-to-pillar mailbox sync) ──────────────────────── */
+
+/* Max msg-ids per DIGEST/FETCH packet: (NX_MAX_PAYLOAD - type - count) / id
+ * = (242 - 1 - 1) / 8 = 30. */
+#define NX_FED_MAX_IDS_PER_PKT  30
+
+/*
+ * Send a DIGEST exthdr advertising stored msg-ids to `target`. `ids` is
+ * a contiguous buffer of `count * NX_ANCHOR_MSG_ID_SIZE` bytes.
+ * 1 <= count <= NX_FED_MAX_IDS_PER_PKT.
+ */
+nx_err_t nx_node_send_federation_digest(nx_node_t *node,
+                                        const nx_addr_short_t *target,
+                                        const uint8_t *ids, int count);
+
+/*
+ * Send a FETCH exthdr requesting the listed msg-ids from `target`.
+ * Same size constraints as digest.
+ */
+nx_err_t nx_node_send_federation_fetch(nx_node_t *node,
+                                       const nx_addr_short_t *target,
+                                       const uint8_t *ids, int count);
+
+/*
+ * Re-transmit an already-stored packet on all active transports. Used by
+ * the FED_FETCH handler to fulfil a peer pillar's request — the verbatim
+ * stored packet fans out, and the peer's node layer auto-anchors it via
+ * its offline-destination store-forward path.
+ */
+nx_err_t nx_node_retransmit_packet(nx_node_t *node, const nx_packet_t *pkt);
 
 /* ── Session API ─────────────────────────────────────────────────────── */
 
