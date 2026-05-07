@@ -6,7 +6,7 @@
 <title>NEXUS Protocol - Web Flasher</title>
 <script
   type="module"
-  src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+  src="https://unpkg.com/esp-web-tools@10.0.0/dist/web/install-button.js?module"
 ></script>
 <style>
   :root {
@@ -801,6 +801,24 @@ async function loadRelease() {
       ESP_TARGETS.forEach(t => {
         if (!assetNames.includes(t.file)) {
           console.warn(`Firmware ${t.file} not found in release ${tag}`);
+        }
+      });
+      /* Same check for UF2 download links (nRF52 boards). Mark the link
+       * as unavailable so users aren't sent to a 404. */
+      Object.entries(DOWNLOAD_LINKS).forEach(([id, file]) => {
+        if (!file.endsWith('.uf2')) return;
+        if (!assetNames.includes(file)) {
+          console.warn(`UF2 ${file} not found in release ${tag}`);
+          const el = document.getElementById(id);
+          if (el) {
+            el.title = `${file} not present in release ${tag}`;
+            el.style.opacity = '0.5';
+            el.addEventListener('click', (ev) => {
+              ev.preventDefault();
+              alert(`${file} is not part of release ${tag} yet. ` +
+                    `Build it from source or wait for the next tagged release.`);
+            });
+          }
         }
       });
     } else {
