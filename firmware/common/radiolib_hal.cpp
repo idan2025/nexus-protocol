@@ -66,7 +66,15 @@ static nx_err_t rl_init(nx_lora_radio_t *radio, const nx_lora_config_t *config)
 
     float tcxo = config->tcxo_voltage;
     int state = rl->begin(freq, bw, sf, cr, sw, power, pre, tcxo);
-    if (state != RADIOLIB_ERR_NONE) return NX_ERR_IO;
+    if (state != RADIOLIB_ERR_NONE) {
+        /* Surface the numeric code so "check wiring" failures are debuggable.
+         * Common SX1262 codes: -2 chip not found / bad SPI, -706 TCXO timeout,
+         * -707 SPI cmd timeout, -16 invalid parameter. */
+        Serial.printf("[NEXUS] RadioLib begin() = %d "
+                      "(freq=%.3f bw=%.1f sf=%u cr=%u tcxo=%.2f)\n",
+                      state, freq, bw, (unsigned)sf, (unsigned)cr, tcxo);
+        return NX_ERR_IO;
+    }
 
     /* DIO2-as-RF-switch: bare SX1262 modules (Heltec V3, Seeed WIO-SX1262 on
      * XIAO ESP32S3) use DIO2 to drive the chip's internal T/R select.

@@ -11,6 +11,7 @@
  * - Configurable screen timeout + deep sleep on 10s hold
  */
 #include <Arduino.h>
+#include <SPI.h>
 #include <RadioLib.h>
 #include <U8x8lib.h>
 #include <esp_sleep.h>
@@ -40,6 +41,15 @@ extern "C" {
 #define LORA_DIO1   14
 #define LORA_RST    12
 #define LORA_BUSY   13
+#define LORA_SCK    9
+#define LORA_MISO   11
+#define LORA_MOSI   10
+
+/* VEXT controls the SX1262 + OLED power rail on Heltec V3.
+ * Active LOW: drive GPIO36 LOW to power the radio. Without this the SX1262
+ * is unpowered and SPI returns junk -- begin() then reports a misleading
+ * "wiring" failure. */
+#define VEXT_PIN    36
 
 #define OLED_SDA    17
 #define OLED_SCL    18
@@ -56,7 +66,10 @@ static bool oled_ok = false;
 
 /* -- Globals ------------------------------------------------------------- */
 
-SX1262 radio = new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
+/* RadioLib SX1262 instance is constructed inside setup() (after VEXT is up
+ * and SPI is initialised) to avoid the Arduino-on-ESP32-S3 global ctor race
+ * -- the same pattern documented for the nRF52 build. */
+static SX1262 *radio_ptr = nullptr;
 
 static nx_node_t node;
 static nx_identity_t stored_identity;
@@ -711,6 +724,11 @@ void setup()
     delay(1000);
     Serial.println("\n[NEXUS] Heltec V3 starting...");
 
+    /* Power the SX1262 + OLED rail BEFORE talking to either. Active LOW. */
+    pinMode(VEXT_PIN, OUTPUT);
+    digitalWrite(VEXT_PIN, LOW);
+    delay(10);
+
     /* GPIO */
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
@@ -751,15 +769,37 @@ void setup()
     /* Transport registry */
     nx_transport_registry_init();
 
+    /* Heltec V3 has a TCXO on DIO3 (1.8 V). The default lora_config ships
+     * tcxo_voltage=0 (no TCXO) so other boards aren't forced; override here
+     * so saved settings from older firmware also pick up the correct value. */
+    settings.lora_config.tcxo_voltage = 1.8f;
+
+    /* Bring up SPI on the Heltec V3 SX1262 pins before constructing the radio.
+     * The default ESP32-S3 SPI pin map does not necessarily match this board. */
+    SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);
+
+    /* Construct the RadioLib SX1262 here (NOT as a global) so SPI is up and
+     * Serial is available before any RadioLib call runs. */
+    static Module lora_module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
+    static SX1262 lora_radio_obj(&lora_module);
+    radio_ptr = &lora_radio_obj;
+
     /* LoRa radio via RadioLib HAL -- keep radio pointer for reconfiguration */
-    g_lora_radio = nx_radiolib_create(&radio);
-    if (!g_lora_radio || g_lora_radio->ops->init(g_lora_radio, &settings.lora_config) != NX_OK) {
-        Serial.println("[NEXUS] LoRa radio init failed!");
+    g_lora_radio = nx_radiolib_create(radio_ptr);
+    nx_err_t lora_err = NX_ERR_INVAL;
+    if (g_lora_radio) {
+        lora_err = g_lora_radio->ops->init(g_lora_radio, &settings.lora_config);
+    }
+    if (!g_lora_radio || lora_err != NX_OK) {
+        Serial.printf("[NEXUS] LoRa radio init failed (err=%d)\n", (int)lora_err);
+        Serial.println("[NEXUS] Check serial above for RadioLib begin() error code.");
         if (oled_ok) {
+            char line[17];
             u8x8.clear();
-            draw_header("!! ERROR !!");
-            draw_line(3, " LoRa FAILED");
-            draw_line(5, " Check wiring");
+            draw_header("!! LoRa ERR !!");
+            snprintf(line, sizeof(line), " err=%d", (int)lora_err);
+            draw_line(3, line);
+            draw_line(5, " See serial");
         }
         while (1) delay(1000);
     }
