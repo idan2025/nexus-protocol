@@ -15,13 +15,17 @@ extern "C" {
 #include "nexus/types.h"
 #include "nexus/lora_radio.h"
 
-/* Settings structure stored in flash */
+/* Settings structure stored in flash.
+ * led_off carved out of the previous _reserved area so the on-disk
+ * size is unchanged -- existing flashed settings load with led_off=0
+ * (LEDs on, prior behaviour). */
 typedef struct {
     uint32_t         magic;             /* NX_SETTINGS_MAGIC */
     uint32_t         screen_timeout_ms; /* 0 = never off */
     nx_lora_config_t lora_config;
     uint8_t          node_role;
-    uint8_t          _reserved[3];
+    uint8_t          led_off;           /* 1 = disable runtime LED blinks */
+    uint8_t          _reserved[2];
 } nx_settings_t;
 
 #define NX_SETTINGS_MAGIC 0x4E585354  /* "NXST" */
@@ -32,6 +36,7 @@ typedef struct {
     .screen_timeout_ms = 60000, \
     .lora_config       = NX_LORA_CONFIG_DEFAULT, \
     .node_role         = 1, /* NX_ROLE_RELAY */ \
+    .led_off           = 0, \
     ._reserved         = {0}, \
 }
 

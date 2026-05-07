@@ -96,6 +96,7 @@ static const uint8_t CFG_MAGIC[4] = {0xFF, 0xFF, 0xFF, 0xCF};
 #define CFG_CMD_SET_SCREEN   0x03  /* ignored on headless node */
 #define CFG_CMD_SET_ROLE     0x04
 #define CFG_CMD_REBOOT       0x05
+#define CFG_CMD_SET_LED      0x06  /* [led_off(1)] -- 1 = LEDs off to save power */
 
 #define CFG_RESP_FLAG        0x80
 
@@ -117,12 +118,14 @@ static const char* role_name(int role)
 
 static void led_blink(uint32_t duration_ms)
 {
+    if (settings.led_off) return;
     digitalWrite(LED_PIN, LOW);  /* active LOW */
     led_off_ms = millis() + duration_ms;
 }
 
 static void led_double_blink()
 {
+    if (settings.led_off) return;
     digitalWrite(LED_PIN, LOW);
     delay(60);
     digitalWrite(LED_PIN, HIGH);
@@ -191,7 +194,9 @@ static void on_session(const nx_addr_short_t *src,
 
 static void send_config_response()
 {
-    uint8_t resp[25];
+    /* 26B = 25B legacy layout + trailing led_off byte. Older Android
+     * clients only parse the first 25 bytes and ignore the rest. */
+    uint8_t resp[26];
     memcpy(resp, CFG_MAGIC, 4);
     resp[4] = CFG_CMD_GET_CONFIG | CFG_RESP_FLAG;
 
@@ -216,6 +221,7 @@ static void send_config_response()
 
     const nx_identity_t *id = nx_node_identity(&node);
     memcpy(&resp[21], id->short_addr.bytes, 4);
+    resp[25] = settings.led_off;
 
     nx_ble_bridge_send(resp, sizeof(resp));
 }
@@ -286,6 +292,17 @@ static void handle_ble_config(const uint8_t *payload, size_t len)
             nx_settings_save(&settings);
             Serial.printf("[CFG] SET_ROLE role=%d (%s)\n",
                           role, role_name(role));
+            send_config_response();
+        }
+        break;
+
+    case CFG_CMD_SET_LED:
+        if (len < 2) break;
+        {
+            settings.led_off = payload[1] ? 1 : 0;
+            nx_settings_save(&settings);
+            if (settings.led_off) digitalWrite(LED_PIN, HIGH); /* off (active LOW) */
+            Serial.printf("[CFG] SET_LED off=%d\n", settings.led_off);
             send_config_response();
         }
         break;

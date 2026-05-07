@@ -123,6 +123,7 @@ static const uint8_t CFG_MAGIC[4] = {0xFF, 0xFF, 0xFF, 0xCF};
 #define CFG_CMD_SET_SCREEN   0x03  /* [timeout_ms(4)] */
 #define CFG_CMD_SET_ROLE     0x04  /* [role(1)] */
 #define CFG_CMD_REBOOT       0x05
+#define CFG_CMD_SET_LED      0x06  /* [led_off(1)] -- 1 = LEDs off to save power */
 
 /* Config response (device -> phone): CMD | 0x80 */
 #define CFG_RESP_FLAG        0x80
@@ -415,10 +416,12 @@ static void button_update()
             nx_node_announce(&node);
             Serial.println("[BTN] Announce sent");
 
-            /* Brief LED flash for feedback */
-            digitalWrite(LED_PIN, LOW);
-            delay(100);
-            digitalWrite(LED_PIN, HIGH);
+            /* Brief LED flash for feedback (skipped if user disabled LEDs) */
+            if (!settings.led_off) {
+                digitalWrite(LED_PIN, LOW);
+                delay(100);
+                digitalWrite(LED_PIN, HIGH);
+            }
 
             ui_dirty = true;
         }
@@ -522,8 +525,10 @@ static void on_session(const nx_addr_short_t *src,
 
 static void send_config_response()
 {
-    /* Response: [MAGIC(4)][0x81][freq(4)][bw(4)][sf][cr][pwr][timeout(4)][role][addr(4)] = 25B */
-    uint8_t resp[25];
+    /* Response: [MAGIC(4)][0x81][freq(4)][bw(4)][sf][cr][pwr][timeout(4)][role][addr(4)][led_off] = 26B
+     * Older Android clients only parse 25 bytes; the trailing led_off
+     * byte is ignored on those builds, preserving compatibility. */
+    uint8_t resp[26];
     memcpy(resp, CFG_MAGIC, 4);
     resp[4] = CFG_CMD_GET_CONFIG | CFG_RESP_FLAG;
 
@@ -548,6 +553,7 @@ static void send_config_response()
 
     const nx_identity_t *id = nx_node_identity(&node);
     memcpy(&resp[21], id->short_addr.bytes, 4);
+    resp[25] = settings.led_off;
 
     /* Send config response directly -- bridge adds NUS [LEN_HI][LEN_LO] framing */
     nx_ble_bridge_send(resp, sizeof(resp));
@@ -632,6 +638,20 @@ static void handle_ble_config(const uint8_t *payload, size_t len)
             nx_settings_save(&settings);
             Serial.printf("[CFG] SET_ROLE role=%d (%s)\n",
                           role, role_name(role));
+            send_config_response();
+        }
+        break;
+
+    case CFG_CMD_SET_LED:
+        if (len < 2) break; /* cmd(1) + led_off(1) */
+        {
+            settings.led_off = payload[1] ? 1 : 0;
+            nx_settings_save(&settings);
+            /* Apply immediately: LED is active LOW on Heltec V3, so
+             * HIGH = off. Force off if disabled; leave off otherwise
+             * (loop only briefly drives it LOW for announce flash). */
+            if (settings.led_off) digitalWrite(LED_PIN, HIGH);
+            Serial.printf("[CFG] SET_LED off=%d\n", settings.led_off);
             send_config_response();
         }
         break;
@@ -741,12 +761,16 @@ void setup()
         memcpy(&settings, &defaults, sizeof(settings));
         nx_settings_save(&settings);
     } else {
-        Serial.printf("[NEXUS] Settings loaded: freq=%lu sf=%d role=%d timeout=%lu\n",
+        Serial.printf("[NEXUS] Settings loaded: freq=%lu sf=%d role=%d timeout=%lu led_off=%d\n",
                       (unsigned long)settings.lora_config.frequency_hz,
                       settings.lora_config.spreading_factor,
                       settings.node_role,
-                      (unsigned long)settings.screen_timeout_ms);
+                      (unsigned long)settings.screen_timeout_ms,
+                      settings.led_off);
     }
+
+    /* If user has disabled LEDs to save power, turn boot LED off now. */
+    if (settings.led_off) digitalWrite(LED_PIN, HIGH);
 
     /* OLED display */
     oled_ok = u8x8.begin();

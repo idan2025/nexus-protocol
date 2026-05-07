@@ -114,6 +114,141 @@ static nx_err_t save_identity(const nx_identity_t *id)
     return (written == sizeof(nx_identity_t)) ? NX_OK : NX_ERR_IO;
 }
 
+/* ── BLE Config Protocol ──────────────────────────────────────────────── */
+
+static const uint8_t CFG_MAGIC[4] = {0xFF, 0xFF, 0xFF, 0xCF};
+
+#define CFG_CMD_GET_CONFIG   0x01
+#define CFG_CMD_SET_RADIO    0x02
+#define CFG_CMD_SET_SCREEN   0x03  /* ignored on headless node */
+#define CFG_CMD_SET_ROLE     0x04
+#define CFG_CMD_REBOOT       0x05
+#define CFG_CMD_SET_LED      0x06  /* [led_off(1)] -- 1 = LEDs off to save power */
+#define CFG_RESP_FLAG        0x80
+
+static const char* role_name(int role)
+{
+    switch (role) {
+    case 0: return "LEAF";
+    case 1: return "RELAY";
+    case 2: return "GATEWAY";
+    case 3: return "ANCHOR";
+    case 4: return "SENTINL";
+    case 5: return "PILLAR";
+    case 6: return "VAULT";
+    default: return "???";
+    }
+}
+
+static void send_config_response()
+{
+    /* 26B = 25B legacy layout + trailing led_off byte. */
+    uint8_t resp[26];
+    memcpy(resp, CFG_MAGIC, 4);
+    resp[4] = CFG_CMD_GET_CONFIG | CFG_RESP_FLAG;
+
+    const nx_lora_config_t *lc = &settings.lora_config;
+    resp[5]  = (uint8_t)(lc->frequency_hz);
+    resp[6]  = (uint8_t)(lc->frequency_hz >> 8);
+    resp[7]  = (uint8_t)(lc->frequency_hz >> 16);
+    resp[8]  = (uint8_t)(lc->frequency_hz >> 24);
+    resp[9]  = (uint8_t)(lc->bandwidth_hz);
+    resp[10] = (uint8_t)(lc->bandwidth_hz >> 8);
+    resp[11] = (uint8_t)(lc->bandwidth_hz >> 16);
+    resp[12] = (uint8_t)(lc->bandwidth_hz >> 24);
+    resp[13] = lc->spreading_factor;
+    resp[14] = lc->coding_rate;
+    resp[15] = (uint8_t)lc->tx_power_dbm;
+    resp[16] = 0; resp[17] = 0; resp[18] = 0; resp[19] = 0; /* screen N/A */
+    resp[20] = settings.node_role;
+
+    const nx_identity_t *id = nx_node_identity(&node);
+    memcpy(&resp[21], id->short_addr.bytes, 4);
+    resp[25] = settings.led_off;
+
+    nx_ble_bridge_send(resp, sizeof(resp));
+}
+
+static void handle_ble_config(const uint8_t *payload, size_t len)
+{
+    if (len < 1) return;
+    uint8_t cmd = payload[0];
+
+    switch (cmd) {
+    case CFG_CMD_GET_CONFIG:
+        send_config_response();
+        break;
+
+    case CFG_CMD_SET_RADIO:
+        if (len < 12) break;
+        {
+            uint32_t freq = (uint32_t)payload[1] | ((uint32_t)payload[2] << 8) |
+                            ((uint32_t)payload[3] << 16) | ((uint32_t)payload[4] << 24);
+            uint32_t bw   = (uint32_t)payload[5] | ((uint32_t)payload[6] << 8) |
+                            ((uint32_t)payload[7] << 16) | ((uint32_t)payload[8] << 24);
+            uint8_t sf    = payload[9];
+            uint8_t cr    = payload[10];
+            int8_t  pwr   = (int8_t)payload[11];
+
+            if (freq < 137000000 || freq > 1020000000) break;
+            if (sf < 7 || sf > 12) break;
+            if (cr < 5 || cr > 8) break;
+            if (pwr < 2 || pwr > 22) break;
+
+            settings.lora_config.frequency_hz = freq;
+            settings.lora_config.bandwidth_hz = bw;
+            settings.lora_config.spreading_factor = sf;
+            settings.lora_config.coding_rate = cr;
+            settings.lora_config.tx_power_dbm = pwr;
+
+            if (g_lora_radio && g_lora_radio->ops->reconfigure) {
+                g_lora_radio->ops->reconfigure(g_lora_radio, &settings.lora_config);
+            }
+            nx_settings_save(&settings);
+            send_config_response();
+        }
+        break;
+
+    case CFG_CMD_SET_SCREEN:
+        send_config_response();
+        break;
+
+    case CFG_CMD_SET_ROLE:
+        if (len < 2) break;
+        {
+            uint8_t role = payload[1];
+            if (role > 6) break;
+            settings.node_role = role;
+            nx_settings_save(&settings);
+            Serial.printf("[CFG] SET_ROLE %d (%s)\n", role, role_name(role));
+            send_config_response();
+        }
+        break;
+
+    case CFG_CMD_SET_LED:
+        if (len < 2) break;
+        settings.led_off = payload[1] ? 1 : 0;
+        nx_settings_save(&settings);
+        if (settings.led_off) {
+            digitalWrite(LED_GREEN, HIGH);
+            digitalWrite(LED_BLUE,  HIGH);
+        }
+        Serial.printf("[CFG] SET_LED off=%d\n", settings.led_off);
+        send_config_response();
+        break;
+
+    case CFG_CMD_REBOOT:
+        nx_anchor_store_save(&node.anchor);
+        nx_settings_save(&settings);
+        delay(500);
+        NVIC_SystemReset();
+        break;
+
+    default:
+        break;
+    }
+}
+
 /* ── Callbacks ────────────────────────────────────────────────────────── */
 
 static void on_data(const nx_addr_short_t *src,
@@ -340,9 +475,14 @@ void loop()
 
         while (nx_ble_bridge_recv(ble_buf, sizeof(ble_buf), &ble_len) == NX_OK) {
             if (ble_len > 4) {
-                nx_addr_short_t dest;
-                memcpy(dest.bytes, ble_buf, 4);
-                nx_node_send(&node, &dest, &ble_buf[4], ble_len - 4);
+                /* Magic CFG_MAGIC dest -> phone-config command, not mesh data */
+                if (memcmp(ble_buf, CFG_MAGIC, 4) == 0) {
+                    handle_ble_config(&ble_buf[4], ble_len - 4);
+                } else {
+                    nx_addr_short_t dest;
+                    memcpy(dest.bytes, ble_buf, 4);
+                    nx_node_send(&node, &dest, &ble_buf[4], ble_len - 4);
+                }
             }
         }
     }
@@ -369,9 +509,9 @@ void loop()
 
     uint32_t now = millis();
 
-    /* Heartbeat blink every 5s */
+    /* Heartbeat blink every 5s (skipped if user disabled LEDs) */
     static uint32_t last_heartbeat_ms = 0;
-    if (now - last_heartbeat_ms > 5000) {
+    if (!settings.led_off && now - last_heartbeat_ms > 5000) {
         last_heartbeat_ms = now;
         digitalWrite(LED_GREEN, LOW);
         delay(50);

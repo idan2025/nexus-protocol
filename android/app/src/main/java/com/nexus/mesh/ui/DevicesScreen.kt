@@ -56,6 +56,17 @@ val ROLE_NAMES = listOf(
     "Leaf", "Relay", "Gateway", "Anchor", "Sentinel", "Pillar", "Vault"
 )
 
+/* Short, human-friendly description per role. Index matches ROLE_NAMES. */
+val ROLE_DESCRIPTIONS = listOf(
+    "End-user device. Sends/receives only — never forwards traffic for others. Lowest battery use.",
+    "Forwards mesh traffic for nearby nodes. Default for most stationary devices.",
+    "Bridges between transports (LoRa ↔ BLE/WiFi/TCP). Use when this node has internet.",
+    "Relay + 1-hour mailbox. Holds messages for offline neighbors and delivers on reconnect.",
+    "Always-on watcher. Like Anchor but optimised for telemetry and event reporting.",
+    "Public-internet entry point. Other nodes connect outbound — needs a reachable TCP port.",
+    "Long-term store-and-forward (24h). The 'always there' tier for slow couriers."
+)
+
 /* ── Screen Timeout Options ─────────────────────────────────────────── */
 
 data class TimeoutOption(val name: String, val ms: Long)
@@ -322,6 +333,37 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
                 onClick = { showRolePicker = true }
             )
 
+            // LED toggle — saves battery on always-on nodes
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("LEDs", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        if (config.ledOff) "Off (battery saver)" else "On",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = !config.ledOff,
+                    onCheckedChange = { ble.setLedOff(!it) }
+                )
+            }
+
+            // Manual / custom radio entry (always visible — replaces the
+            // 'hidden inside Advanced' button so custom frequencies are
+            // discoverable for non-standard region setups).
+            SettingsRow(
+                label = "Custom Radio",
+                value = "Set frequency / SF / BW manually",
+                onClick = { showRadioSheet = true }
+            )
+
             Spacer(Modifier.height(4.dp))
             Divider()
             Spacer(Modifier.height(8.dp))
@@ -434,9 +476,8 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
     }
 
     if (showRolePicker) {
-        ListPickerDialog(
-            title = "Node Role",
-            items = ROLE_NAMES,
+        RolePickerDialog(
+            currentRole = config?.nodeRole ?: 1,
             onSelect = { idx ->
                 ble.setNodeRole(idx)
                 showRolePicker = false
@@ -539,6 +580,57 @@ fun ListPickerDialog(
             TextButton(onClick = onDismiss) {
                 Text("Cancel")
             }
+        }
+    )
+}
+
+/* ── Role Picker Dialog (with descriptions) ─────────────────────────── */
+
+@Composable
+fun RolePickerDialog(
+    currentRole: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Node Role") },
+        text = {
+            Column {
+                ROLE_NAMES.forEachIndexed { idx, name ->
+                    val selected = idx == currentRole
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(idx) }
+                            .padding(vertical = 8.dp, horizontal = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                name,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = if (selected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurface
+                            )
+                            if (selected) {
+                                Text("✓", color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        Text(
+                            ROLE_DESCRIPTIONS.getOrElse(idx) { "" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
 }

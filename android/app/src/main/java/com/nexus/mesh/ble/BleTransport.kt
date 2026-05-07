@@ -37,6 +37,7 @@ class BleTransport(private val context: Context) {
         const val CFG_CMD_SET_SCREEN: Byte = 0x03
         const val CFG_CMD_SET_ROLE: Byte = 0x04
         const val CFG_CMD_REBOOT: Byte = 0x05
+        const val CFG_CMD_SET_LED: Byte = 0x06
         const val CFG_RESP_FLAG: Int = 0x80
     }
 
@@ -49,7 +50,8 @@ class BleTransport(private val context: Context) {
         val txPowerDbm: Int,
         val screenTimeoutMs: Long,
         val nodeRole: Int,
-        val nodeAddr: String
+        val nodeAddr: String,
+        val ledOff: Boolean = false
     )
 
     data class ScannedDevice(val name: String, val address: String, val rssi: Int)
@@ -202,6 +204,16 @@ class BleTransport(private val context: Context) {
         Log.i(TAG, "Set role: $role")
     }
 
+    /** Disable / enable runtime LED activity blinks (battery saver). */
+    fun setLedOff(off: Boolean) {
+        val payload = ByteArray(6) // magic(4) + cmd(1) + flag(1)
+        System.arraycopy(CFG_MAGIC, 0, payload, 0, 4)
+        payload[4] = CFG_CMD_SET_LED
+        payload[5] = if (off) 1 else 0
+        send(payload)
+        Log.i(TAG, "Set LED off: $off")
+    }
+
     /** Reboot the device */
     fun rebootDevice() {
         val payload = ByteArray(5) // magic(4) + cmd(1)
@@ -237,6 +249,9 @@ class BleTransport(private val context: Context) {
         // Offsets into data: [4]=cmd, [5..8]=freq, [9..12]=bw, [13]=sf, [14]=cr, [15]=pwr, [16..19]=timeout, [20]=role, [21..24]=addr
         if (data.size < 25) return
 
+        // Optional 26th byte = led_off flag (newer firmware). Falls back to false on older builds.
+        val ledOff = data.size >= 26 && (data[25].toInt() and 0xFF) != 0
+
         val config = NodeConfig(
             frequencyHz = getLeU32(data, 5),
             bandwidthHz = getLeU32(data, 9),
@@ -249,7 +264,8 @@ class BleTransport(private val context: Context) {
                 data[21].toInt() and 0xFF,
                 data[22].toInt() and 0xFF,
                 data[23].toInt() and 0xFF,
-                data[24].toInt() and 0xFF)
+                data[24].toInt() and 0xFF),
+            ledOff = ledOff
         )
 
         _nodeConfig.value = config
