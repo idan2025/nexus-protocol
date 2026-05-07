@@ -6,7 +6,7 @@
 <title>NEXUS Protocol - Web Flasher</title>
 <script
   type="module"
-  src="https://unpkg.com/esp-web-tools@10.0.0/dist/web/install-button.js?module"
+  src="https://unpkg.com/esp-web-tools@10.2.1/dist/web/install-button.js?module"
 ></script>
 <style>
   :root {
@@ -493,9 +493,9 @@
           </span>
         </esp-web-install-button>
         <div class="note-box" style="margin-top:0.75rem">
-          <strong>Not connecting?</strong> Hold <code>BOOT</code> while clicking
-          <strong>Install Firmware</strong>, or: hold <code>BOOT</code>, press
-          <code>RESET</code>, release <code>BOOT</code>, then click Install.
+          <strong>Not connecting?</strong> Hold <code>PRG</code> while clicking
+          <strong>Install Firmware</strong>, or: hold <code>PRG</code>, press
+          <code>RST</code>, release <code>PRG</code>, then click Install.
         </div>
       </div>
     </div>
@@ -526,9 +526,16 @@
           </span>
         </esp-web-install-button>
         <div class="note-box" style="margin-top:0.75rem">
-          <strong>Not connecting?</strong> Hold <code>BOOT</code> while clicking
-          <strong>Install Firmware</strong>, or: hold <code>BOOT</code>, press
-          <code>RESET</code>, release <code>BOOT</code>, then click Install.
+          <strong>XIAO won't enter download mode?</strong> The ESP32-S3
+          has a built-in USB-Serial-JTAG bridge that often refuses
+          auto-reset. Manual sequence:
+          <ol style="margin:0.4rem 0 0 1.1rem;padding:0;">
+            <li>Hold <code>B (BOOT)</code> on the XIAO.</li>
+            <li>While holding BOOT, briefly press <code>R (RESET)</code>.</li>
+            <li>Release BOOT &mdash; chip is now in ROM bootloader.</li>
+            <li>Click <strong>Install Firmware</strong> and pick the
+              <em>USB JTAG/serial debug unit</em> port (VID 303A).</li>
+          </ol>
         </div>
       </div>
     </div>
