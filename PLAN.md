@@ -16,6 +16,7 @@
 | 7 | Advanced Features | **DONE** |
 | 8 | Android App + Production Firmware | **DONE** |
 | 9 | Messenger Feature Parity | **DONE** |
+| 10 | In-App Updater + Node Flasher | **IN PROGRESS** |
 
 **Total**: 75+ source files, ~15500+ lines of code, 20/20 C test suites + 43/43 Python tests passing
 
@@ -664,3 +665,93 @@ PYTHONPATH=.. python3 -m unittest discover -v
 - GroupInfoScreen: member list, add member dialog
 - ChatScreen: group section with create/delete dialogs
 - NexusService: createGroup, sendGroupMessage, deleteGroup, onGroup handler
+
+---
+
+## Phase 10: In-App Updater + Node Flasher -- IN PROGRESS
+
+**Goal**: Self-update over GitHub releases, and an on-phone flasher hub so users can deploy / refresh nodes without a desktop.
+
+### Sub-Phase 10a: Stable Release Signing
+The Android updater requires that every release-channel APK be signed
+with the same key — Android refuses to install an APK over an existing
+one with a different signature ("INSTALL_FAILED_UPDATE_INCOMPATIBLE").
+The previous `gradle assembleDebug` flow signed with a per-runner debug
+key, so updates always failed.
+
+- Generate `nexus-release.jks` (RSA-2048, 25-year validity)
+- Store base64 + passwords in GitHub Actions secrets:
+  - `ANDROID_KEYSTORE_BASE64`
+  - `ANDROID_KEYSTORE_PASSWORD`
+  - `ANDROID_KEY_ALIAS` (default: `nexus`)
+  - `ANDROID_KEY_PASSWORD`
+- `app/build.gradle` reads them via env / project properties
+- Falls back to debug key if missing (so local dev still works)
+- `release.yml` writes the keystore to a temp file, runs `assembleRelease`,
+  uploads `app-release.apk`
+
+### Sub-Phase 10b: In-App Updater
+- `versionName` synced to git tag at CI build time (`-PversionName=<tag>`)
+- `BuildConfig.VERSION_NAME` becomes the comparison source
+- `UpdateChecker.kt`:
+  - Hits `https://api.github.com/repos/idan2025/nexus-protocol/releases/latest`
+  - Parses `tag_name` and the APK asset URL
+  - Uses semver compare against current `versionName`
+  - Rate-limited (1× / 24 h) via SharedPreferences timestamp
+- `UpdateBanner` Composable: small dismissible banner shown on the home
+  screen when an update is available
+- `UpdateInstaller`:
+  - `DownloadManager` fetches the APK to app-private cache
+  - `FileProvider` exposes the file
+  - `Intent.ACTION_VIEW` with type `application/vnd.android.package-archive`
+    fires the system installer
+- New permission: `REQUEST_INSTALL_PACKAGES`
+- `SettingsScreen` row: "Check for updates" + last-check timestamp
+
+### Sub-Phase 10c: Flash Node Screen
+A new top-level screen (drawer + Settings entry point) that lists all
+four supported boards. Per board:
+- Cards show MCU + chip badge, last build size, latest tag
+- "Download firmware" → fetches the matching `.bin` / `.uf2` from the
+  GitHub release into app-private storage
+- "Open Web Flasher" → Custom Tab to docs/index.html (desktop required
+  for ESP32 WebSerial)
+- For BLE-connected nodes: a "Flash this node" CTA wires through to one
+  of the on-phone paths below
+
+### Sub-Phase 10d: ESP32 USB OTG Flashing
+Direct phone-to-node flashing for ESP32 boards via USB-C OTG.
+
+- Dep: `com.github.mik3y:usb-serial-for-android` (Apache 2)
+- `EsptoolClient.kt`:
+  - SLIP framing (`0xC0` boundary, `0xDB` escape)
+  - Commands: SYNC, FLASH_BEGIN, FLASH_DATA, FLASH_END, READ_REG
+  - ROM-only flow (no stub loader bundling) to keep app size down
+- `manifest.xml`: USB host filters, runtime permission flow
+- Heltec V3 (Silicon Labs CP210x) is the verified target
+- XIAO ESP32-S3 native USB-Serial-JTAG (VID 303A) is experimental — the
+  upstream usb-serial-for-android probe table doesn't include it, so we
+  add a minimal CDC-ACM driver + custom `UsbSerialProber` for VID 303A
+- The merged `nexus-<target>-webflash.bin` (already produced by CI) is
+  the artifact this flashes, at offset 0
+
+### Sub-Phase 10e: nRF52 BLE-DFU
+Wireless flashing for RAK4631 + XIAO nRF52840 over BLE.
+
+- Dep: `no.nordicsemi.android:dfu:2.6.1`
+- Adafruit nRF52 BSP bootloader already exposes the Nordic Buttonless
+  DFU service (UUID `0xFE59`); no firmware change required
+- CI step: convert `firmware.hex` → Nordic DFU `.zip` via `nrfutil`
+  (init packet + image + manifest signed with project's debug key)
+- App downloads the `.zip`, calls `DfuServiceInitiator.start()`
+- Buttonless flow:
+  1. App writes `0x01` to the Buttonless characteristic on the live
+     node → node reboots into DFU bootloader
+  2. App scans for the bootloader's `DfuTarg` advertising name
+  3. `DfuService` uploads the image, node reboots into the new firmware
+- UI: progress bar, retry on failure, log tail
+
+### Phase Goals
+- **Single-tap updates** for the app from any current install
+- **One-screen flasher hub** that knows which artifact each board needs
+- **Cable flash** for ESP32, **BLE OTA** for nRF52 — no desktop required

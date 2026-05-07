@@ -13,10 +13,16 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.nexus.mesh.data.IdentityBackup
+import com.nexus.mesh.updater.UpdateSettingsRow
+import com.nexus.mesh.updater.UpdateState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(activity: MainActivity, navController: NavController? = null) {
+fun SettingsScreen(
+    activity: MainActivity,
+    navController: NavController? = null,
+    updateState: UpdateState? = null,
+) {
     val service = activity.getService()
     val address by service?.address?.collectAsState() ?: remember { mutableStateOf("--------") }
     val tcpActive by service?.tcpActive?.collectAsState() ?: remember { mutableStateOf(false) }
@@ -58,6 +64,32 @@ fun SettingsScreen(activity: MainActivity, navController: NavController? = null)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // App update + flasher hub (rendered first so they're easy
+            // to reach; the rest of the screen is unchanged).
+            if (updateState != null) {
+                UpdateSettingsRow(state = updateState, activity = activity)
+            }
+            if (navController != null) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Flash Nodes", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Download firmware for any supported board, " +
+                                "flash an ESP32 over USB-OTG, or push BLE-DFU " +
+                                "OTA to a connected nRF52 node.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { navController.navigate("flash_node") },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Open Flash Node") }
+                    }
+                }
+            }
+
             // Identity
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {

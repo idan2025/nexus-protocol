@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Silicon Labs CP210x family (Heltec V3 onboard USB-UART) -->
+    <usb-device vendor-id="4292"  product-id="60000" />  <!-- 0x10C4 / 0xEA60 -->
+    <!-- FTDI FT232 family (some dev boards) -->
+    <usb-device vendor-id="1027"  product-id="24577" />  <!-- 0x0403 / 0x6001 -->
+    <!-- WCH CH340 family -->
+    <usb-device vendor-id="6790"  product-id="29987" />  <!-- 0x1A86 / 0x7523 -->
+    <!-- Espressif native USB-Serial-JTAG (ESP32-S3, ESP32-C3 etc.; XIAO ESP32-S3) -->
+    <usb-device vendor-id="12346" product-id="4097" />   <!-- 0x303A / 0x1001 -->
+</resources>

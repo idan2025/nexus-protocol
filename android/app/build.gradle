@@ -5,6 +5,25 @@ plugins {
     id 'org.jetbrains.kotlin.kapt'
 }
 
+/* ── Version: defaults to 0.6.2 but can be overridden by CI:           ──
+   ──   ./gradlew assembleRelease -PversionName=0.6.3 -PversionCode=14   ── */
+def appVersionName = project.findProperty('versionName') ?: '0.6.2'
+def appVersionCode = (project.findProperty('versionCode') ?: '14').toString().toInteger()
+
+/* ── Stable release keystore. Sourced from CI env (GitHub Actions
+      secrets) or local ~/.gradle/gradle.properties. If none of the
+      expected values are set we fall back to the debug key so local
+      `assembleDebug` keeps working. ── */
+def releaseStoreFile     = (System.getenv('ANDROID_KEYSTORE_PATH')
+                          ?: project.findProperty('NEXUS_KEYSTORE_PATH'))
+def releaseStorePassword = (System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                          ?: project.findProperty('NEXUS_KEYSTORE_PASSWORD'))
+def releaseKeyAlias      = (System.getenv('ANDROID_KEY_ALIAS')
+                          ?: project.findProperty('NEXUS_KEY_ALIAS') ?: 'nexus')
+def releaseKeyPassword   = (System.getenv('ANDROID_KEY_PASSWORD')
+                          ?: project.findProperty('NEXUS_KEY_PASSWORD'))
+def hasReleaseKey = releaseStoreFile && new File(releaseStoreFile).exists()
+
 android {
     namespace 'com.nexus.mesh'
     compileSdk 35
@@ -13,8 +32,8 @@ android {
         applicationId "com.nexus.mesh"
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName "0.1.0"
+        versionCode appVersionCode
+        versionName appVersionName
 
         ndk {
             abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
@@ -25,10 +44,14 @@ android {
                 arguments '-DANDROID_STL=c++_shared'
             }
         }
+
+        // Public GitHub repo used by the in-app updater.
+        buildConfigField "String", "GITHUB_REPO", "\"idan2025/nexus-protocol\""
     }
 
     buildFeatures {
         compose true
+        buildConfig true
     }
 
     externalNativeBuild {
@@ -38,15 +61,39 @@ android {
         }
     }
 
-    buildTypes {
+    signingConfigs {
         release {
-            minifyEnabled true
+            if (hasReleaseKey) {
+                storeFile     file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias      releaseKeyAlias
+                keyPassword   releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // Debug builds use the auto-generated debug key.
+        }
+        release {
+            // R8 is currently disabled because the updater + DFU paths
+            // use reflection-heavy libs (Nordic DFU). We can re-enable
+            // with proguard rules in a follow-up.
+            minifyEnabled false
+            shrinkResources false
+            signingConfig hasReleaseKey ? signingConfigs.release : signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 
-    dexOptions {
-        javaMaxHeapSize "4g"
+    packagingOptions {
+        resources {
+            excludes += [
+                'META-INF/LICENSE*', 'META-INF/NOTICE*',
+                'META-INF/AL2.0', 'META-INF/LGPL2.1'
+            ]
+        }
     }
 
     compileOptions {
@@ -76,8 +123,20 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.lifecycle:lifecycle-service:2.7.0'
 
+    // Networking (in-app updater + flasher firmware download)
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+
+    // Browser Custom Tabs (web-flasher launcher)
+    implementation 'androidx.browser:browser:1.8.0'
+
     // BLE
     implementation 'no.nordicsemi.android:ble:2.7.4'
+
+    // Nordic DFU (BLE OTA flashing for nRF52 boards)
+    implementation 'no.nordicsemi.android:dfu:2.6.1'
+
+    // USB serial (ESP32 USB-OTG flashing)
+    implementation 'com.github.mik3y:usb-serial-for-android:3.7.3'
 
     // Room (persistent storage)
     def room_version = "2.6.1"

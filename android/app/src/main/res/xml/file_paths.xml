@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <external-files-path name="nexus_media" path="nexus_media/" />
+    <external-files-path name="nexus_media"    path="nexus_media/" />
+    <!-- In-app updater: APKs land under cache/apk/ and are exposed to
+         the system installer via FileProvider. -->
+    <cache-path           name="updater_cache"  path="apk/" />
+    <!-- Flasher: firmware images downloaded for ESP32 USB OTG and
+         nRF52 BLE-DFU paths land here. -->
+    <files-path           name="firmware_cache" path="firmware/" />
 </paths>

@@ -29,6 +29,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.nexus.mesh.service.NexusService
+import com.nexus.mesh.updater.UpdateBanner
+import com.nexus.mesh.updater.rememberUpdateState
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.launch
@@ -133,6 +135,17 @@ class MainActivity : ComponentActivity() {
 
     fun getService(): NexusService? = nexusService
 
+    /**
+     * The BLE address the app is currently connected to (used by the
+     * Flash Node screen to pick a target for BLE DFU).
+     *
+     * Wired up by [DevicesScreen]'s BleTransport via setBleConnectedAddress.
+     * Null when nothing is connected.
+     */
+    @Volatile private var bleConnectedAddr: String? = null
+    fun bleConnectedAddress(): String? = bleConnectedAddr
+    fun setBleConnectedAddress(addr: String?) { bleConnectedAddr = addr }
+
     fun setQrScanCallback(callback: (String?) -> Unit) {
         qrScanCallback = callback
     }
@@ -185,6 +198,10 @@ fun NexusApp(activity: MainActivity) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route ?: "chat"
+
+    // Updater state — shared across the home banner and SettingsScreen.
+    val updateState = rememberUpdateState(activity)
+    LaunchedEffect(Unit) { updateState.refresh(force = false) }
 
     // Hide bottom bar on detail screens
     val showBottomBar = currentRoute in listOf("chat", "mesh", "devices", "settings")
@@ -252,15 +269,20 @@ fun NexusApp(activity: MainActivity) {
                 }
             }
         ) { padding ->
-            NavHost(
-                navController,
-                startDestination = "chat",
-                modifier = Modifier.padding(padding)
-            ) {
+            Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+                // Update banner is rendered above all routes so it stays
+                // visible while the user navigates.
+                UpdateBanner(state = updateState, activity = activity)
+                NavHost(
+                    navController,
+                    startDestination = "chat",
+                    modifier = Modifier.weight(1f)
+                ) {
                 composable("chat") { ChatScreen(activity, navController) }
                 composable("mesh") { MeshScreen(activity, navController) }
                 composable("devices") { DevicesScreen(activity) }
-                composable("settings") { SettingsScreen(activity, navController) }
+                composable("settings") { SettingsScreen(activity, navController, updateState) }
+                composable("flash_node") { FlashNodeScreen(activity) }
                 composable(
                     "conversation/{address}",
                     arguments = listOf(navArgument("address") { type = NavType.StringType })
@@ -300,7 +322,8 @@ fun NexusApp(activity: MainActivity) {
                     val groupId = backStackEntry.arguments?.getString("groupId") ?: ""
                     GroupInfoScreen(activity, navController, groupId)
                 }
-            }
+                }   // NavHost
+            }       // Column
         }
 
         if (activity.showBatteryPrompt) {

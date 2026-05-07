@@ -128,6 +128,12 @@ fun DevicesScreen(activity: MainActivity) {
     val nodeConfig by bleTransport.nodeConfig.collectAsState()
     var scanning by remember { mutableStateOf(false) }
 
+    // Surface the current BLE address to the rest of the app (Flash Node
+    // screen reads this to know which node to BLE-DFU).
+    androidx.compose.runtime.LaunchedEffect(connectedDevice) {
+        activity.setBleConnectedAddress(connectedDevice)
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("BLE Devices") })
