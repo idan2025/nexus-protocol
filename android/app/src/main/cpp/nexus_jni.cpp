@@ -29,6 +29,12 @@ static JavaVM *g_jvm = nullptr;
 static nx_transport_t *g_tcp_inet = nullptr;
 static nx_transport_t *g_udp_mcast = nullptr;
 
+/* BLE bridge: a linked pipe pair. The "node" side is registered with the
+ * node's transport registry; the "app" side is driven from Kotlin via
+ * nativeInjectPacket (BLE -> node) and nativeReadBleOutbound (node -> BLE). */
+static nx_transport_t *g_ble_pipe_node = nullptr;
+static nx_transport_t *g_ble_pipe_app  = nullptr;
+
 /* Callback references */
 static jobject g_callback_obj = nullptr;
 static jmethodID g_on_data_method = nullptr;
@@ -38,15 +44,48 @@ static jmethodID g_on_group_method = nullptr;
 
 /* ── Helper: get JNIEnv for current thread ────────────────────────────── */
 
-static JNIEnv *get_env()
+/* Returns JNIEnv* for the calling thread. Sets *attached to true if the
+ * thread was just attached and the caller MUST detach before returning. */
+static JNIEnv *get_env(bool *attached)
 {
+    *attached = false;
     JNIEnv *env = nullptr;
-    if (g_jvm) {
-        if (g_jvm->GetEnv((void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
-            g_jvm->AttachCurrentThread(&env, nullptr);
+    if (!g_jvm) return nullptr;
+    jint rc = g_jvm->GetEnv((void **)&env, JNI_VERSION_1_6);
+    if (rc == JNI_EDETACHED) {
+        if (g_jvm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+            return nullptr;
         }
+        *attached = true;
+    } else if (rc != JNI_OK) {
+        return nullptr;
     }
     return env;
+}
+
+static inline void release_env(bool attached)
+{
+    if (attached && g_jvm) g_jvm->DetachCurrentThread();
+}
+
+/* Setup the BLE bridge pipe pair. Idempotent; safe to call from init paths. */
+static bool ble_bridge_setup()
+{
+    if (g_ble_pipe_node) return true;
+    g_ble_pipe_node = nx_pipe_transport_create();
+    g_ble_pipe_app  = nx_pipe_transport_create();
+    if (!g_ble_pipe_node || !g_ble_pipe_app) {
+        if (g_ble_pipe_node) { g_ble_pipe_node->ops->destroy(g_ble_pipe_node); g_ble_pipe_node = nullptr; }
+        if (g_ble_pipe_app)  { g_ble_pipe_app->ops->destroy(g_ble_pipe_app);   g_ble_pipe_app  = nullptr; }
+        return false;
+    }
+    nx_pipe_transport_link(g_ble_pipe_node, g_ble_pipe_app);
+    if (nx_transport_register(g_ble_pipe_node) != NX_OK) {
+        LOGE("BLE pipe register failed");
+        return false;
+    }
+    LOGI("BLE bridge pipe registered");
+    return true;
 }
 
 /* ── Callbacks from C to Java ─────────────────────────────────────────── */
@@ -55,51 +94,75 @@ static void jni_on_data(const nx_addr_short_t *src,
                         const uint8_t *data, size_t len, void *user)
 {
     (void)user;
-    JNIEnv *env = get_env();
-    if (!env || !g_callback_obj || !g_on_data_method) return;
+    bool attached = false;
+    JNIEnv *env = get_env(&attached);
+    if (!env || !g_callback_obj || !g_on_data_method) {
+        release_env(attached);
+        return;
+    }
 
-    jbyteArray jsrc = env->NewByteArray(4);
+    jbyteArray jsrc  = env->NewByteArray(4);
     jbyteArray jdata = env->NewByteArray((jsize)len);
-    env->SetByteArrayRegion(jsrc, 0, 4, (jbyte *)src->bytes);
-    env->SetByteArrayRegion(jdata, 0, (jsize)len, (jbyte *)data);
-
-    env->CallVoidMethod(g_callback_obj, g_on_data_method, jsrc, jdata);
-
-    env->DeleteLocalRef(jsrc);
-    env->DeleteLocalRef(jdata);
+    if (jsrc && jdata) {
+        env->SetByteArrayRegion(jsrc, 0, 4, (jbyte *)src->bytes);
+        env->SetByteArrayRegion(jdata, 0, (jsize)len, (jbyte *)data);
+        env->CallVoidMethod(g_callback_obj, g_on_data_method, jsrc, jdata);
+    } else {
+        env->ExceptionClear();
+        LOGE("jni_on_data: NewByteArray returned null (OOM)");
+    }
+    if (jsrc)  env->DeleteLocalRef(jsrc);
+    if (jdata) env->DeleteLocalRef(jdata);
+    release_env(attached);
 }
 
 static void jni_on_neighbor(const nx_addr_short_t *addr,
                             nx_role_t role, void *user)
 {
     (void)user;
-    JNIEnv *env = get_env();
-    if (!env || !g_callback_obj || !g_on_neighbor_method) return;
+    bool attached = false;
+    JNIEnv *env = get_env(&attached);
+    if (!env || !g_callback_obj || !g_on_neighbor_method) {
+        release_env(attached);
+        return;
+    }
 
     jbyteArray jaddr = env->NewByteArray(4);
-    env->SetByteArrayRegion(jaddr, 0, 4, (jbyte *)addr->bytes);
-
-    env->CallVoidMethod(g_callback_obj, g_on_neighbor_method, jaddr, (jint)role);
-
-    env->DeleteLocalRef(jaddr);
+    if (jaddr) {
+        env->SetByteArrayRegion(jaddr, 0, 4, (jbyte *)addr->bytes);
+        env->CallVoidMethod(g_callback_obj, g_on_neighbor_method, jaddr, (jint)role);
+        env->DeleteLocalRef(jaddr);
+    } else {
+        env->ExceptionClear();
+        LOGE("jni_on_neighbor: NewByteArray returned null (OOM)");
+    }
+    release_env(attached);
 }
 
 static void jni_on_session(const nx_addr_short_t *src,
                            const uint8_t *data, size_t len, void *user)
 {
     (void)user;
-    JNIEnv *env = get_env();
-    if (!env || !g_callback_obj || !g_on_session_method) return;
+    bool attached = false;
+    JNIEnv *env = get_env(&attached);
+    if (!env || !g_callback_obj || !g_on_session_method) {
+        release_env(attached);
+        return;
+    }
 
-    jbyteArray jsrc = env->NewByteArray(4);
+    jbyteArray jsrc  = env->NewByteArray(4);
     jbyteArray jdata = env->NewByteArray((jsize)len);
-    env->SetByteArrayRegion(jsrc, 0, 4, (jbyte *)src->bytes);
-    env->SetByteArrayRegion(jdata, 0, (jsize)len, (jbyte *)data);
-
-    env->CallVoidMethod(g_callback_obj, g_on_session_method, jsrc, jdata);
-
-    env->DeleteLocalRef(jsrc);
-    env->DeleteLocalRef(jdata);
+    if (jsrc && jdata) {
+        env->SetByteArrayRegion(jsrc, 0, 4, (jbyte *)src->bytes);
+        env->SetByteArrayRegion(jdata, 0, (jsize)len, (jbyte *)data);
+        env->CallVoidMethod(g_callback_obj, g_on_session_method, jsrc, jdata);
+    } else {
+        env->ExceptionClear();
+        LOGE("jni_on_session: NewByteArray returned null (OOM)");
+    }
+    if (jsrc)  env->DeleteLocalRef(jsrc);
+    if (jdata) env->DeleteLocalRef(jdata);
+    release_env(attached);
 }
 
 static void jni_on_group(const nx_addr_short_t *group_id,
@@ -107,21 +170,29 @@ static void jni_on_group(const nx_addr_short_t *group_id,
                          const uint8_t *data, size_t len, void *user)
 {
     (void)user;
-    JNIEnv *env = get_env();
-    if (!env || !g_callback_obj || !g_on_group_method) return;
+    bool attached = false;
+    JNIEnv *env = get_env(&attached);
+    if (!env || !g_callback_obj || !g_on_group_method) {
+        release_env(attached);
+        return;
+    }
 
-    jbyteArray jgid = env->NewByteArray(4);
-    jbyteArray jsrc = env->NewByteArray(4);
+    jbyteArray jgid  = env->NewByteArray(4);
+    jbyteArray jsrc  = env->NewByteArray(4);
     jbyteArray jdata = env->NewByteArray((jsize)len);
-    env->SetByteArrayRegion(jgid, 0, 4, (jbyte *)group_id->bytes);
-    env->SetByteArrayRegion(jsrc, 0, 4, (jbyte *)src->bytes);
-    env->SetByteArrayRegion(jdata, 0, (jsize)len, (jbyte *)data);
-
-    env->CallVoidMethod(g_callback_obj, g_on_group_method, jgid, jsrc, jdata);
-
-    env->DeleteLocalRef(jgid);
-    env->DeleteLocalRef(jsrc);
-    env->DeleteLocalRef(jdata);
+    if (jgid && jsrc && jdata) {
+        env->SetByteArrayRegion(jgid,  0, 4, (jbyte *)group_id->bytes);
+        env->SetByteArrayRegion(jsrc,  0, 4, (jbyte *)src->bytes);
+        env->SetByteArrayRegion(jdata, 0, (jsize)len, (jbyte *)data);
+        env->CallVoidMethod(g_callback_obj, g_on_group_method, jgid, jsrc, jdata);
+    } else {
+        env->ExceptionClear();
+        LOGE("jni_on_group: NewByteArray returned null (OOM)");
+    }
+    if (jgid)  env->DeleteLocalRef(jgid);
+    if (jsrc)  env->DeleteLocalRef(jsrc);
+    if (jdata) env->DeleteLocalRef(jdata);
+    release_env(attached);
 }
 
 /* ── JNI exports ──────────────────────────────────────────────────────── */
@@ -172,6 +243,10 @@ Java_com_nexus_mesh_service_NexusNode_nativeInit(JNIEnv *env, jobject thiz,
 
     g_running = true;
 
+    if (!ble_bridge_setup()) {
+        LOGE("BLE bridge pipe setup failed");
+    }
+
     const nx_identity_t *id = nx_node_identity(&g_node);
     LOGI("Node initialized: %02X%02X%02X%02X",
          id->short_addr.bytes[0], id->short_addr.bytes[1],
@@ -217,6 +292,10 @@ Java_com_nexus_mesh_service_NexusNode_nativeInitWithIdentity(
     if (err != NX_OK) return JNI_FALSE;
 
     g_running = true;
+
+    if (!ble_bridge_setup()) {
+        LOGE("BLE bridge pipe setup failed");
+    }
     return JNI_TRUE;
 }
 
@@ -228,6 +307,15 @@ Java_com_nexus_mesh_service_NexusNode_nativeStop(JNIEnv *env, jobject thiz)
 
     nx_node_stop(&g_node);
     g_running = false;
+
+    if (g_ble_pipe_node) {
+        g_ble_pipe_node->ops->destroy(g_ble_pipe_node);
+        g_ble_pipe_node = nullptr;
+    }
+    if (g_ble_pipe_app) {
+        g_ble_pipe_app->ops->destroy(g_ble_pipe_app);
+        g_ble_pipe_app = nullptr;
+    }
 
     if (g_callback_obj) {
         env->DeleteGlobalRef(g_callback_obj);
@@ -365,20 +453,52 @@ Java_com_nexus_mesh_service_NexusNode_nativeRequestInbox(JNIEnv *env, jobject th
     return (nx_node_request_inbox(&g_node, &t) == NX_OK) ? JNI_TRUE : JNI_FALSE;
 }
 
-/* Inject raw packet data from BLE transport (received from ESP32) */
-JNIEXPORT void JNICALL
+/* Inject a raw NEXUS packet received from the ESP32 over BLE-NUS.
+ * Pushes into the app side of the BLE bridge pipe, which surfaces on the
+ * registered pipe transport so the node's poll loop processes it. */
+JNIEXPORT jboolean JNICALL
 Java_com_nexus_mesh_service_NexusNode_nativeInjectPacket(JNIEnv *env,
                                                           jobject thiz,
                                                           jbyteArray packet)
 {
     (void)thiz;
-    if (!g_running) return;
+    if (!g_running || !g_ble_pipe_app || !packet) return JNI_FALSE;
 
-    /* For BLE transport bridging: packets from ESP32 are injected
-     * into the node's transport layer for processing. This requires
-     * a pipe transport registered at init time. */
-    /* TODO: implement BLE-to-pipe bridge */
-    (void)env; (void)packet;
+    jsize len = env->GetArrayLength(packet);
+    if (len <= 0) return JNI_FALSE;
+
+    jbyte *buf = env->GetByteArrayElements(packet, nullptr);
+    if (!buf) return JNI_FALSE;
+
+    nx_err_t err = g_ble_pipe_app->ops->send(g_ble_pipe_app,
+                                              (uint8_t *)buf, (size_t)len);
+    env->ReleaseByteArrayElements(packet, buf, JNI_ABORT);
+    return (err == NX_OK) ? JNI_TRUE : JNI_FALSE;
+}
+
+/* Drain one outbound packet from the BLE bridge -- packets the node wanted
+ * to send out via the pipe transport, that Kotlin should now forward to the
+ * ESP32 over BLE-NUS. Returns null if the pipe is empty. */
+JNIEXPORT jbyteArray JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeReadBleOutbound(JNIEnv *env,
+                                                              jobject thiz)
+{
+    (void)thiz;
+    if (!g_running || !g_ble_pipe_app) return nullptr;
+
+    uint8_t buf[NX_MAX_PAYLOAD + 16];
+    size_t out_len = 0;
+    nx_err_t err = g_ble_pipe_app->ops->recv(g_ble_pipe_app, buf, sizeof(buf),
+                                              &out_len, 0 /* non-blocking */);
+    if (err != NX_OK || out_len == 0) return nullptr;
+
+    jbyteArray result = env->NewByteArray((jsize)out_len);
+    if (!result) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+    env->SetByteArrayRegion(result, 0, (jsize)out_len, (jbyte *)buf);
+    return result;
 }
 
 /*
@@ -823,11 +943,14 @@ Java_com_nexus_mesh_service_NexusNode_nativeGroupList(JNIEnv *env,
     }
 
     jclass byteArrayClass = env->FindClass("[B");
+    if (!byteArrayClass) { env->ExceptionClear(); return nullptr; }
     jobjectArray result = env->NewObjectArray(count, byteArrayClass, nullptr);
+    if (!result) { env->ExceptionClear(); return nullptr; }
     int idx = 0;
     for (int i = 0; i < NX_GROUP_MAX && idx < count; i++) {
         if (g_node.groups.groups[i].valid) {
             jbyteArray gid = env->NewByteArray(4);
+            if (!gid) { env->ExceptionClear(); break; }
             env->SetByteArrayRegion(gid, 0, 4,
                 (jbyte *)g_node.groups.groups[i].group_id.bytes);
             env->SetObjectArrayElement(result, idx++, gid);
@@ -859,11 +982,14 @@ Java_com_nexus_mesh_service_NexusNode_nativeGroupGetMembers(JNIEnv *env,
     }
 
     jclass byteArrayClass = env->FindClass("[B");
+    if (!byteArrayClass) { env->ExceptionClear(); return nullptr; }
     jobjectArray result = env->NewObjectArray(member_count, byteArrayClass, nullptr);
+    if (!result) { env->ExceptionClear(); return nullptr; }
     int idx = 0;
     for (int i = 0; i < NX_GROUP_MAX_MEMBERS && idx < member_count; i++) {
         if (grp->members[i].valid) {
             jbyteArray addr = env->NewByteArray(4);
+            if (!addr) { env->ExceptionClear(); break; }
             env->SetByteArrayRegion(addr, 0, 4, (jbyte *)grp->members[i].addr.bytes);
             env->SetObjectArrayElement(result, idx++, addr);
             env->DeleteLocalRef(addr);

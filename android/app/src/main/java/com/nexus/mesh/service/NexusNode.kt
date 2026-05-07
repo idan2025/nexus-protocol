@@ -99,6 +99,18 @@ class NexusNode {
         return isRunning && nativeRequestInbox(target)
     }
 
+    /** Inject a NEXUS packet received from the ESP32 over BLE-NUS into the
+     *  node's transport layer for processing. */
+    fun injectBlePacket(packet: ByteArray): Boolean {
+        return isRunning && nativeInjectPacket(packet)
+    }
+
+    /** Drain one outbound packet that the node wants to send via BLE.
+     *  Returns null when the BLE outbound pipe is empty. */
+    fun readBleOutbound(): ByteArray? {
+        return if (isRunning) nativeReadBleOutbound() else null
+    }
+
     // TCP Internet transport
     fun startTcpInet(
         listenPort: Int = 4242,
@@ -172,7 +184,8 @@ class NexusNode {
     private external fun nativeSendLarge(dest: ByteArray, data: ByteArray): Boolean
     private external fun nativeAnnounce()
     private external fun nativeRequestInbox(target: ByteArray): Boolean
-    private external fun nativeInjectPacket(packet: ByteArray)
+    private external fun nativeInjectPacket(packet: ByteArray): Boolean
+    private external fun nativeReadBleOutbound(): ByteArray?
     private external fun nativeStartTcpInet(listenPort: Int, peerHosts: Array<String>, peerPorts: IntArray, reconnectMs: Int): Boolean
     private external fun nativeStopTcpInet()
     private external fun nativeIsTcpInetActive(): Boolean

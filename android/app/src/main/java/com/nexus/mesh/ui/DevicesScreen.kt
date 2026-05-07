@@ -99,7 +99,18 @@ fun formatTimeout(ms: Long): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DevicesScreen(activity: MainActivity) {
-    val bleTransport = remember { BleTransport(activity) }
+    val bleTransport = remember {
+        BleTransport(activity).also { bt ->
+            bt.nexusNode = activity.getService()?.getNode()
+        }
+    }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        // The service may bind after this composable is created; pick up the
+        // node once it's available so BLE-mesh ingress works on first connect.
+        if (bleTransport.nexusNode == null) {
+            bleTransport.nexusNode = activity.getService()?.getNode()
+        }
+    }
     val devices by bleTransport.devices.collectAsState()
     val connected by bleTransport.connected.collectAsState()
     val connectedDevice by bleTransport.connectedDevice.collectAsState()
