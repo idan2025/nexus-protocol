@@ -224,6 +224,8 @@ void setup()
         .on_neighbor       = on_neighbor,
         .on_session        = NULL,
         .on_group          = NULL,
+        .on_fed_digest     = NULL,
+        .on_fed_fetch      = NULL,
         .user_ctx          = NULL,
     };
 

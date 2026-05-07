@@ -62,7 +62,9 @@ void battery_init(void)
     analogSetPinAttenuation(BAT_ADC_PIN, ADC_11db);
   #elif defined(NX_PLATFORM_NRF52)
     analogReadResolution(12);
-    analogReference(AR_INTERNAL_3_6);
+    /* Adafruit nRF52 BSP names the 0.6V * 6 = 0..3.6V range plain "AR_INTERNAL"
+     * -- the "AR_INTERNAL_3_6" constant does not exist in this BSP. */
+    analogReference(AR_INTERNAL);
   #endif
 #endif
 }
