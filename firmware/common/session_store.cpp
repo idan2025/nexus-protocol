@@ -110,8 +110,7 @@ nx_err_t nx_session_store_save(const nx_session_store_t *store)
 
         if (store->sessions[i].valid) {
             if (InternalFS.exists(fname)) InternalFS.remove(fname);
-            File f(InternalFS);
-            f.open(fname, FILE_O_WRITE);
+            File f = InternalFS.open(fname, FILE_O_WRITE);
             if (f) {
                 f.write((const uint8_t *)&store->sessions[i],
                         sizeof(nx_session_t));
@@ -138,8 +137,7 @@ nx_err_t nx_session_store_load(nx_session_store_t *store)
 
         if (!InternalFS.exists(fname)) continue;
 
-        File f(InternalFS);
-        f.open(fname, FILE_O_READ);
+        File f = InternalFS.open(fname, FILE_O_READ);
         if (!f) continue;
 
         size_t read = f.read(&store->sessions[i], sizeof(nx_session_t));

@@ -87,8 +87,10 @@ nx_err_t nx_settings_load(nx_settings_t *settings)
 {
     if (!settings) return NX_ERR_INVALID_ARG;
 
-    File f(InternalFS);
-    f.open(CFG_FILE, FILE_O_READ);
+    /* Canonical Adafruit_LittleFS pattern: ask the FS for an open File
+     * directly. The two-step `File f(fs); f.open(name, mode)` form has
+     * been observed to hang on certain LittleFS states, so we avoid it. */
+    File f = InternalFS.open(CFG_FILE, FILE_O_READ);
     if (!f) return NX_ERR_NOT_FOUND;
 
     size_t rd = f.read(settings, sizeof(nx_settings_t));
@@ -107,8 +109,7 @@ nx_err_t nx_settings_save(const nx_settings_t *settings)
 
     if (InternalFS.exists(CFG_FILE)) InternalFS.remove(CFG_FILE);
 
-    File f(InternalFS);
-    f.open(CFG_FILE, FILE_O_WRITE);
+    File f = InternalFS.open(CFG_FILE, FILE_O_WRITE);
     if (!f) return NX_ERR_IO;
 
     size_t written = f.write((const uint8_t *)settings,

@@ -86,8 +86,9 @@ static const char *ID_FILE = "/nexus_id";
 
 static nx_err_t load_identity(nx_identity_t *id)
 {
-    File id_file(InternalFS);
-    id_file.open(ID_FILE, FILE_O_READ);
+    /* Canonical InternalFS.open() pattern -- the two-step File ctor + open()
+     * has been observed to hang on certain LittleFS states. */
+    File id_file = InternalFS.open(ID_FILE, FILE_O_READ);
     if (!id_file) return NX_ERR_NOT_FOUND;
 
     size_t read = id_file.read(id, sizeof(nx_identity_t));
@@ -105,8 +106,7 @@ static nx_err_t save_identity(const nx_identity_t *id)
 {
     if (InternalFS.exists(ID_FILE)) InternalFS.remove(ID_FILE);
 
-    File id_file(InternalFS);
-    id_file.open(ID_FILE, FILE_O_WRITE);
+    File id_file = InternalFS.open(ID_FILE, FILE_O_WRITE);
     if (!id_file) return NX_ERR_IO;
 
     size_t written = id_file.write((const uint8_t *)id, sizeof(nx_identity_t));

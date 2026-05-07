@@ -128,8 +128,7 @@ nx_err_t nx_anchor_store_save(const nx_anchor_t *anchor)
             /* Remove old file first (LittleFS requires this for overwrite) */
             if (InternalFS.exists(fname)) InternalFS.remove(fname);
 
-            File f(InternalFS);
-            f.open(fname, FILE_O_WRITE);
+            File f = InternalFS.open(fname, FILE_O_WRITE);
             if (f) {
                 f.write((const uint8_t *)&anchor->msgs[i],
                         sizeof(nx_anchor_msg_t));
@@ -159,8 +158,7 @@ nx_err_t nx_anchor_store_load(nx_anchor_t *anchor)
 
         if (!InternalFS.exists(fname)) continue;
 
-        File f(InternalFS);
-        f.open(fname, FILE_O_READ);
+        File f = InternalFS.open(fname, FILE_O_READ);
         if (!f) continue;
 
         size_t read = f.read(&anchor->msgs[i], sizeof(nx_anchor_msg_t));

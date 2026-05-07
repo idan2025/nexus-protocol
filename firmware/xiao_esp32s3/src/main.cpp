@@ -453,29 +453,26 @@ void setup()
     /* Transport registry */
     nx_transport_registry_init();
 
-    /* LoRa radio via RadioLib HAL */
+    /* LoRa radio via RadioLib HAL.
+     * If the WIO-SX1262 expansion isn't attached we still want to come up
+     * on BLE so the user can pair the phone -- mirrors heltec_v3/rak4631
+     * behaviour. Previously we infinite-blinked here, which presented as
+     * "the device doesn't boot". */
+    bool lora_ok = false;
     g_lora_radio = nx_radiolib_create(&radio);
     if (!g_lora_radio || g_lora_radio->ops->init(g_lora_radio, &settings.lora_config) != NX_OK) {
-        Serial.println("[NEXUS] LoRa radio init failed!");
+        Serial.println("[NEXUS] LoRa radio init failed -- continuing BLE-only");
         Serial.println("[NEXUS] Check WIO-SX1262 expansion board connection");
-        /* Rapid blink to signal error */
-        while (1) {
-            digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-            delay(200);
+    } else {
+        nx_transport_t *lora_t = nx_lora_transport_create();
+        if (lora_t && lora_t->ops->init(lora_t, &g_lora_radio) == NX_OK &&
+            nx_transport_register(lora_t) == NX_OK) {
+            lora_ok = true;
+            Serial.println("[NEXUS] LoRa transport OK");
+        } else {
+            Serial.println("[NEXUS] LoRa transport setup failed -- continuing BLE-only");
         }
     }
-
-    /* Create and register LoRa transport */
-    nx_transport_t *lora_t = nx_lora_transport_create();
-    if (!lora_t || lora_t->ops->init(lora_t, &g_lora_radio) != NX_OK) {
-        Serial.println("[NEXUS] LoRa transport init failed!");
-        while (1) delay(1000);
-    }
-    if (nx_transport_register(lora_t) != NX_OK) {
-        Serial.println("[NEXUS] LoRa transport register failed!");
-        while (1) delay(1000);
-    }
-    Serial.println("[NEXUS] LoRa transport OK");
 
     /* Load or generate identity */
     bool new_identity = false;
@@ -540,14 +537,16 @@ void setup()
     battery_init();
     nx_event_log("boot");
 
-    nx_node_announce(&node);
+    /* Initial announce only if LoRa is up (BLE-only mode skips it). */
+    if (lora_ok) nx_node_announce(&node);
 
-    Serial.println("[NEXUS] Ready (headless mode)");
+    Serial.printf("[NEXUS] Ready (BLE: %s, LoRa: %s)\n",
+                  ble_name, lora_ok ? "OK" : "FAILED");
     Serial.println("[NEXUS] BOOT button: press=announce, long hold=sleep");
     Serial.println("[NEXUS] Serial commands: STATUS ANNOUNCE NEIGHBORS MAILBOX RADIO SETTINGS HELP");
 
-    /* Steady LED = running */
-    digitalWrite(LED_PIN, LOW);
+    /* Steady LED = running (skipped if user disabled LEDs) */
+    if (!settings.led_off) digitalWrite(LED_PIN, LOW);
     delay(500);
     digitalWrite(LED_PIN, HIGH);
 }
