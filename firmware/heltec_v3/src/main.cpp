@@ -786,7 +786,7 @@ void setup()
 
     /* LoRa radio via RadioLib HAL -- keep radio pointer for reconfiguration */
     g_lora_radio = nx_radiolib_create(radio_ptr);
-    nx_err_t lora_err = NX_ERR_INVAL;
+    nx_err_t lora_err = NX_ERR_INVALID_ARG;
     if (g_lora_radio) {
         lora_err = g_lora_radio->ops->init(g_lora_radio, &settings.lora_config);
     }
