@@ -3,4 +3,8 @@ plugins {
     id 'com.android.application' version '8.7.3' apply false
     id 'org.jetbrains.kotlin.android' version '2.0.21' apply false
     id 'org.jetbrains.kotlin.plugin.compose' version '2.0.21' apply false
+    // KSP -- replaces kapt for Room. kapt fails on Kotlin 2.x release builds
+    // ("Kapt currently doesn't support language version 2.0+, falling back
+    // to 1.9" -> KaptExecutionWorkAction failure during kaptReleaseKotlin).
+    id 'com.google.devtools.ksp' version '2.0.21-1.0.28' apply false
 }
