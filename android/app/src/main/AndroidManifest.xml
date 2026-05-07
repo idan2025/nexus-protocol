@@ -54,9 +54,11 @@
             android:foregroundServiceType="connectedDevice"
             android:exported="false" />
 
-        <!-- Nordic DFU service (declared so the library's IntentService can run) -->
+        <!-- Nordic DFU service: we ship our own concrete subclass of
+             DfuBaseService because the library's bundled DfuService
+             became package-private in 2.9. -->
         <service
-            android:name="no.nordicsemi.android.dfu.DfuService"
+            android:name=".flasher.NexusDfuService"
             android:exported="false" />
 
         <provider

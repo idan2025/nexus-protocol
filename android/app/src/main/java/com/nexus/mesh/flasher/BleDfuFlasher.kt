@@ -93,7 +93,9 @@ class BleDfuFlasher(private val context: Context) {
             .setPrepareDataObjectDelay(300)
             .setUnsafeExperimentalButtonlessServiceInSecureDfuEnabled(true)
         initiator.setZip(android.net.Uri.fromFile(zipFile), zipFile.absolutePath)
-        controller = initiator.start(context, no.nordicsemi.android.dfu.DfuService::class.java)
+        // Use our own concrete DfuBaseService subclass — the library's
+        // bundled DfuService became package-private in 2.9.
+        controller = initiator.start(context, NexusDfuService::class.java)
         // Foreground notification needs a content activity so the user
         // can return to the app from the system notification.
         DfuServiceInitiator.createDfuNotificationChannel(context)
