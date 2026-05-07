@@ -981,8 +981,9 @@ private fun VoiceRecorderDialog(
                     val rec = recorderRef.value
                     val f = fileRef.value
                     recording = false
-                    try { rec?.stop() } catch (_: Exception) {}
-                    rec?.release()
+                    try { rec?.stop() }
+                    catch (e: Exception) { android.util.Log.w("ConversationScreen", "MediaRecorder.stop()", e) }
+                    finally { try { rec?.release() } catch (_: Exception) {} }
                     recorderRef.value = null
                     if (f != null && f.exists()) {
                         val bytes = f.readBytes()

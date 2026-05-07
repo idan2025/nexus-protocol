@@ -13,6 +13,8 @@ import android.os.Binder
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.nexus.mesh.R
 import com.nexus.mesh.data.*
 import com.nexus.mesh.nxm.*
@@ -55,7 +57,8 @@ class NexusService : Service(), NexusNode.Callback {
         private const val TAG = "NexusService"
         private const val CHANNEL_ID = "nexus_mesh"
         private const val NOTIFICATION_ID = 1
-        private const val PREFS_NAME = "nexus_identity"
+        private const val PREFS_NAME = "nexus_identity"            // legacy plaintext prefs (migration source)
+        private const val PREFS_NAME_SECURE = "nexus_identity_secure" // EncryptedSharedPreferences
         private const val KEY_IDENTITY = "identity_bytes"
         private const val PREFS_TCP = "nexus_tcp"
         private const val KEY_TCP_ENABLED = "tcp_enabled"
@@ -376,9 +379,32 @@ class NexusService : Service(), NexusNode.Callback {
         updateTransportNotification()
     }
 
+    private fun getEncryptedPrefs(): android.content.SharedPreferences {
+        val masterKey = MasterKey.Builder(this)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        return EncryptedSharedPreferences.create(
+            this,
+            PREFS_NAME_SECURE,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
+
     private fun startNode() {
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val savedBytes = prefs.getString(KEY_IDENTITY, null)
+        val encPrefs = getEncryptedPrefs()
+
+        // One-time migration from old plaintext SharedPreferences
+        val oldPrefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val oldEncoded = oldPrefs.getString(KEY_IDENTITY, null)
+        if (oldEncoded != null && encPrefs.getString(KEY_IDENTITY, null) == null) {
+            Log.i(TAG, "Migrating identity from plaintext prefs to EncryptedSharedPreferences")
+            encPrefs.edit().putString(KEY_IDENTITY, oldEncoded).apply()
+            oldPrefs.edit().remove(KEY_IDENTITY).apply()
+        }
+
+        val savedBytes = encPrefs.getString(KEY_IDENTITY, null)
 
         val ok = if (savedBytes != null) {
             val bytes = android.util.Base64.decode(savedBytes, android.util.Base64.DEFAULT)
@@ -395,7 +421,7 @@ class NexusService : Service(), NexusNode.Callback {
 
         node.getIdentityBytes()?.let { bytes ->
             val encoded = android.util.Base64.encodeToString(bytes, android.util.Base64.DEFAULT)
-            prefs.edit().putString(KEY_IDENTITY, encoded).apply()
+            encPrefs.edit().putString(KEY_IDENTITY, encoded).apply()
         }
 
         _address.value = node.getAddressHex()
@@ -467,7 +493,11 @@ class NexusService : Service(), NexusNode.Callback {
         _pillarsAllowMetered.value = allowMetered
 
         if (!enabled || savedPillars.isBlank()) {
-            Log.i(TAG, "Pillars: disabled or no pillars configured")
+            if (savedPillars.isBlank()) {
+                Log.i(TAG, "No Pillar configured -- node will be isolated until UDP/manual TCP discovery succeeds")
+            } else {
+                Log.i(TAG, "Pillars: disabled")
+            }
             return
         }
 
@@ -480,12 +510,15 @@ class NexusService : Service(), NexusNode.Callback {
 
         if (_tcpActive.value) {
             Log.i(TAG, "Pillars: TCP already active, skipping auto-connect")
-            _pillarConnected.value = true
+            // Only mark pillar-connected if there are actual pillar hosts configured
+            _pillarConnected.value = parsePillarHosts(savedPillars).isNotEmpty()
             return
         }
 
-        val ok = node.startTcpInet(0, parsePillarHosts(savedPillars), parsePillarPorts(savedPillars))
-        _pillarConnected.value = ok
+        val pillarHosts = parsePillarHosts(savedPillars)
+        val ok = node.startTcpInet(0, pillarHosts, parsePillarPorts(savedPillars))
+        // Only set pillarConnected if we actually dialed at least one pillar host
+        _pillarConnected.value = ok && pillarHosts.isNotEmpty()
         _tcpActive.value = ok
         if (ok) {
             Log.i(TAG, "Pillars: connected to ${countPillars(savedPillars)} pillar(s)")
@@ -928,9 +961,8 @@ class NexusService : Service(), NexusNode.Callback {
         pollJob = null
         node.stop()
 
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val encoded = android.util.Base64.encodeToString(plain, android.util.Base64.DEFAULT)
-        prefs.edit().putString(KEY_IDENTITY, encoded).apply()
+        getEncryptedPrefs().edit().putString(KEY_IDENTITY, encoded).apply()
         plain.fill(0)
 
         startNode()
@@ -1222,6 +1254,10 @@ class NexusService : Service(), NexusNode.Callback {
         return node.isNeighbor(bytes) >= 0
     }
 
+    /** Expose the underlying NexusNode so the BLE transport can inject
+     *  inbound mesh packets received from the ESP32 over NUS. */
+    fun getNode(): NexusNode = node
+
     fun getTelemetry(): NexusNode.Telemetry? = node.getTelemetry()
 
     fun listRoutes(): List<NexusNode.RouteRow> = node.listRoutes()
@@ -1401,7 +1437,7 @@ class NexusService : Service(), NexusNode.Callback {
         if (hex.length != 8) return null
         return try {
             ByteArray(4) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
-        } catch (e: Exception) { null }
+        } catch (e: Exception) { Log.w(TAG, "decode failed", e); null }
     }
 
     private fun createNotificationChannel() {

@@ -3,6 +3,7 @@ package com.nexus.mesh.ble
 import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
+import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +16,9 @@ import java.util.UUID
  * Supports config protocol for Meshtastic-style remote settings.
  */
 class BleTransport(private val context: Context) {
+
+    /** Set to wire incoming non-config BLE packets into the NEXUS node. */
+    var nexusNode: com.nexus.mesh.service.NexusNode? = null
     companion object {
         private const val TAG = "BleTransport"
 
@@ -289,19 +293,31 @@ class BleTransport(private val context: Context) {
                 g.setCharacteristicNotification(txChar, true)
                 val desc = txChar.getDescriptor(CCCD_UUID)
                 if (desc != null) {
-                    desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    g.writeDescriptor(desc)
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        g.writeDescriptor(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        @Suppress("DEPRECATION")
+                        g.writeDescriptor(desc)
+                    }
                 }
             }
 
-            _connected.value = true
+            // _connected.value = true is set in onDescriptorWrite after CCCD write succeeds.
             _connectedDevice.value = g.device.name ?: g.device.address
             Log.i(TAG, "NUS service ready")
+        }
 
-            // Auto-request config on connect
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                requestConfig()
-            }, 500)
+        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (descriptor.uuid == CCCD_UUID && status == BluetoothGatt.GATT_SUCCESS) {
+                _connected.value = true
+                Log.i(TAG, "CCCD enabled -- connection ready")
+                // Auto-request config on connect
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    requestConfig()
+                }, 500)
+            }
         }
 
         override fun onCharacteristicChanged(
@@ -317,13 +333,20 @@ class BleTransport(private val context: Context) {
 
                 val packet = frame.copyOfRange(2, 2 + pktLen)
 
-                // Check if this is a config response
-                if (packet.size >= 5 &&
+                // Check if this is a config response (magic prefix 0xFFFFFFCF)
+                val isConfigMagic = packet.size >= 4 &&
                     packet[0] == CFG_MAGIC[0] && packet[1] == CFG_MAGIC[1] &&
-                    packet[2] == CFG_MAGIC[2] && packet[3] == CFG_MAGIC[3]) {
-                    parseConfigResponse(packet)
+                    packet[2] == CFG_MAGIC[2] && packet[3] == CFG_MAGIC[3]
+
+                if (isConfigMagic) {
+                    if (packet.size < 25) {
+                        Log.w(TAG, "Dropped short config-magic frame: ${packet.size} bytes")
+                    } else {
+                        parseConfigResponse(packet)
+                    }
                 } else {
                     listener?.onPacketReceived(packet)
+                    nexusNode?.injectBlePacket(packet)
                 }
             }
         }
