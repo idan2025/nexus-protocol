@@ -124,6 +124,7 @@ static const uint8_t CFG_MAGIC[4] = {0xFF, 0xFF, 0xFF, 0xCF};
 #define CFG_CMD_SET_ROLE     0x04  /* [role(1)] */
 #define CFG_CMD_REBOOT       0x05
 #define CFG_CMD_SET_LED      0x06  /* [led_off(1)] -- 1 = LEDs off to save power */
+#define CFG_CMD_SHUTDOWN     0x07  /* deep sleep; wake on PRG button (same as 10s hold) */
 
 /* Config response (device -> phone): CMD | 0x80 */
 #define CFG_RESP_FLAG        0x80
@@ -684,6 +685,25 @@ static void handle_ble_config(const uint8_t *payload, size_t len)
         nx_settings_save(&settings);
         delay(500);
         ESP.restart();
+        break;
+
+    case CFG_CMD_SHUTDOWN:
+        Serial.println("[CFG] SHUTDOWN");
+        nx_anchor_store_save(&node.anchor);
+        nx_settings_save(&settings);
+        nx_node_stop(&node);
+        if (oled_ok) {
+            if (screen_off) { screen_off = false; u8x8.setPowerSave(0); }
+            u8x8.clear();
+            draw_header("SHUTTING DOWN");
+            draw_line(3, "  Press PRG");
+            draw_line(4, "  to wake up");
+        }
+        digitalWrite(LED_PIN, LOW);
+        delay(800); /* let BLE stack flush the response we just queued */
+        if (oled_ok) { u8x8.clear(); u8x8.setPowerSave(1); }
+        esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_PRG, 0);
+        esp_deep_sleep_start();
         break;
 
     default:
