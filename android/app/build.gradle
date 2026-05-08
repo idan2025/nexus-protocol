@@ -7,8 +7,8 @@ plugins {
 
 /* ── Version: defaults to 0.6.2 but can be overridden by CI:           ──
    ──   ./gradlew assembleRelease -PversionName=0.6.3 -PversionCode=14   ── */
-def appVersionName = project.findProperty('versionName') ?: '0.6.2'
-def appVersionCode = (project.findProperty('versionCode') ?: '14').toString().toInteger()
+def appVersionName = project.findProperty('versionName') ?: '0.6.3'
+def appVersionCode = (project.findProperty('versionCode') ?: '15').toString().toInteger()
 
 /* ── Stable release keystore. Sourced from CI env (GitHub Actions
       secrets) or local ~/.gradle/gradle.properties. If none of the

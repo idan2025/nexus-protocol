@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NEXUS launcher icon — foreground layer.
+  Reads as "mesh node with 6 peers": a bright central node, six smaller
+  nodes at hex vertices (radius 22 from centre), connected by lines.
+  The whole composition sits inside the 66x66 safe zone of the 108x108
+  adaptive-icon viewport.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Connection lines (drawn first so the node dots sit on top) -->
+    <path
+        android:strokeColor="#00BFA5"
+        android:strokeAlpha="0.85"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:pathData="
+            M 54,54 L 54,32
+            M 54,54 L 73.05,43
+            M 54,54 L 73.05,65
+            M 54,54 L 54,76
+            M 54,54 L 34.95,65
+            M 54,54 L 34.95,43" />
+
+    <!-- 6 peer nodes at the hex vertices -->
+    <path android:fillColor="#00E5C7"
+          android:pathData="M 54,32 m -5,0 a 5,5 0 1,0 10,0 a 5,5 0 1,0 -10,0 Z" />
+    <path android:fillColor="#00E5C7"
+          android:pathData="M 73.05,43 m -5,0 a 5,5 0 1,0 10,0 a 5,5 0 1,0 -10,0 Z" />
+    <path android:fillColor="#00E5C7"
+          android:pathData="M 73.05,65 m -5,0 a 5,5 0 1,0 10,0 a 5,5 0 1,0 -10,0 Z" />
+    <path android:fillColor="#00E5C7"
+          android:pathData="M 54,76 m -5,0 a 5,5 0 1,0 10,0 a 5,5 0 1,0 -10,0 Z" />
+    <path android:fillColor="#00E5C7"
+          android:pathData="M 34.95,65 m -5,0 a 5,5 0 1,0 10,0 a 5,5 0 1,0 -10,0 Z" />
+    <path android:fillColor="#00E5C7"
+          android:pathData="M 34.95,43 m -5,0 a 5,5 0 1,0 10,0 a 5,5 0 1,0 -10,0 Z" />
+
+    <!-- Central node — slightly larger, brighter, with a subtle ring -->
+    <path
+        android:fillColor="#7FFFE5"
+        android:pathData="M 54,54 m -8.5,0 a 8.5,8.5 0 1,0 17,0 a 8.5,8.5 0 1,0 -17,0 Z" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeAlpha="0.5"
+        android:strokeWidth="1.2"
+        android:pathData="M 54,54 m -10.5,0 a 10.5,10.5 0 1,0 21,0 a 10.5,10.5 0 1,0 -21,0 Z" />
+</vector>
