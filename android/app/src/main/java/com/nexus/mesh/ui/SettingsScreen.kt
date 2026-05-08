@@ -12,6 +12,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.nexus.mesh.BuildConfig
 import com.nexus.mesh.data.IdentityBackup
 import com.nexus.mesh.updater.UpdateSettingsRow
 import com.nexus.mesh.updater.UpdateState
@@ -514,7 +515,7 @@ fun SettingsScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("About", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(8.dp))
-                    Text("NEXUS Mesh v0.1.0")
+                    Text("NEXUS Mesh v${BuildConfig.VERSION_NAME}")
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "E2E encrypted multi-transport mesh protocol",

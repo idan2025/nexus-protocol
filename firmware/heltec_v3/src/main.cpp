@@ -647,10 +647,17 @@ static void handle_ble_config(const uint8_t *payload, size_t len)
         {
             settings.led_off = payload[1] ? 1 : 0;
             nx_settings_save(&settings);
-            /* Apply immediately: LED is active LOW on Heltec V3, so
-             * HIGH = off. Force off if disabled; leave off otherwise
-             * (loop only briefly drives it LOW for announce flash). */
-            if (settings.led_off) digitalWrite(LED_PIN, HIGH);
+            /* Apply immediately and give visible feedback so the user
+             * sees the toggle take effect. LED is active LOW on Heltec V3
+             * (HIGH = off). On disable: force off. On enable: brief blink
+             * so the toggle is observably working. */
+            if (settings.led_off) {
+                digitalWrite(LED_PIN, HIGH);
+            } else {
+                digitalWrite(LED_PIN, LOW);
+                delay(200);
+                digitalWrite(LED_PIN, HIGH);
+            }
             Serial.printf("[CFG] SET_LED off=%d\n", settings.led_off);
             send_config_response();
         }
