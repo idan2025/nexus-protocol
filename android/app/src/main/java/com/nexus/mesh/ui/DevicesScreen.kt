@@ -134,6 +134,24 @@ fun DevicesScreen(activity: MainActivity) {
         activity.setBleConnectedAddress(connectedDevice)
     }
 
+    // Battery saver: BLE LE scans at SCAN_MODE_LOW_LATENCY are ~5%/h
+    // on most phones. Auto-stop after 30s of scanning, and always stop
+    // when the user navigates away from this screen.
+    androidx.compose.runtime.LaunchedEffect(scanning) {
+        if (scanning) {
+            kotlinx.coroutines.delay(30_000)
+            if (scanning) {
+                bleTransport.stopScan()
+                scanning = false
+            }
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            if (scanning) bleTransport.stopScan()
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("BLE Devices") })

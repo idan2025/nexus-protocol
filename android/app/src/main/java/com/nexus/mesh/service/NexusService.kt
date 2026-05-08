@@ -72,6 +72,12 @@ class NexusService : Service(), NexusNode.Callback {
         private const val KEY_PILLAR_LIST = "pillar_list"
         private const val KEY_PILLARS_ENABLED = "pillars_enabled"
         private const val KEY_PILLARS_ALLOW_METERED = "pillars_allow_metered"
+
+        // Mesh tick cadence. The poll handles housekeeping; inbound
+        // packets arrive via callbacks on each transport, so a fast
+        // tick isn't needed for responsiveness. 500ms cycle = 2Hz.
+        private const val POLL_BUDGET_MS   = 50L
+        private const val POLL_INTERVAL_MS = 500L
         val DEFAULT_PILLARS = ""
         private const val NETWORK_DEBOUNCE_MS = 1500L
 
@@ -430,10 +436,16 @@ class NexusService : Service(), NexusNode.Callback {
         migrateNicknames()
         updateNotification("Node: ${_address.value}")
 
+        // Mesh tick runs at 2 Hz idle (was 10 Hz). The poll handles
+        // timer-driven housekeeping (dedup expiry, fragment timeouts,
+        // outbound queue drain). Inbound packets arrive via callback
+        // on BLE/TCP/UDP transports, so they don't need a fast poll.
+        // Cutting from ~100 ms cycle to ~500 ms is the single largest
+        // battery win in the foreground service.
         pollJob = scope.launch {
             while (isActive) {
-                node.poll(50)
-                delay(50)
+                node.poll(POLL_BUDGET_MS.toInt())
+                delay(POLL_INTERVAL_MS - POLL_BUDGET_MS)
             }
         }
 
