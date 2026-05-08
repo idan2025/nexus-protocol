@@ -510,6 +510,63 @@ fun SettingsScreen(
                 }
             }
 
+            // Stop Mesh Service & Quit
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Quit", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Stops the mesh service and exits the app. The node " +
+                            "will go offline until you reopen NEXUS.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    var showQuitConfirm by remember { mutableStateOf(false) }
+                    OutlinedButton(
+                        onClick = { showQuitConfirm = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("Stop Mesh & Quit")
+                    }
+                    if (showQuitConfirm) {
+                        AlertDialog(
+                            onDismissRequest = { showQuitConfirm = false },
+                            title = { Text("Stop Mesh & Quit?") },
+                            text = {
+                                Text(
+                                    "Background message delivery will stop. " +
+                                        "You won't receive new messages until you " +
+                                        "open NEXUS again."
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showQuitConfirm = false
+                                    val intent = Intent(activity,
+                                        com.nexus.mesh.service.NexusService::class.java)
+                                    activity.stopService(intent)
+                                    activity.finishAffinity()
+                                }) {
+                                    Text("Quit",
+                                        color = MaterialTheme.colorScheme.error)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showQuitConfirm = false }) {
+                                    Text("Cancel")
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
             // About
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {

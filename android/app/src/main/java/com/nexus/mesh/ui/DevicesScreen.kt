@@ -278,6 +278,7 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
     var showRolePicker by remember { mutableStateOf(false) }
     var showAdvanced by remember { mutableStateOf(false) }
     var showRebootConfirm by remember { mutableStateOf(false) }
+    var showShutdownConfirm by remember { mutableStateOf(false) }
 
     // Refresh battery + config periodically while card is on screen.
     LaunchedEffect(Unit) {
@@ -492,6 +493,16 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
                     Text("Reboot")
                 }
             }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { showShutdownConfirm = true },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Text("Power Off Node")
+            }
         }
     }
 
@@ -582,6 +593,33 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
             },
             dismissButton = {
                 TextButton(onClick = { showRebootConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showShutdownConfirm) {
+        AlertDialog(
+            onDismissRequest = { showShutdownConfirm = false },
+            title = { Text("Power Off Node?") },
+            text = {
+                Text(
+                    "The node will enter deep sleep and stop relaying mesh traffic. " +
+                    "Press the PRG button on the device to wake it back up. " +
+                    "Settings and stored messages are saved automatically."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    ble.shutdownNode()
+                    showShutdownConfirm = false
+                }) {
+                    Text("Power Off", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showShutdownConfirm = false }) {
                     Text("Cancel")
                 }
             }

@@ -38,6 +38,7 @@ class BleTransport(private val context: Context) {
         const val CFG_CMD_SET_ROLE: Byte = 0x04
         const val CFG_CMD_REBOOT: Byte = 0x05
         const val CFG_CMD_SET_LED: Byte = 0x06
+        const val CFG_CMD_SHUTDOWN: Byte = 0x07
         const val CFG_RESP_FLAG: Int = 0x80
     }
 
@@ -225,6 +226,16 @@ class BleTransport(private val context: Context) {
         payload[4] = CFG_CMD_REBOOT
         send(payload)
         Log.i(TAG, "Reboot command sent")
+    }
+
+    /** Power off the connected node (deep sleep). User wakes it with the
+     *  PRG button on the device. */
+    fun shutdownNode() {
+        val payload = ByteArray(5) // magic(4) + cmd(1)
+        System.arraycopy(CFG_MAGIC, 0, payload, 0, 4)
+        payload[4] = CFG_CMD_SHUTDOWN
+        send(payload)
+        Log.i(TAG, "Shutdown command sent")
     }
 
     private fun putLeU32(buf: ByteArray, offset: Int, value: Long) {
