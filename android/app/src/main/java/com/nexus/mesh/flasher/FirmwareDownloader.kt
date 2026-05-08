@@ -66,8 +66,13 @@ class FirmwareDownloader(private val context: Context) {
     /**
      * Downloads [assetName] from the release tagged [tag]. Cached by
      * (tag, assetName) under filesDir/firmware/.
+     *
+     * Side effect: drops any previously-cached firmware under other
+     * tag dirs so we never carry more than one release worth of
+     * binaries on disk.
      */
     suspend fun fetch(tag: String, assetName: String): File? = withContext(Dispatchers.IO) {
+        cleanStaleTagsExcept(tag)
         val dir = File(firmwareDir(), tag).apply { mkdirs() }
         val out = File(dir, assetName)
         if (out.exists() && out.length() > 0) {
@@ -114,6 +119,32 @@ class FirmwareDownloader(private val context: Context) {
     }
 
     fun reset() { _progress.value = Progress.Idle }
+
+    /**
+     * Delete cached firmware for any tag except [keepTag]. Keeps disk
+     * usage to a single release's worth of binaries.
+     */
+    fun cleanStaleTagsExcept(keepTag: String?) {
+        val root = File(context.filesDir, "firmware")
+        if (!root.exists()) return
+        var bytes = 0L
+        root.listFiles()?.forEach { d ->
+            if (d.isDirectory && d.name != keepTag) {
+                bytes += dirSize(d)
+                d.deleteRecursively()
+            }
+        }
+        if (bytes > 0) Log.i(TAG, "Pruned ${bytes / 1024} KB of stale firmware")
+    }
+
+    /** Wipe every cached firmware image (e.g. on app start). */
+    fun cleanAll() = cleanStaleTagsExcept(null)
+
+    private fun dirSize(d: File): Long {
+        var sum = 0L
+        d.listFiles()?.forEach { sum += if (it.isDirectory) dirSize(it) else it.length() }
+        return sum
+    }
 
     companion object { private const val TAG = "FirmwareDownloader" }
 }

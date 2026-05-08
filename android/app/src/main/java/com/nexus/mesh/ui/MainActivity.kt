@@ -30,6 +30,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.nexus.mesh.service.NexusService
 import com.nexus.mesh.updater.UpdateBanner
+import com.nexus.mesh.updater.UpdateInstaller
 import com.nexus.mesh.updater.rememberUpdateState
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -87,6 +88,22 @@ class MainActivity : ComponentActivity() {
         }
 
         requestPermissions()
+
+        // Sweep stale on-disk caches:
+        //   - cache/apk/  : leftover update APKs the system installer
+        //                   already consumed last run
+        //   - files/firmware/<old-tags>/ : firmware images from
+        //                   superseded releases
+        // (Best-effort; a failure here must never block startup.)
+        try {
+            UpdateInstaller(this).cleanCache()
+            // Don't aggressively wipe firmware here -- the user may
+            // have just downloaded an image to flash and not yet
+            // launched the flasher; FirmwareDownloader.fetch() prunes
+            // stale tags itself when it next runs.
+        } catch (e: Exception) {
+            android.util.Log.w("NexusMesh", "Cache cleanup failed", e)
+        }
 
         val intent = Intent(this, NexusService::class.java)
         startForegroundService(intent)

@@ -46,10 +46,13 @@ class UpdateInstaller(private val context: Context) {
         val dir = File(context.cacheDir, "apk").apply { mkdirs() }
         val outFile = File(dir, "nexus-${release.tag}.apk")
         if (outFile.exists() && outFile.length() == release.sizeBytes) {
+            // Cache hit -- still useful to sweep any stale APKs sitting alongside.
+            dir.listFiles()?.forEach { if (it != outFile) it.delete() }
             _state.value = State.Ready(outFile)
             return@withContext outFile
         }
-        outFile.delete()
+        // Drop every old APK so we don't accumulate one per release tag.
+        dir.listFiles()?.forEach { it.delete() }
 
         _state.value = State.Downloading(0, 0L, release.sizeBytes)
         val req = Request.Builder().url(release.apkUrl).build()
@@ -115,6 +118,19 @@ class UpdateInstaller(private val context: Context) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         activity.startActivity(intent)
+    }
+
+    /**
+     * Wipe every APK under cache/apk/. Safe to call at app start: the
+     * system installer has already finished with any APK we handed it
+     * on the previous run, so it can't still need the file.
+     */
+    fun cleanCache() {
+        val dir = File(context.cacheDir, "apk")
+        if (!dir.exists()) return
+        var bytes = 0L
+        dir.listFiles()?.forEach { f -> bytes += f.length(); f.delete() }
+        if (bytes > 0) Log.i(TAG, "Cleared ${bytes / 1024} KB of stale APKs")
     }
 
     companion object { private const val TAG = "UpdateInstaller" }
