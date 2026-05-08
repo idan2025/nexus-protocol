@@ -18,6 +18,7 @@ import androidx.security.crypto.MasterKey
 import com.nexus.mesh.R
 import com.nexus.mesh.data.*
 import com.nexus.mesh.nxm.*
+import com.nexus.mesh.ui.MainActivity
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -1451,12 +1452,29 @@ class NexusService : Service(), NexusNode.Callback {
         mgr.createNotificationChannel(channel)
     }
 
+    /**
+     * PendingIntent that brings MainActivity to the foreground when
+     * the user taps the notification.
+     *
+     * SINGLE_TOP + CLEAR_TOP avoids stacking duplicate Activity
+     * instances on top of an already-running app. FLAG_IMMUTABLE is
+     * required from API 31+.
+     */
+    private fun openAppPendingIntent(): PendingIntent {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        return PendingIntent.getActivity(this, 0, intent, flags)
+    }
+
     private fun buildNotification(text: String): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("NEXUS Mesh")
             .setContentText(text)
             .setSmallIcon(R.drawable.ic_mesh)
             .setOngoing(true)
+            .setContentIntent(openAppPendingIntent())
             .build()
     }
 
@@ -1471,6 +1489,7 @@ class NexusService : Service(), NexusNode.Callback {
             .setContentText(text.take(100))
             .setSmallIcon(R.drawable.ic_mesh)
             .setAutoCancel(true)
+            .setContentIntent(openAppPendingIntent())
             .build()
         val mgr = getSystemService(NotificationManager::class.java)
         mgr.notify(from.hashCode(), notification)
