@@ -32,9 +32,17 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p release
-          cp build/lib/libnexus.a release/
-          cp -r lib/include/nexus release/
+          mkdir -p release/bin release/lib release/include release/scripts
+          cp build/app/pillard       release/bin/
+          cp build/app/nexusd        release/bin/
+          cp build/lib/libnexus.a    release/lib/
+          cp -r lib/include/nexus    release/include/
+          cp scripts/nexus-pillar.service release/scripts/
+          cp scripts/install-pillar.sh    release/scripts/ 2>/dev/null || true
+          # Strip release binaries so the tarball is shippable.
+          strip release/bin/pillard || true
+          strip release/bin/nexusd  || true
+          chmod +x release/bin/pillard release/bin/nexusd
           tar czf nexus-linux-x64.tar.gz -C release .
 
       - name: Upload artifact

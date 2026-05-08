@@ -1,0 +1,41 @@
+# Keep the build context lean; we only need C sources, headers,
+# CMake files, and the vendored crypto. Everything else (Android,
+# firmware, prior build dirs, CI configs) is irrelevant for the
+# pillard binary.
+
+# Build outputs
+build/
+**/.pio/
+**/.gradle/
+android/
+firmware/
+docs/
+docker/
+
+# Editor / OS junk
+.git/
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Cached release artifacts and local notes
+release/
+*.tar.gz
+*.apk
+*.bin
+*.uf2
+*.hex
+
+# Python bindings tests
+bindings/python/__pycache__/
+bindings/python/**/__pycache__/
+
+# Misc
+Testing/
+**/*.o
+**/*.a
+!lib/vendor/**/*.a
