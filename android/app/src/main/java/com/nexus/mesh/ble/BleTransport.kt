@@ -51,7 +51,11 @@ class BleTransport(private val context: Context) {
         val screenTimeoutMs: Long,
         val nodeRole: Int,
         val nodeAddr: String,
-        val ledOff: Boolean = false
+        val ledOff: Boolean = false,
+        /** Battery millivolts at the terminal, null if unsupported / not reported. */
+        val batteryMv: Int? = null,
+        /** Battery state-of-charge 0..100, null if unsupported / not reported. */
+        val batteryPct: Int? = null
     )
 
     data class ScannedDevice(val name: String, val address: String, val rssi: Int)
@@ -252,6 +256,15 @@ class BleTransport(private val context: Context) {
         // Optional 26th byte = led_off flag (newer firmware). Falls back to false on older builds.
         val ledOff = data.size >= 26 && (data[25].toInt() and 0xFF) != 0
 
+        // Optional bytes 26-28: [battery_mv(2 LE)][battery_pct(1)]. Older firmware omits.
+        val batteryMv = if (data.size >= 28)
+            (data[26].toInt() and 0xFF) or ((data[27].toInt() and 0xFF) shl 8)
+        else null
+        val batteryPct = if (data.size >= 29) {
+            val raw = data[28].toInt() and 0xFF
+            if (raw == 0xFF) null else raw
+        } else null
+
         val config = NodeConfig(
             frequencyHz = getLeU32(data, 5),
             bandwidthHz = getLeU32(data, 9),
@@ -265,7 +278,9 @@ class BleTransport(private val context: Context) {
                 data[22].toInt() and 0xFF,
                 data[23].toInt() and 0xFF,
                 data[24].toInt() and 0xFF),
-            ledOff = ledOff
+            ledOff = ledOff,
+            batteryMv = batteryMv,
+            batteryPct = batteryPct
         )
 
         _nodeConfig.value = config

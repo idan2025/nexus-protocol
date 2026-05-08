@@ -195,7 +195,14 @@ static void draw_status()
     snprintf(hdr, sizeof(hdr), "NEXUS  %s", role_name(node.config.role));
     draw_header(hdr);
 
-    draw_line(1, "");
+    int32_t bat_mv = battery_read_mv();
+    int bat_pct = battery_percent();
+    if (bat_mv >= 0) {
+        draw_line(1, "Bat:%d%% %d.%02dV", bat_pct,
+                  (int)(bat_mv / 1000), (int)((bat_mv % 1000) / 10));
+    } else {
+        draw_line(1, "");
+    }
 
     draw_line(2, "Addr: %02X%02X%02X%02X",
               id->short_addr.bytes[0], id->short_addr.bytes[1],
@@ -525,10 +532,11 @@ static void on_session(const nx_addr_short_t *src,
 
 static void send_config_response()
 {
-    /* Response: [MAGIC(4)][0x81][freq(4)][bw(4)][sf][cr][pwr][timeout(4)][role][addr(4)][led_off] = 26B
-     * Older Android clients only parse 25 bytes; the trailing led_off
-     * byte is ignored on those builds, preserving compatibility. */
-    uint8_t resp[26];
+    /* Response: [MAGIC(4)][0x81][freq(4)][bw(4)][sf][cr][pwr][timeout(4)][role][addr(4)][led_off][bat_mv(2 LE)][bat_pct] = 29B
+     * Older Android clients parse only the first 25/26 bytes; the
+     * trailing battery telemetry is ignored on those builds, preserving
+     * compatibility. bat_pct = 0xFF means unsupported / unknown. */
+    uint8_t resp[29];
     memcpy(resp, CFG_MAGIC, 4);
     resp[4] = CFG_CMD_GET_CONFIG | CFG_RESP_FLAG;
 
@@ -554,6 +562,13 @@ static void send_config_response()
     const nx_identity_t *id = nx_node_identity(&node);
     memcpy(&resp[21], id->short_addr.bytes, 4);
     resp[25] = settings.led_off;
+
+    int32_t bat_mv = battery_read_mv();
+    int bat_pct = battery_percent();
+    uint16_t mv_u16 = (bat_mv >= 0 && bat_mv <= 0xFFFF) ? (uint16_t)bat_mv : 0;
+    resp[26] = (uint8_t)(mv_u16);
+    resp[27] = (uint8_t)(mv_u16 >> 8);
+    resp[28] = (bat_pct >= 0 && bat_pct <= 100) ? (uint8_t)bat_pct : 0xFF;
 
     /* Send config response directly -- bridge adds NUS [LEN_HI][LEN_LO] framing */
     nx_ble_bridge_send(resp, sizeof(resp));

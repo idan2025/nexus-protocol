@@ -279,6 +279,14 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
     var showAdvanced by remember { mutableStateOf(false) }
     var showRebootConfirm by remember { mutableStateOf(false) }
 
+    // Refresh battery + config periodically while card is on screen.
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(30_000)
+            ble.requestConfig()
+        }
+    }
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Node Settings", style = MaterialTheme.typography.titleMedium)
@@ -319,6 +327,44 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
                      fontWeight = FontWeight.Bold)
             }
             Spacer(Modifier.height(8.dp))
+
+            // Battery indicator (only shown when firmware reports it)
+            if (config.batteryPct != null || config.batteryMv != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Battery", style = MaterialTheme.typography.bodyMedium)
+                    val pctText = config.batteryPct?.let { "$it%" } ?: "--"
+                    val voltText = config.batteryMv?.let {
+                        String.format("%d.%02dV", it / 1000, (it % 1000) / 10)
+                    } ?: "--"
+                    Text(
+                        "$pctText  •  $voltText",
+                        color = when {
+                            config.batteryPct == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                            config.batteryPct < 15 -> MaterialTheme.colorScheme.error
+                            config.batteryPct < 30 -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.primary
+                        },
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                if (config.batteryPct != null) {
+                    Spacer(Modifier.height(4.dp))
+                    LinearProgressIndicator(
+                        progress = (config.batteryPct.coerceIn(0, 100) / 100f),
+                        modifier = Modifier.fillMaxWidth(),
+                        color = when {
+                            config.batteryPct < 15 -> MaterialTheme.colorScheme.error
+                            config.batteryPct < 30 -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.primary
+                        }
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
 
             Divider()
             Spacer(Modifier.height(8.dp))
