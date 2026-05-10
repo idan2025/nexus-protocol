@@ -104,12 +104,34 @@ class UpdateChecker(private val context: Context) {
 
     fun isSkipped(tag: String): Boolean = prefs().getString(KEY_SKIPPED_TAG, null) == tag
 
+    /** Snooze a tag until [untilMs] — used by the "Later" button so the
+     *  dialog stops popping for a few hours but the banner stays visible. */
+    fun snoozeUntil(tag: String, untilMs: Long) {
+        prefs().edit()
+            .putString(KEY_SNOOZE_TAG, tag)
+            .putLong(KEY_SNOOZE_UNTIL, untilMs)
+            .apply()
+    }
+
+    fun isSnoozed(tag: String): Boolean {
+        val snTag = prefs().getString(KEY_SNOOZE_TAG, null) ?: return false
+        val until = prefs().getLong(KEY_SNOOZE_UNTIL, 0L)
+        return snTag == tag && System.currentTimeMillis() < until
+    }
+
+    fun clearSnooze() {
+        prefs().edit().remove(KEY_SNOOZE_TAG).remove(KEY_SNOOZE_UNTIL).apply()
+    }
+
     private fun prefs() = context.getSharedPreferences("nexus_updater", Context.MODE_PRIVATE)
 
     companion object {
         private const val TAG = "UpdateChecker"
         private const val KEY_LAST_CHECK = "last_check_ms"
         private const val KEY_SKIPPED_TAG = "skipped_tag"
+        private const val KEY_SNOOZE_TAG = "snooze_tag"
+        private const val KEY_SNOOZE_UNTIL = "snooze_until_ms"
         const val AUTO_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L // 24 h
+        const val LATER_SNOOZE_MS        = 4L * 60L * 60L * 1000L  // 4 h
     }
 }

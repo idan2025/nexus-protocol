@@ -29,8 +29,10 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.nexus.mesh.service.NexusService
+import com.nexus.mesh.updater.UpdateAvailableDialog
 import com.nexus.mesh.updater.UpdateBanner
 import com.nexus.mesh.updater.UpdateInstaller
+import com.nexus.mesh.updater.UpdateScheduler
 import com.nexus.mesh.updater.rememberUpdateState
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -66,6 +68,11 @@ class MainActivity : ComponentActivity() {
 
     var showBatteryPrompt by mutableStateOf(false)
         private set
+
+    /** Flipped to true when the user taps the scheduled-update notification.
+     *  Forces [UpdateAvailableDialog] open even if the user previously
+     *  snoozed or scheduled this tag. */
+    var forceShowUpdateDialog by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -110,9 +117,18 @@ class MainActivity : ComponentActivity() {
         bindService(intent, connection, Context.BIND_AUTO_CREATE)
 
         showBatteryPrompt = shouldPromptBatteryOptimization()
+        forceShowUpdateDialog = intent?.getBooleanExtra(UpdateScheduler.EXTRA_SHOW_UPDATE, false) == true
 
         setContent {
             NexusApp(this)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(UpdateScheduler.EXTRA_SHOW_UPDATE, false)) {
+            forceShowUpdateDialog = true
         }
     }
 
@@ -367,5 +383,14 @@ fun NexusApp(activity: MainActivity) {
                 }
             )
         }
+
+        // Update-available popup with changelog + Update Now / Later / Schedule.
+        // Auto-shown once per app session when a newer release is fetched and
+        // the user hasn't already snoozed / scheduled / skipped this tag.
+        UpdateAvailableDialog(
+            state = updateState,
+            activity = activity,
+            forceShow = activity.forceShowUpdateDialog
+        )
     }
 }

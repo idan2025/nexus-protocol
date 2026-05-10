@@ -74,5 +74,10 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- AlarmManager-fired reminder for user-scheduled app updates. -->
+        <receiver
+            android:name=".updater.UpdateScheduledReceiver"
+            android:exported="false" />
+
     </application>
 </manifest>
