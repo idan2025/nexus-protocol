@@ -57,6 +57,10 @@ c_sources = [
     "lib/vendor/monocypher/monocypher.h",
     "transports/lora/nexus_lora.c",
     "transports/lora/nexus_lora_asf.c",
+    # Pipe transport: used by the BLE bridge in each firmware target so
+    # the phone's NUS link is a real libnexus transport and announces
+    # flow uniformly with LoRa. Defined in transports/pipe.
+    "transports/pipe/nexus_pipe.c",
 ]
 
 # Detect platform from build flags
