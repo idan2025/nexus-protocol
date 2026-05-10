@@ -275,6 +275,7 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
     var showRolePicker by remember { mutableStateOf(false) }
     var showAdvanced by remember { mutableStateOf(false) }
     var showRebootConfirm by remember { mutableStateOf(false) }
+    var showFlashModeConfirm by remember { mutableStateOf(false) }
     var showShutdownConfirm by remember { mutableStateOf(false) }
 
     // Refresh battery + config periodically while card is on screen.
@@ -492,6 +493,13 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
             }
             Spacer(Modifier.height(8.dp))
             OutlinedButton(
+                onClick = { showFlashModeConfirm = true },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Enter Flash Mode (USB)")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
                 onClick = { showShutdownConfirm = true },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.outlinedButtonColors(
@@ -501,6 +509,33 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
                 Text("Power Off Node")
             }
         }
+    }
+
+    if (showFlashModeConfirm) {
+        AlertDialog(
+            onDismissRequest = { showFlashModeConfirm = false },
+            title = { Text("Enter Flash Mode?") },
+            text = {
+                Text(
+                    "The node will reboot into its ROM bootloader (ESP32-S3 " +
+                    "download mode). Plug a USB-C cable from this phone to the " +
+                    "node and the in-app flasher will sync without needing to " +
+                    "hold BOOT + tap RESET.\n\n" +
+                    "BLE will disconnect when the chip resets."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    ble.enterBootloader()
+                    showFlashModeConfirm = false
+                }) { Text("Enter Flash Mode") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFlashModeConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     // Pickers

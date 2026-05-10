@@ -15,6 +15,7 @@
 #include <RadioLib.h>
 #include <U8x8lib.h>
 #include <esp_sleep.h>
+#include <soc/rtc_cntl_reg.h>
 
 /* NEXUS C API */
 extern "C" {
@@ -135,6 +136,7 @@ static const uint8_t CFG_MAGIC[4] = {0xFF, 0xFF, 0xFF, 0xCF};
 #define CFG_CMD_REBOOT       0x05
 #define CFG_CMD_SET_LED      0x06  /* [led_off(1)] -- 1 = LEDs off to save power */
 #define CFG_CMD_SHUTDOWN     0x07  /* deep sleep; wake on PRG button (same as 10s hold) */
+#define CFG_CMD_ENTER_BOOTLOADER 0x08  /* force ROM bootloader on next reset */
 
 /* Config response (device -> phone): CMD | 0x80 */
 #define CFG_RESP_FLAG        0x80
@@ -695,6 +697,20 @@ static void handle_ble_config(const uint8_t *payload, size_t len)
         nx_settings_save(&settings);
         delay(500);
         ESP.restart();
+        break;
+
+    case CFG_CMD_ENTER_BOOTLOADER:
+        /* Software-trigger ROM bootloader so the in-app flasher (or
+         * any host esptool) syncs without the user needing to hold
+         * BOOT and tap RESET. Writes the FORCE_DOWNLOAD_BOOT bit of
+         * RTC_CNTL_OPTION1; the boot ROM checks this on reset and
+         * enters download mode regardless of strap pins. */
+        Serial.println("[CFG] ENTER_BOOTLOADER");
+        nx_anchor_store_save(&node.anchor);
+        nx_settings_save(&settings);
+        delay(800);  /* let BLE stack flush */
+        REG_WRITE(RTC_CNTL_OPTION1_REG, 0x1);
+        esp_restart();
         break;
 
     case CFG_CMD_SHUTDOWN:

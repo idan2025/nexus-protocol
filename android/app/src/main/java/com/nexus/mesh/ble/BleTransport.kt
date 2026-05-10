@@ -46,6 +46,7 @@ class BleTransport(private val context: Context) {
         const val CFG_CMD_REBOOT: Byte = 0x05
         const val CFG_CMD_SET_LED: Byte = 0x06
         const val CFG_CMD_SHUTDOWN: Byte = 0x07
+        const val CFG_CMD_ENTER_BOOTLOADER: Byte = 0x08
         const val CFG_RESP_FLAG: Int = 0x80
     }
 
@@ -300,6 +301,19 @@ class BleTransport(private val context: Context) {
         payload[5] = if (off) 1 else 0
         send(payload)
         Log.i(TAG, "Set LED off: $off")
+    }
+
+    /** Force the connected ESP32-S3 node into ROM bootloader on its
+     *  next reset so the in-app USB flasher can sync without the user
+     *  holding BOOT + tapping RESET. Plug a USB cable into the phone
+     *  after pressing this -- the chip will already be in download
+     *  mode. */
+    fun enterBootloader() {
+        val payload = ByteArray(5)
+        System.arraycopy(CFG_MAGIC, 0, payload, 0, 4)
+        payload[4] = CFG_CMD_ENTER_BOOTLOADER
+        send(payload)
+        Log.i(TAG, "Enter bootloader command sent")
     }
 
     /** Reboot the device */

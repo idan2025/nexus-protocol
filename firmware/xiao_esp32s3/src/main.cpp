@@ -14,6 +14,7 @@
 #include <Arduino.h>
 #include <RadioLib.h>
 #include <esp_sleep.h>
+#include <soc/rtc_cntl_reg.h>
 
 /* NEXUS C API */
 extern "C" {
@@ -105,6 +106,7 @@ static const uint8_t CFG_MAGIC[4] = {0xFF, 0xFF, 0xFF, 0xCF};
 #define CFG_CMD_SET_ROLE     0x04
 #define CFG_CMD_REBOOT       0x05
 #define CFG_CMD_SET_LED      0x06  /* [led_off(1)] -- 1 = LEDs off to save power */
+#define CFG_CMD_ENTER_BOOTLOADER 0x08  /* force ROM bootloader on next reset */
 
 #define CFG_RESP_FLAG        0x80
 
@@ -321,6 +323,17 @@ static void handle_ble_config(const uint8_t *payload, size_t len)
         nx_settings_save(&settings);
         delay(500);
         ESP.restart();
+        break;
+
+    case CFG_CMD_ENTER_BOOTLOADER:
+        /* Force ROM bootloader on next reset so the in-app flasher
+         * syncs without holding BOOT + tap RESET. */
+        Serial.println("[CFG] ENTER_BOOTLOADER");
+        nx_anchor_store_save(&node.anchor);
+        nx_settings_save(&settings);
+        delay(800);
+        REG_WRITE(RTC_CNTL_OPTION1_REG, 0x1);
+        esp_restart();
         break;
 
     default:

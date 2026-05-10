@@ -121,20 +121,31 @@ class UsbFlasher(private val context: Context) {
             port.setParameters(115_200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
             // Pulse RTS/DTR to put the chip into download mode (Heltec
             // CP210x has the standard auto-reset wiring; XIAO native
-            // USB-JTAG will silently no-op here, which is fine).
+            // USB-CDC silently no-ops here). Timing stretched because
+            // Samsung's USB stack delays DTR/RTS writes by ~40-80ms
+            // each, which eats the short pulses that work on Pixel.
             try {
                 port.setDTR(false); port.setRTS(true)
-                Thread.sleep(100)
+                Thread.sleep(200)
                 port.setDTR(true);  port.setRTS(false)
-                Thread.sleep(50)
-                port.setDTR(false); port.setRTS(false)
                 Thread.sleep(100)
+                port.setDTR(false); port.setRTS(false)
+                Thread.sleep(200)
             } catch (_: Exception) { /* not all drivers support flow control */ }
 
             val client = EsptoolClient(port)
             _state.value = State.Syncing
+            // If sync fails, the chip is not in the ROM bootloader.
+            // Recovery path: tap "Enter Flash Mode" on the Devices tab
+            // over BLE -- the firmware writes RTC_CNTL_OPTION1 to force
+            // download boot, then resets. After that, plugging USB and
+            // hitting flash again will sync on the first try.
             if (!client.sync()) {
-                _state.value = State.Error("Sync failed -- hold BOOT and tap RESET, then retry.")
+                _state.value = State.Error(
+                    "Sync failed. Tap 'Enter Flash Mode' on the Devices " +
+                    "tab over BLE, then retry -- or hold BOOT and tap " +
+                    "RESET manually."
+                )
                 return@withContext false
             }
             val image = imageFile.readBytes()
