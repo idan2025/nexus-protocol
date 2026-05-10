@@ -6,6 +6,13 @@ import android.content.Context
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
@@ -87,6 +94,9 @@ class BleTransport(private val context: Context) {
     private var listener: PacketListener? = null
     private var configListener: ConfigListener? = null
 
+    private val pumpScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var drainJob: Job? = null
+
     fun setPacketListener(l: PacketListener) { listener = l }
     fun setConfigListener(l: ConfigListener) { configListener = l }
 
@@ -139,6 +149,7 @@ class BleTransport(private val context: Context) {
     }
 
     fun disconnect() {
+        stopOutboundDrain()
         gatt?.disconnect()
         gatt?.close()
         gatt = null
@@ -146,6 +157,38 @@ class BleTransport(private val context: Context) {
         _connected.value = false
         _connectedDevice.value = null
         _nodeConfig.value = null
+    }
+
+    private fun startOutboundDrain() {
+        if (drainJob?.isActive == true) return
+        drainJob = pumpScope.launch {
+            while (isActive) {
+                if (!_connected.value) {
+                    delay(100)
+                    continue
+                }
+                val node = nexusNode
+                if (node == null) {
+                    delay(100)
+                    continue
+                }
+                val pkt = node.readBleOutbound()
+                if (pkt == null) {
+                    delay(50)
+                    continue
+                }
+                if (!send(pkt)) {
+                    Log.w(TAG, "BLE send failed for outbound pkt (${pkt.size} B)")
+                }
+                delay(20)
+            }
+        }
+        Log.i(TAG, "Outbound BLE drain started")
+    }
+
+    private fun stopOutboundDrain() {
+        drainJob?.cancel()
+        drainJob = null
     }
 
     fun send(data: ByteArray): Boolean {
@@ -306,6 +349,7 @@ class BleTransport(private val context: Context) {
                 g.requestMtu(517)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.i(TAG, "Disconnected")
+                stopOutboundDrain()
                 _connected.value = false
                 _connectedDevice.value = null
                 _nodeConfig.value = null
@@ -355,6 +399,7 @@ class BleTransport(private val context: Context) {
             if (descriptor.uuid == CCCD_UUID && status == BluetoothGatt.GATT_SUCCESS) {
                 _connected.value = true
                 Log.i(TAG, "CCCD enabled -- connection ready")
+                startOutboundDrain()
                 // Auto-request config on connect
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                     requestConfig()
