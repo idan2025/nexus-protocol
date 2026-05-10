@@ -874,8 +874,24 @@ class NexusService : Service(), NexusNode.Callback {
         val srcHex = src.joinToString("") { "%02X".format(it) }
         Log.i(TAG, "Data from $srcHex: ${data.size} bytes")
 
-        val text = String(data, Charsets.UTF_8)
         val isDirect = node.isNeighbor(src) >= 0
+
+        // sendMessage() always wraps the text in NXM (TLV-encoded
+        // structured envelope) and tries sendSession first, falling
+        // back to raw send. So inbound raw frames are usually NXM too
+        // and must be parsed -- otherwise the receiver renders the
+        // raw TLV bytes as UTF-8 garbage. Mirror onSession's logic.
+        if (NxmParser.isNxm(data)) {
+            val nxm = NxmParser.parse(data)
+            if (nxm != null) {
+                handleNxmMessage(srcHex, src, nxm, isDirect)
+                return
+            }
+        }
+
+        // Fallback: legacy plain-UTF-8 senders (kept so older apps stay
+        // interoperable until the network is fully on NXM).
+        val text = String(data, Charsets.UTF_8)
         scope.launch {
             repository.insertMessage(MessageEntity(
                 peerAddr = srcHex,

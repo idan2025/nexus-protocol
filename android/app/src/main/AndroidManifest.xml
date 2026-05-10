@@ -46,6 +46,7 @@
             android:name=".ui.MainActivity"
             android:exported="true"
             android:label="NEXUS Mesh"
+            android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|locale|layoutDirection|fontScale|uiMode|smallestScreenSize|density">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -251,6 +251,12 @@ fun ConversationScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                // imePadding() shrinks the visible area while the soft
+                // keyboard is open so the input row stays above it and
+                // the message bubbles aren't hidden behind it. Without
+                // this the LazyColumn extends under the keyboard and
+                // recent bubbles disappear.
+                .imePadding()
         ) {
             if (messages.isEmpty()) {
                 Box(
