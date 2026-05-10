@@ -37,6 +37,7 @@ import com.nexus.mesh.updater.UpdateScheduler
 import com.nexus.mesh.updater.rememberUpdateState
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 private const val PREFS_STARTUP = "nexus_startup"
