@@ -28,6 +28,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.nexus.mesh.ble.BleTransport
 import com.nexus.mesh.service.NexusService
 import com.nexus.mesh.updater.UpdateAvailableDialog
 import com.nexus.mesh.updater.UpdateBanner
@@ -55,12 +56,46 @@ class MainActivity : ComponentActivity() {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             nexusService = (binder as NexusService.LocalBinder).getService()
             bound = true
+            // Wire the activity-scoped BLE transport to the freshly-bound
+            // node so the outbound drain pump can deliver packets even
+            // when the user is on a tab other than Devices.
+            bleTransport.nexusNode = nexusService?.getNode()
+            // Surface the BLE-bridge connection state to the service so
+            // the Network Interfaces card shows a "LoRa (BLE)" row while
+            // the phone is paired with an ESP32 / nRF radio node.
+            startBleBridgeWatcher()
         }
         override fun onServiceDisconnected(name: ComponentName?) {
+            bleBridgeWatcher?.cancel()
+            bleBridgeWatcher = null
             nexusService = null
             bound = false
         }
     }
+
+    private val activityScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate
+    )
+    private var bleBridgeWatcher: kotlinx.coroutines.Job? = null
+    private fun startBleBridgeWatcher() {
+        bleBridgeWatcher?.cancel()
+        bleBridgeWatcher = activityScope.launch {
+            bleTransport.connectedDevice.collect { name ->
+                nexusService?.setBleBridge(name)
+            }
+        }
+    }
+
+    /**
+     * Activity-scoped BLE transport. Survives navigation between bottom-bar
+     * tabs and minimisation -- the GATT connection and the outbound drain
+     * pump live as long as the activity does, so the connection chip stays
+     * stable when the user moves around the app.
+     *
+     * Lazily created on first read (Devices tab opens first, or
+     * onServiceConnected fires first -- whichever).
+     */
+    val bleTransport: BleTransport by lazy { BleTransport(this) }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -162,6 +197,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        bleBridgeWatcher?.cancel()
+        activityScope.cancel()
         if (bound) unbindService(connection)
         super.onDestroy()
     }
@@ -170,14 +207,12 @@ class MainActivity : ComponentActivity() {
 
     /**
      * The BLE address the app is currently connected to (used by the
-     * Flash Node screen to pick a target for BLE DFU).
-     *
-     * Wired up by [DevicesScreen]'s BleTransport via setBleConnectedAddress.
-     * Null when nothing is connected.
+     * Flash Node screen to pick a target for BLE DFU). Backed directly
+     * by the activity-scoped [bleTransport] so it stays correct across
+     * tabs without needing a separate cache.
      */
-    @Volatile private var bleConnectedAddr: String? = null
-    fun bleConnectedAddress(): String? = bleConnectedAddr
-    fun setBleConnectedAddress(addr: String?) { bleConnectedAddr = addr }
+    fun bleConnectedAddress(): String? = bleTransport.connectedDevice.value
+    fun setBleConnectedAddress(addr: String?) { /* no-op, retained for compatibility */ }
 
     fun setQrScanCallback(callback: (String?) -> Unit) {
         qrScanCallback = callback

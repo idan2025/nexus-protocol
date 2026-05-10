@@ -1,8 +1,11 @@
 package com.nexus.mesh.service
 
 import android.app.*
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.usb.UsbManager
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
@@ -10,8 +13,10 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Binder
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import com.hoho.android.usbserial.driver.UsbSerialProber
 import androidx.core.app.NotificationCompat
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -85,6 +90,10 @@ class NexusService : Service(), NexusNode.Callback {
         private const val KEY_STAMP_MIN_DIFFICULTY = "stamp_min_difficulty"
         private const val KEY_STAMP_REJECT = "stamp_reject_under"
         const val DEFAULT_STAMP_MIN_DIFFICULTY = 0   // 0 = accept all, advisory counters only
+
+        private const val PREFS_ANNOUNCE = "nexus_announce"
+        private const val KEY_ANNOUNCE_INTERVAL_MS = "announce_interval_ms"
+        const val DEFAULT_ANNOUNCE_INTERVAL_MS = 30_000L  // 30 s, matches Reticulum default
     }
 
     private val node = NexusNode()
@@ -174,6 +183,22 @@ class NexusService : Service(), NexusNode.Callback {
     private val _networkState = MutableStateFlow(NetworkState())
     val networkState: StateFlow<NetworkState> = _networkState
 
+    private val _announceIntervalMs = MutableStateFlow(DEFAULT_ANNOUNCE_INTERVAL_MS)
+    val announceIntervalMs: StateFlow<Long> = _announceIntervalMs
+
+    /** Name of the device exposing a LoRa radio over BLE-NUS, if any.
+     *  Set by [setBleBridge] from MainActivity when the BLE-bridge connects.
+     *  Surfaces in [NetworkState.interfaces] as a "LoRa (BLE)" pseudo-row
+     *  so the user can see all bridged transports in one place. */
+    @Volatile private var bleBridgeName: String? = null
+
+    /** USB-serial NEXUS adapters currently attached. Maintained by the
+     *  USB attach/detach BroadcastReceiver. */
+    private val usbDevices = mutableListOf<String>()
+
+    private var announceJob: Job? = null
+    private var usbReceiver: BroadcastReceiver? = null
+
     inner class LocalBinder : Binder() {
         fun getService(): NexusService = this@NexusService
     }
@@ -192,10 +217,14 @@ class NexusService : Service(), NexusNode.Callback {
         loadStampPrefs()
         startNode()
         registerNetworkCallback()
+        registerUsbReceiver()
+        refreshUsbDevices()
     }
 
     override fun onDestroy() {
         unregisterNetworkCallback()
+        unregisterUsbReceiver()
+        announceJob?.cancel()
         pollJob?.cancel()
         node.stopTcpInet()
         node.stopUdpMulticast()
@@ -203,6 +232,114 @@ class NexusService : Service(), NexusNode.Callback {
         node.stop()
         scope.cancel()
         super.onDestroy()
+    }
+
+    // --- Announce loop (configurable interval + force-announce) ---
+
+    private fun loadAnnouncePrefs() {
+        val prefs = getSharedPreferences(PREFS_ANNOUNCE, Context.MODE_PRIVATE)
+        _announceIntervalMs.value =
+            prefs.getLong(KEY_ANNOUNCE_INTERVAL_MS, DEFAULT_ANNOUNCE_INTERVAL_MS)
+    }
+
+    private fun startAnnounceLoop() {
+        announceJob?.cancel()
+        announceJob = scope.launch {
+            // Brief startup grace so transports finish registering before
+            // we fire the first announce.
+            delay(2_000)
+            if (node.isRunning && _announceIntervalMs.value > 0L) node.announce()
+            while (isActive) {
+                val ms = _announceIntervalMs.value
+                if (ms <= 0L) {
+                    // "Off" -- poll every minute so a re-enable picks up
+                    // without restarting the service.
+                    delay(60_000)
+                    continue
+                }
+                delay(ms)
+                if (node.isRunning && _announceIntervalMs.value > 0L) {
+                    node.announce()
+                }
+            }
+        }
+    }
+
+    /** User-facing "Announce now" button hook. */
+    fun forceAnnounce() {
+        if (node.isRunning) node.announce()
+    }
+
+    /** Persist a new auto-announce cadence and restart the loop so the
+     *  change takes effect without waiting out the previous interval.
+     *  Pass 0 to disable automatic announces (forceAnnounce still works). */
+    fun setAnnounceIntervalMs(ms: Long) {
+        val clamped = if (ms < 0L) 0L else ms
+        _announceIntervalMs.value = clamped
+        getSharedPreferences(PREFS_ANNOUNCE, Context.MODE_PRIVATE).edit()
+            .putLong(KEY_ANNOUNCE_INTERVAL_MS, clamped).apply()
+        startAnnounceLoop()
+    }
+
+    // --- Bridged transports surfaced in NetworkState ---
+
+    /** Called by MainActivity whenever the BLE-bridge connection state
+     *  changes. Pass the connected device's display name or null when
+     *  disconnected. Surfaces as a "LoRa (BLE)" row in the Interfaces card. */
+    fun setBleBridge(name: String?) {
+        if (bleBridgeName == name) return
+        bleBridgeName = name
+        rebuildNetworkState()
+    }
+
+    private fun registerUsbReceiver() {
+        val r = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                when (i.action) {
+                    UsbManager.ACTION_USB_DEVICE_ATTACHED,
+                    UsbManager.ACTION_USB_DEVICE_DETACHED -> refreshUsbDevices()
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(r, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(r, filter)
+        }
+        usbReceiver = r
+        Log.i(TAG, "USB attach/detach receiver registered")
+    }
+
+    private fun unregisterUsbReceiver() {
+        usbReceiver?.let {
+            try { unregisterReceiver(it) } catch (_: IllegalArgumentException) { }
+        }
+        usbReceiver = null
+    }
+
+    private fun refreshUsbDevices() {
+        val mgr = getSystemService(Context.USB_SERVICE) as? UsbManager ?: return
+        val drivers = try {
+            UsbSerialProber.getDefaultProber().findAllDrivers(mgr)
+        } catch (e: Exception) {
+            Log.w(TAG, "USB enumeration failed: $e")
+            emptyList()
+        }
+        val names = drivers.map { d ->
+            d.device.productName ?: "USB ${"%04X:%04X".format(d.device.vendorId, d.device.productId)}"
+        }
+        synchronized(usbDevices) {
+            if (usbDevices == names) return
+            usbDevices.clear()
+            usbDevices.addAll(names)
+        }
+        rebuildNetworkState()
+        Log.i(TAG, "USB devices: $names")
     }
 
     // --- Dynamic Network Detection ---
@@ -294,13 +431,43 @@ class NexusService : Service(), NexusNode.Callback {
             }
         }
 
+        // hasAnyInternet must be computed from IP interfaces only -- the
+        // BLE-bridged LoRa and USB serial entries below are local
+        // transports, not internet uplinks.
+        val hasIp = interfaces.isNotEmpty()
+
+        // Bridged / local transports the user should be aware of:
+        //   - LoRa over the BLE-connected ESP32 (acts as the phone's
+        //     "LoRa radio").
+        //   - USB-serial NEXUS adapters plugged into the phone.
+        // These are surfaced as additional rows in the Interfaces card
+        // so the user can see every active transport in one place.
+        bleBridgeName?.let { name ->
+            interfaces.add(NetworkInterface(
+                type = "LoRa (BLE)",
+                name = name,
+                addresses = listOf("via BLE bridge"),
+                isMetered = false
+            ))
+        }
+        synchronized(usbDevices) {
+            for (devName in usbDevices) {
+                interfaces.add(NetworkInterface(
+                    type = "USB Serial",
+                    name = devName,
+                    addresses = listOf("attached"),
+                    isMetered = false
+                ))
+            }
+        }
+
         val newState = NetworkState(
             interfaces = interfaces,
             hasWifi = hasWifi,
             hasCellular = hasCellular,
             hasEthernet = hasEthernet,
             hasVpn = hasVpn,
-            hasAnyInternet = interfaces.isNotEmpty()
+            hasAnyInternet = hasIp
         )
 
         val prev = _networkState.value
@@ -449,12 +616,8 @@ class NexusService : Service(), NexusNode.Callback {
             }
         }
 
-        scope.launch {
-            while (isActive) {
-                delay(30_000)
-                node.announce()
-            }
-        }
+        loadAnnouncePrefs()
+        startAnnounceLoop()
 
         val tcpPrefs = getSharedPreferences(PREFS_TCP, Context.MODE_PRIVATE)
         if (tcpPrefs.getBoolean(KEY_TCP_ENABLED, false)) {

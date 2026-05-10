@@ -110,14 +110,15 @@ fun formatTimeout(ms: Long): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DevicesScreen(activity: MainActivity) {
-    val bleTransport = remember {
-        BleTransport(activity).also { bt ->
-            bt.nexusNode = activity.getService()?.getNode()
-        }
-    }
+    // Use the activity-scoped BleTransport so the GATT connection and its
+    // observable state (connected / nodeConfig / drain pump) survive when
+    // the user navigates to another tab or minimises the app. Recreating
+    // it per-composition would lose the connection on every tab switch.
+    val bleTransport = activity.bleTransport
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        // The service may bind after this composable is created; pick up the
-        // node once it's available so BLE-mesh ingress works on first connect.
+        // Service may bind after the activity is created; if the node
+        // wasn't ready when MainActivity wired the transport, pick it up
+        // here as a fallback.
         if (bleTransport.nexusNode == null) {
             bleTransport.nexusNode = activity.getService()?.getNode()
         }
@@ -127,12 +128,6 @@ fun DevicesScreen(activity: MainActivity) {
     val connectedDevice by bleTransport.connectedDevice.collectAsState()
     val nodeConfig by bleTransport.nodeConfig.collectAsState()
     var scanning by remember { mutableStateOf(false) }
-
-    // Surface the current BLE address to the rest of the app (Flash Node
-    // screen reads this to know which node to BLE-DFU).
-    androidx.compose.runtime.LaunchedEffect(connectedDevice) {
-        activity.setBleConnectedAddress(connectedDevice)
-    }
 
     // Battery saver: BLE LE scans at SCAN_MODE_LOW_LATENCY are ~5%/h
     // on most phones. Auto-stop after 30s of scanning, and always stop
@@ -229,8 +224,10 @@ fun DevicesScreen(activity: MainActivity) {
                 }
             }
 
-            // Device list
-            items(devices) { device ->
+            // Device list -- key by MAC so rows keep their identity across
+            // RSSI updates (otherwise LazyColumn re-binds by index and the
+            // text flickers when multiple nodes are advertising).
+            items(devices, key = { it.address }) { device ->
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()

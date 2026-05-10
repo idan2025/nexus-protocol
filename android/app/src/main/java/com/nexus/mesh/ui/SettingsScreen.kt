@@ -39,6 +39,9 @@ fun SettingsScreen(
         ?: remember { mutableStateOf(com.nexus.mesh.service.NexusService.StampStats()) }
     val stampMinDifficulty by service?.stampMinDifficulty?.collectAsState() ?: remember { mutableStateOf(0) }
     val stampReject by service?.stampReject?.collectAsState() ?: remember { mutableStateOf(false) }
+    val announceIntervalMs by service?.announceIntervalMs?.collectAsState()
+        ?: remember { mutableStateOf(com.nexus.mesh.service.NexusService.DEFAULT_ANNOUNCE_INTERVAL_MS) }
+    var showAnnouncePicker by remember { mutableStateOf(false) }
 
     val tcpConfig = service?.getTcpConfig()
     var tcpPort by remember { mutableStateOf(tcpConfig?.first?.toString() ?: "4242") }
@@ -170,6 +173,37 @@ fun SettingsScreen(
                             enabled = service != null
                         ) { Text("Import") }
                     }
+                }
+            }
+
+            // Announce -- like Reticulum's announce-now button plus a
+            // configurable cadence. "Off" disables the auto loop but the
+            // manual button always works.
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Announce", style = MaterialTheme.typography.titleMedium)
+                        Button(
+                            onClick = { service?.forceAnnounce() },
+                            enabled = service != null
+                        ) { Text("Announce now") }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Broadcast this node's identity so neighbors can route to it. " +
+                        "Reticulum-style: tap to send one now, or set an automatic cadence.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    SettingsRow(
+                        label = "Auto-announce every",
+                        value = formatAnnounceInterval(announceIntervalMs)
+                    ) { showAnnouncePicker = true }
                 }
             }
 
@@ -647,6 +681,39 @@ fun SettingsScreen(
             }
         )
     }
+
+    if (showAnnouncePicker) {
+        val labels = ANNOUNCE_INTERVAL_OPTIONS.map { (label, _) -> label }
+        ListPickerDialog(
+            title = "Auto-announce every",
+            items = labels,
+            onSelect = { idx ->
+                service?.setAnnounceIntervalMs(ANNOUNCE_INTERVAL_OPTIONS[idx].second)
+                showAnnouncePicker = false
+            },
+            onDismiss = { showAnnouncePicker = false }
+        )
+    }
+}
+
+private val ANNOUNCE_INTERVAL_OPTIONS: List<Pair<String, Long>> = listOf(
+    "Off (manual only)" to 0L,
+    "10 seconds"        to 10_000L,
+    "30 seconds"        to 30_000L,
+    "1 minute"          to 60_000L,
+    "5 minutes"         to 5L * 60_000L,
+    "15 minutes"        to 15L * 60_000L,
+    "30 minutes"        to 30L * 60_000L,
+)
+
+private fun formatAnnounceInterval(ms: Long): String {
+    if (ms <= 0L) return "Off"
+    return ANNOUNCE_INTERVAL_OPTIONS.firstOrNull { it.second == ms }?.first
+        ?: when {
+            ms < 60_000L  -> "${ms / 1000} s"
+            ms < 3_600_000L -> "${ms / 60_000L} min"
+            else -> "${ms / 3_600_000L} h"
+        }
 }
 
 @Composable

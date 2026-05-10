@@ -130,10 +130,26 @@ class BleTransport(private val context: Context) {
             val addr = result.device.address
             val rssi = result.rssi
 
-            val existing = _devices.value.toMutableList()
-            existing.removeAll { it.address == addr }
-            existing.add(ScannedDevice(name, addr, rssi))
-            _devices.value = existing
+            // Update in place by address so the row keeps its position in
+            // the list -- otherwise multiple nodes advertising at once
+            // shuffle row order on every packet and the UI flickers.
+            // Smooth RSSI with a light EMA so the dBm reading doesn't
+            // jitter ±5 every frame, and skip the state update entirely
+            // if nothing visible changed.
+            val current = _devices.value
+            val idx = current.indexOfFirst { it.address == addr }
+            val nextList: List<ScannedDevice>
+            if (idx < 0) {
+                nextList = current + ScannedDevice(name, addr, rssi)
+            } else {
+                val prev = current[idx]
+                val smoothed = ((prev.rssi * 3) + rssi) / 4 // EMA, alpha=0.25
+                if (prev.name == name && prev.rssi == smoothed) return
+                val mut = current.toMutableList()
+                mut[idx] = ScannedDevice(name, addr, smoothed)
+                nextList = mut
+            }
+            _devices.value = nextList
         }
     }
 
