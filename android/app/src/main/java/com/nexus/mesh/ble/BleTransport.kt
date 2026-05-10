@@ -108,15 +108,23 @@ class BleTransport(private val context: Context) {
 
         _devices.value = emptyList()
 
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(NUS_SERVICE_UUID))
-            .build()
+        // No ScanFilter on service UUID -- Samsung's BLE stack frequently
+        // drops devices whose 128-bit NUS UUID landed in the scan response
+        // instead of the primary advertisement. Filter client-side in
+        // onScanResult instead, which works the same on every vendor.
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    setLegacy(true)
+                    setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                }
+            }
             .build()
 
-        scanner?.startScan(listOf(filter), settings, scanCallback)
-        Log.i(TAG, "BLE scan started")
+        scanner?.startScan(null, settings, scanCallback)
+        Log.i(TAG, "BLE scan started (no UUID filter, client-side match)")
     }
 
     fun stopScan() {
@@ -126,7 +134,19 @@ class BleTransport(private val context: Context) {
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val name = result.device.name ?: "Unknown"
+            // Client-side match: accept any advertiser that either
+            // (a) lists the NUS service UUID anywhere in its scan record
+            //     (advertisement OR scan response -- Android merges them),
+            // (b) advertises a name that looks like one of ours.
+            // Drop everything else so the user sees only NEXUS nodes.
+            val sr = result.scanRecord
+            val advertisedName = result.device.name ?: sr?.deviceName
+            val nusUuid = ParcelUuid(NUS_SERVICE_UUID)
+            val hasNus = sr?.serviceUuids?.any { it == nusUuid } == true
+            val nameLooksRight = advertisedName?.startsWith("NEXUS", ignoreCase = true) == true
+            if (!hasNus && !nameLooksRight) return
+
+            val name = advertisedName ?: "Unknown"
             val addr = result.device.address
             val rssi = result.rssi
 
@@ -150,6 +170,10 @@ class BleTransport(private val context: Context) {
                 nextList = mut
             }
             _devices.value = nextList
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            Log.w(TAG, "BLE scan failed: $errorCode")
         }
     }
 
