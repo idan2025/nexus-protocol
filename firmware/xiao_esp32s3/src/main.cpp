@@ -65,6 +65,14 @@ SX1262 radio = new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
 static nx_node_t node;
 static nx_identity_t stored_identity;
+
+/* BLE bridge as a NEXUS pipe transport. The "node" side is registered
+ * with the transport registry so libnexus treats inbound bytes from the
+ * phone as raw NEXUS packets and routes outbound packets through the
+ * same pipe (drained to BLE-NUS each loop tick). Mirrors the Android
+ * JNI bridge layout. */
+static nx_transport_t *ble_pipe_node = NULL;
+static nx_transport_t *ble_pipe_app  = NULL;
 static nx_settings_t settings;
 static nx_lora_radio_t *g_lora_radio = NULL;
 static char ble_name[20];
@@ -507,6 +515,19 @@ void setup()
         }
     }
 
+    /* Register the BLE bridge as a NEXUS pipe transport so phone traffic
+     * flows through libnexus uniformly with LoRa traffic. */
+    ble_pipe_node = nx_pipe_transport_create();
+    ble_pipe_app  = nx_pipe_transport_create();
+    if (ble_pipe_node && ble_pipe_app) {
+        nx_pipe_transport_link(ble_pipe_node, ble_pipe_app);
+        if (nx_transport_register(ble_pipe_node) != NX_OK) {
+            Serial.println("[NEXUS] BLE pipe transport register failed");
+        }
+    } else {
+        Serial.println("[NEXUS] BLE pipe transport alloc failed");
+    }
+
     const nx_identity_t *id = nx_node_identity(&node);
     snprintf(ble_name, sizeof(ble_name), "NEXUS-%02X%02X",
              id->short_addr.bytes[0], id->short_addr.bytes[1]);
@@ -559,7 +580,8 @@ void loop()
 {
     nx_node_poll(&node, 10);
 
-    /* Check for packets from phone via BLE */
+    /* Bridge BLE-NUS <-> registered NEXUS pipe transport. See heltec_v3
+     * main.cpp for the full rationale. */
     if (nx_ble_bridge_connected()) {
         uint8_t ble_buf[NX_MAX_PACKET];
         size_t ble_len = 0;
@@ -567,10 +589,18 @@ void loop()
         while (nx_ble_bridge_recv(ble_buf, sizeof(ble_buf), &ble_len) == NX_OK) {
             if (ble_len >= 5 && memcmp(ble_buf, CFG_MAGIC, 4) == 0) {
                 handle_ble_config(&ble_buf[4], ble_len - 4);
-            } else if (ble_len > 4) {
-                nx_addr_short_t dest;
-                memcpy(dest.bytes, ble_buf, 4);
-                nx_node_send(&node, &dest, &ble_buf[4], ble_len - 4);
+            } else if (ble_len > 0 && ble_pipe_app) {
+                ble_pipe_app->ops->send(ble_pipe_app, ble_buf, ble_len);
+            }
+        }
+
+        if (ble_pipe_app) {
+            uint8_t out_buf[NX_MAX_PACKET];
+            size_t out_len = 0;
+            while (ble_pipe_app->ops->recv(ble_pipe_app, out_buf,
+                                           sizeof(out_buf), &out_len, 0) == NX_OK
+                   && out_len > 0) {
+                nx_ble_bridge_send(out_buf, out_len);
             }
         }
     }

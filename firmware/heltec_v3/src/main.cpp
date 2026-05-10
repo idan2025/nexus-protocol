@@ -73,6 +73,16 @@ static SX1262 *radio_ptr = nullptr;
 
 static nx_node_t node;
 static nx_identity_t stored_identity;
+
+/* BLE bridge as a NEXUS pipe transport. The "node" side is registered
+ * with the transport registry so libnexus treats inbound bytes from the
+ * phone as raw NEXUS packets and routes outbound packets (announces,
+ * etc.) through the same pipe -- drained to BLE-NUS each loop tick.
+ * Mirrors the Android JNI bridge layout. Required so phone announces
+ * propagate over LoRa and LoRa announces from other firmware nodes
+ * reach the phone. */
+static nx_transport_t *ble_pipe_node = NULL;
+static nx_transport_t *ble_pipe_app  = NULL;
 static nx_settings_t settings;
 static nx_lora_radio_t *g_lora_radio = NULL; /* for runtime reconfiguration */
 static char ble_name[20];
@@ -917,6 +927,21 @@ void setup()
         while (1) delay(1000);
     }
 
+    /* Register the BLE bridge as a NEXUS pipe transport so the node
+     * treats phone traffic uniformly with LoRa traffic (announces flow
+     * in both directions, transmit_bridge propagates LoRa announces to
+     * the phone, etc.). */
+    ble_pipe_node = nx_pipe_transport_create();
+    ble_pipe_app  = nx_pipe_transport_create();
+    if (ble_pipe_node && ble_pipe_app) {
+        nx_pipe_transport_link(ble_pipe_node, ble_pipe_app);
+        if (nx_transport_register(ble_pipe_node) != NX_OK) {
+            Serial.println("[NEXUS] BLE pipe transport register failed");
+        }
+    } else {
+        Serial.println("[NEXUS] BLE pipe transport alloc failed");
+    }
+
     const nx_identity_t *id = nx_node_identity(&node);
     snprintf(ble_name, sizeof(ble_name), "NEXUS-%02X%02X",
              id->short_addr.bytes[0], id->short_addr.bytes[1]);
@@ -972,20 +997,33 @@ void loop()
 {
     nx_node_poll(&node, 10);
 
-    /* Check for packets from phone via BLE */
+    /* Bridge BLE-NUS <-> registered NEXUS pipe transport.
+     * Inbound: phone bytes are raw NEXUS packets -> push into the "app"
+     *          side of the pipe so nx_node_poll dispatches them via the
+     *          registered "node" side.
+     * Outbound: drain anything libnexus routed to this transport (its own
+     *           announces, LoRa-bridged announces, session msgs, etc.)
+     *           and forward over BLE-NUS to the phone. */
     if (nx_ble_bridge_connected()) {
         uint8_t ble_buf[NX_MAX_PACKET];
         size_t ble_len = 0;
 
         while (nx_ble_bridge_recv(ble_buf, sizeof(ble_buf), &ble_len) == NX_OK) {
-            /* Check for config magic prefix */
+            /* Config magic stays a side-channel -- never enters the mesh. */
             if (ble_len >= 5 && memcmp(ble_buf, CFG_MAGIC, 4) == 0) {
                 handle_ble_config(&ble_buf[4], ble_len - 4);
-            } else if (ble_len > 4) {
-                /* Normal mesh packet: [dest(4)][data...] */
-                nx_addr_short_t dest;
-                memcpy(dest.bytes, ble_buf, 4);
-                nx_node_send(&node, &dest, &ble_buf[4], ble_len - 4);
+            } else if (ble_len > 0 && ble_pipe_app) {
+                ble_pipe_app->ops->send(ble_pipe_app, ble_buf, ble_len);
+            }
+        }
+
+        if (ble_pipe_app) {
+            uint8_t out_buf[NX_MAX_PACKET];
+            size_t out_len = 0;
+            while (ble_pipe_app->ops->recv(ble_pipe_app, out_buf,
+                                           sizeof(out_buf), &out_len, 0) == NX_OK
+                   && out_len > 0) {
+                nx_ble_bridge_send(out_buf, out_len);
             }
         }
     }

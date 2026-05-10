@@ -65,6 +65,12 @@ static SX1262 *radio_ptr = NULL;
 
 static nx_node_t node;
 static nx_settings_t settings;
+
+/* BLE bridge as a NEXUS pipe transport. See heltec_v3 main.cpp for the
+ * rationale -- required so phone announces flow over LoRa and LoRa
+ * announces from peers reach the connected phone. */
+static nx_transport_t *ble_pipe_node = NULL;
+static nx_transport_t *ble_pipe_app  = NULL;
 static nx_lora_radio_t *g_lora_radio = NULL;
 static char ble_name[20];
 static uint32_t msg_count = 0;
@@ -369,6 +375,19 @@ void setup()
         /* Continue anyway -- BLE is already running */
     }
 
+    /* Register the BLE bridge as a NEXUS pipe transport so phone traffic
+     * flows through libnexus uniformly with LoRa traffic. */
+    ble_pipe_node = nx_pipe_transport_create();
+    ble_pipe_app  = nx_pipe_transport_create();
+    if (ble_pipe_node && ble_pipe_app) {
+        nx_pipe_transport_link(ble_pipe_node, ble_pipe_app);
+        if (nx_transport_register(ble_pipe_node) != NX_OK) {
+            Serial.println("[NEXUS] BLE pipe transport register failed");
+        }
+    } else {
+        Serial.println("[NEXUS] BLE pipe transport alloc failed");
+    }
+
     /* ── LoRa radio (non-fatal -- BLE works without it) ──────────────── */
 
     /*
@@ -468,21 +487,27 @@ void loop()
 {
     nx_node_poll(&node, 10);
 
-    /* Check for packets from phone via BLE */
+    /* Bridge BLE-NUS <-> registered NEXUS pipe transport. See heltec_v3
+     * main.cpp for the full rationale. */
     if (nx_ble_bridge_connected()) {
         uint8_t ble_buf[NX_MAX_PACKET];
         size_t ble_len = 0;
 
         while (nx_ble_bridge_recv(ble_buf, sizeof(ble_buf), &ble_len) == NX_OK) {
-            if (ble_len > 4) {
-                /* Magic CFG_MAGIC dest -> phone-config command, not mesh data */
-                if (memcmp(ble_buf, CFG_MAGIC, 4) == 0) {
-                    handle_ble_config(&ble_buf[4], ble_len - 4);
-                } else {
-                    nx_addr_short_t dest;
-                    memcpy(dest.bytes, ble_buf, 4);
-                    nx_node_send(&node, &dest, &ble_buf[4], ble_len - 4);
-                }
+            if (ble_len >= 5 && memcmp(ble_buf, CFG_MAGIC, 4) == 0) {
+                handle_ble_config(&ble_buf[4], ble_len - 4);
+            } else if (ble_len > 0 && ble_pipe_app) {
+                ble_pipe_app->ops->send(ble_pipe_app, ble_buf, ble_len);
+            }
+        }
+
+        if (ble_pipe_app) {
+            uint8_t out_buf[NX_MAX_PACKET];
+            size_t out_len = 0;
+            while (ble_pipe_app->ops->recv(ble_pipe_app, out_buf,
+                                           sizeof(out_buf), &out_len, 0) == NX_OK
+                   && out_len > 0) {
+                nx_ble_bridge_send(out_buf, out_len);
             }
         }
     }
