@@ -41,6 +41,7 @@ class UsbFlasher(private val context: Context) {
         data class Detected(val drivers: List<UsbSerialDriver>) : State()
         data object Connecting : State()
         data object Syncing : State()
+        data object Erasing : State()
         data class Flashing(val block: Int, val total: Int) : State()
         data object Done : State()
         data class Error(val msg: String) : State()
@@ -104,7 +105,13 @@ class UsbFlasher(private val context: Context) {
      *
      * Caller is responsible for having already obtained USB permission.
      */
-    suspend fun flash(driver: UsbSerialDriver, imageFile: File, offset: Int = 0): Boolean = withContext(Dispatchers.IO) {
+    suspend fun flash(
+        driver: UsbSerialDriver,
+        imageFile: File,
+        offset: Int = 0,
+        eraseFirst: Boolean = false,
+        flashSizeBytes: Int = 8 * 1024 * 1024,
+    ): Boolean = withContext(Dispatchers.IO) {
         val mgr = context.getSystemService(Context.USB_SERVICE) as UsbManager
         val conn = mgr.openDevice(driver.device) ?: run {
             _state.value = State.Error("Could not open USB device")
@@ -141,6 +148,10 @@ class UsbFlasher(private val context: Context) {
                     "RESET manually."
                 )
                 return@withContext false
+            }
+            if (eraseFirst) {
+                _state.value = State.Erasing
+                client.eraseFlash(flashSizeBytes)
             }
             val image = imageFile.readBytes()
             client.writeImage(image, offset = offset) { done, total ->

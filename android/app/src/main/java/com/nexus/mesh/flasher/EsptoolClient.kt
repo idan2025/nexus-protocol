@@ -89,6 +89,29 @@ class EsptoolClient(private val port: UsbSerialPort) {
             ?: throw IOException("FLASH_DATA seq=$sequence: no ack")
     }
 
+    /**
+     * Full chip erase via the ROM bootloader. ROM has no native
+     * ESP_ERASE_FLASH (0xD0) -- that's a stub-only command. Instead we
+     * piggyback on FLASH_BEGIN's region-erase side effect: the ROM
+     * erases the entire [offset, offset+size) range up front before
+     * accepting any FLASH_DATA. By issuing FLASH_BEGIN with
+     * numBlocks=0 over the full flash size and then closing the
+     * (empty) write session with FLASH_END, we get a clean chip erase
+     * without needing to upload a stub binary.
+     *
+     * Takes roughly 5 s / MB on ESP32-S3, so ~40 s for 8 MB. The ROM
+     * only acks the FLASH_BEGIN once erase is finished, hence the
+     * 90 s timeout.
+     */
+    fun eraseFlash(flashSizeBytes: Int = 8 * 1024 * 1024) {
+        Log.i(TAG, "Erasing $flashSizeBytes bytes — this takes ~5 s/MB")
+        val payload = packLeInts(flashSizeBytes, 0, FLASH_BLOCK_SIZE, 0)
+        sendCommand(CMD_FLASH_BEGIN, payload, 0)
+        readResponse(timeoutMs = 90_000, expectedCmd = CMD_FLASH_BEGIN)
+            ?: throw IOException("ERASE_FLASH: no response after 90 s")
+        flashEnd(reboot = false)
+    }
+
     /** Tell the bootloader we're done. flag=0 -> reboot into the new firmware. */
     fun flashEnd(reboot: Boolean = true) {
         sendCommand(CMD_FLASH_END, packLeInts(if (reboot) 0 else 1), 0)

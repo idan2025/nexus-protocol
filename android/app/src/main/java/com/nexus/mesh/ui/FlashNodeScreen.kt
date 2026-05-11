@@ -237,11 +237,19 @@ private fun BoardFlashCard(
                 var preserveSettings by remember(board.id) {
                     mutableStateOf(board.appBinAsset != null)
                 }
+                // Only meaningful when preserveSettings is OFF. A real chip
+                // erase wipes ALL 8 MB (OTA, SPIFFS, unallocated regions)
+                // before the merged image is written — strictly stronger
+                // than the implicit 0xFF fill of a plain full reflash.
+                var eraseFirst by remember(board.id) { mutableStateOf(false) }
                 if (board.appBinAsset != null) {
                     Row(verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         Switch(checked = preserveSettings,
-                               onCheckedChange = { preserveSettings = it })
+                               onCheckedChange = {
+                                   preserveSettings = it
+                                   if (it) eraseFirst = false
+                               })
                         Spacer(Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Preserve settings & identity",
@@ -254,6 +262,26 @@ private fun BoardFlashCard(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                    }
+                    if (!preserveSettings) {
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            Switch(checked = eraseFirst,
+                                   onCheckedChange = { eraseFirst = it })
+                            Spacer(Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Erase entire flash first (factory reset)",
+                                     style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    if (eraseFirst)
+                                        "Full 8 MB chip erase before flashing — wipes OTA + SPIFFS too. Adds ~40 s."
+                                    else
+                                        "Only the regions covered by the merged image are rewritten.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
@@ -279,7 +307,10 @@ private fun BoardFlashCard(
                                 Toast.makeText(ctx, "Download failed", Toast.LENGTH_SHORT).show()
                                 return@launch
                             }
-                            usbFlasher.flash(driver, file, offset = offset)
+                            usbFlasher.flash(
+                                driver, file, offset = offset,
+                                eraseFirst = eraseFirst && !preserveSettings,
+                            )
                         }
                     },
                     modifier = Modifier.fillMaxWidth()
@@ -346,6 +377,8 @@ private fun UsbFlashStatusLine(s: UsbFlasher.State) {
     when (s) {
         is UsbFlasher.State.Connecting -> Text("Connecting...", style = MaterialTheme.typography.bodySmall)
         is UsbFlasher.State.Syncing -> Text("Syncing with ROM bootloader...", style = MaterialTheme.typography.bodySmall)
+        is UsbFlasher.State.Erasing -> Text("Erasing flash (~40 s for 8 MB)...",
+                                            style = MaterialTheme.typography.bodySmall)
         is UsbFlasher.State.Flashing -> {
             LinearProgressIndicator(
                 progress = { s.block.toFloat() / s.total.coerceAtLeast(1) },
