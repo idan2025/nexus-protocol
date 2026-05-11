@@ -65,7 +65,7 @@ fun AnnounceStreamScreen(activity: MainActivity, navController: NavController) {
                         onAddContact = {
                             scope.launch {
                                 service?.repository?.upsertContact(
-                                    ContactEntity(address = ev.addr)
+                                    ContactEntity(address = ev.addr, role = ev.role)
                                 )
                             }
                         },

@@ -932,10 +932,13 @@ class NexusService : Service(), NexusNode.Callback {
         existing.add(Neighbor(addrHex, role))
         _neighbors.value = existing
 
-        // Bump lastSeen on known contacts (don't auto-create).
+        // Bump lastSeen + refresh role on known contacts (don't auto-create).
         scope.launch {
             repository.getContact(addrHex)?.let {
-                repository.upsertContact(it.copy(lastSeen = System.currentTimeMillis()))
+                repository.upsertContact(it.copy(
+                    lastSeen = System.currentTimeMillis(),
+                    role = role
+                ))
             }
         }
 

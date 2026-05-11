@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [
@@ -14,7 +16,7 @@ import androidx.room.RoomDatabase
         GroupEntity::class,
         GroupMemberEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class NexusDatabase : RoomDatabase() {
@@ -27,6 +29,12 @@ abstract class NexusDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: NexusDatabase? = null
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE contacts ADD COLUMN role INTEGER")
+            }
+        }
+
         fun getInstance(context: Context): NexusDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -34,6 +42,7 @@ abstract class NexusDatabase : RoomDatabase() {
                     NexusDatabase::class.java,
                     "nexus_messages.db"
                 )
+                    .addMigrations(MIGRATION_3_4)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

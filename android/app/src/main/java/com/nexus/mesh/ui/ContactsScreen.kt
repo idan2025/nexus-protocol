@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.nexus.mesh.data.ContactEntity
+import com.nexus.mesh.data.ContactRole
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -23,8 +24,11 @@ import java.util.Locale
 @Composable
 fun ContactsScreen(activity: MainActivity, navController: NavController) {
     val service = activity.getService()
-    val contacts by service?.repository?.getContacts()?.collectAsState(initial = emptyList())
+    val allContacts by service?.repository?.getContacts()?.collectAsState(initial = emptyList())
         ?: remember { mutableStateOf(emptyList()) }
+    val contacts = remember(allContacts) {
+        allContacts.filter { ContactRole.isClientVisible(it.role) }
+    }
     val scope = rememberCoroutineScope()
 
     var editing by remember { mutableStateOf<ContactEntity?>(null) }

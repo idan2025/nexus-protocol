@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.nexus.mesh.data.ContactRole
 import com.nexus.mesh.data.ConversationEntity
 import com.nexus.mesh.data.GroupEntity
 import java.text.SimpleDateFormat
@@ -25,8 +26,17 @@ import java.util.*
 @Composable
 fun ChatScreen(activity: MainActivity, navController: NavController) {
     val service = activity.getService()
-    val conversations by service?.getConversations()?.collectAsState(initial = emptyList())
+    val allConversations by service?.getConversations()?.collectAsState(initial = emptyList())
         ?: remember { mutableStateOf(emptyList()) }
+    val contacts by service?.repository?.getContacts()?.collectAsState(initial = emptyList())
+        ?: remember { mutableStateOf(emptyList()) }
+    val conversations = remember(allConversations, contacts) {
+        val infraAddrs = contacts.asSequence()
+            .filter { !ContactRole.isClientVisible(it.role) }
+            .map { it.address }
+            .toHashSet()
+        allConversations.filter { it.peerAddr !in infraAddrs }
+    }
     val groups by service?.getGroups()?.collectAsState(initial = emptyList())
         ?: remember { mutableStateOf(emptyList<GroupEntity>()) }
     val address by service?.address?.collectAsState()

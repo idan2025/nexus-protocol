@@ -11,5 +11,10 @@ data class ContactEntity(
     val signPubkey: String? = null,
     val x25519Pubkey: String? = null,
     val firstSeen: Long = System.currentTimeMillis(),
-    val lastSeen: Long = System.currentTimeMillis()
+    val lastSeen: Long = System.currentTimeMillis(),
+    val role: Int? = null
 )
+
+object ContactRole {
+    fun isClientVisible(role: Int?): Boolean = role == null || role in 0..2
+}
