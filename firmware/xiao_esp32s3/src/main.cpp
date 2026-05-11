@@ -474,6 +474,11 @@ void setup()
     /* Transport registry */
     nx_transport_registry_init();
 
+    /* WIO-SX1262 has a TCXO on DIO3 (1.8 V). The default lora_config ships
+     * tcxo_voltage=0; override here so saved settings from older firmware
+     * also pick up the correct value (mirrors heltec_v3/xiao_nrf52840). */
+    settings.lora_config.tcxo_voltage = 1.8f;
+
     /* LoRa radio via RadioLib HAL.
      * If the WIO-SX1262 expansion isn't attached we still want to come up
      * on BLE so the user can pair the phone -- mirrors heltec_v3/rak4631
