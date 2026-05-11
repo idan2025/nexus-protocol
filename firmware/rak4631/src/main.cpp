@@ -301,7 +301,7 @@ void setup()
 
     Serial.begin(115200);
     delay(2000); /* nRF52 USB serial needs extra time */
-    Serial.println("\n[NEXUS] RAK4631 starting...");
+    Serial.printf("\n[NEXUS] RAK4631 starting v%s\n", NX_VERSION_STRING);
 
     /* Boot stage: BLUE blinks = initializing */
     digitalWrite(LED_GREEN, HIGH);  /* GREEN off */

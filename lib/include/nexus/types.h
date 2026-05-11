@@ -9,10 +9,24 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-/* ── Version ─────────────────────────────────────────────────────────── */
+/* ── Version ─────────────────────────────────────────────────────────── *
+ * Bump alongside android/app/build.gradle versionName. The macro is the
+ * single source of truth for what every node displays on its boot
+ * screen / Serial banner / BLE advertisement; CI is welcome to inject
+ * NX_VERSION_STRING via -D for tagged builds, but the source-tree
+ * value is what unsigned dev builds report. */
 #define NX_VERSION_MAJOR  0
-#define NX_VERSION_MINOR  1
-#define NX_VERSION_PATCH  0
+#define NX_VERSION_MINOR  6
+#define NX_VERSION_PATCH  21
+
+#define NX_STRINGIFY_(x) #x
+#define NX_STRINGIFY(x)  NX_STRINGIFY_(x)
+#ifndef NX_VERSION_STRING
+#define NX_VERSION_STRING \
+    NX_STRINGIFY(NX_VERSION_MAJOR) "." \
+    NX_STRINGIFY(NX_VERSION_MINOR) "." \
+    NX_STRINGIFY(NX_VERSION_PATCH)
+#endif
 
 /* ── Sizes ───────────────────────────────────────────────────────────── */
 #define NX_SHORT_ADDR_SIZE    4

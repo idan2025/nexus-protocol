@@ -462,7 +462,8 @@ void setup()
 
     Serial.begin(115200);
     delay(2000); /* nRF52 USB serial needs extra time */
-    Serial.println("\n[NEXUS] XIAO nRF52840 + WIO-SX1262 starting...");
+    Serial.printf("\n[NEXUS] XIAO nRF52840 + WIO-SX1262 starting v%s\n",
+                  NX_VERSION_STRING);
 
     /* Boot stage 2: BLUE blinks = initializing */
     for (int i = 0; i < 3; i++) {

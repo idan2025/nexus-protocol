@@ -463,7 +463,8 @@ void setup()
 {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("\n[NEXUS] XIAO ESP32S3 + WIO-SX1262 starting...");
+    Serial.printf("\n[NEXUS] XIAO ESP32S3 + WIO-SX1262 starting v%s\n",
+                  NX_VERSION_STRING);
 
     /* GPIO */
     pinMode(LED_PIN, OUTPUT);

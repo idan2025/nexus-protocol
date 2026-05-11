@@ -810,7 +810,7 @@ void setup()
 {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("\n[NEXUS] Heltec V3 starting...");
+    Serial.printf("\n[NEXUS] Heltec V3 starting v%s\n", NX_VERSION_STRING);
 
     /* Power the SX1262 + OLED rail BEFORE talking to either. Active LOW. */
     pinMode(VEXT_PIN, OUTPUT);
@@ -846,11 +846,13 @@ void setup()
         u8x8.setFont(u8x8_font_chroma48medium8_r);
         u8x8.clear();
 
-        /* Splash screen */
+        /* Splash screen. Version pulled from NX_VERSION_STRING so it
+         * stays in sync with android/app/build.gradle versionName --
+         * bump in lib/include/nexus/types.h alongside the Android one. */
         draw_header("NEXUS MESH");
         draw_line(2, "   LoRa + BLE");
         draw_line(3, " E2E Encrypted");
-        draw_line(5, "    v0.1.0");
+        draw_line(5, "    v" NX_VERSION_STRING);
         draw_line(7, " Starting...");
 
         Serial.println("[OLED] OK");
