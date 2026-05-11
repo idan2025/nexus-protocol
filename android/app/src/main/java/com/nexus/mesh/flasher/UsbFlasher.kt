@@ -119,28 +119,22 @@ class UsbFlasher(private val context: Context) {
             port.open(conn)
             // ROM bootloader speaks 115200 8N1.
             port.setParameters(115_200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
-            // Pulse RTS/DTR to put the chip into download mode (Heltec
-            // CP210x has the standard auto-reset wiring; XIAO native
-            // USB-CDC silently no-ops here). Timing stretched because
-            // Samsung's USB stack delays DTR/RTS writes by ~40-80ms
-            // each, which eats the short pulses that work on Pixel.
-            try {
-                port.setDTR(false); port.setRTS(true)
-                Thread.sleep(200)
-                port.setDTR(true);  port.setRTS(false)
-                Thread.sleep(100)
-                port.setDTR(false); port.setRTS(false)
-                Thread.sleep(200)
-            } catch (_: Exception) { /* not all drivers support flow control */ }
 
             val client = EsptoolClient(port)
             _state.value = State.Syncing
-            // If sync fails, the chip is not in the ROM bootloader.
-            // Recovery path: tap "Enter Flash Mode" on the Devices tab
-            // over BLE -- the firmware writes RTC_CNTL_OPTION1 to force
-            // download boot, then resets. After that, plugging USB and
-            // hitting flash again will sync on the first try.
-            if (!client.sync()) {
+            // Pulse RTS/DTR + sync, retrying the whole sequence. A
+            // single reset misses the bootloader window on Samsung /
+            // OnePlus stacks because DTR/RTS writes are coalesced and
+            // delayed; redoing the reset between sync batches is what
+            // real esptool does on connect failure.
+            var synced = false
+            for (attempt in 1..4) {
+                pulseIntoBootloader(port)
+                try { port.purgeHwBuffers(true, true) } catch (_: Exception) {}
+                if (client.sync()) { synced = true; break }
+                Log.w(TAG, "sync attempt $attempt failed, re-resetting")
+            }
+            if (!synced) {
                 _state.value = State.Error(
                     "Sync failed. Tap 'Enter Flash Mode' on the Devices " +
                     "tab over BLE, then retry -- or hold BOOT and tap " +
@@ -152,6 +146,11 @@ class UsbFlasher(private val context: Context) {
             client.writeImage(image, offset = offset) { done, total ->
                 _state.value = State.Flashing(done, total)
             }
+            // The ROM's FLASH_END reboot flag is unreliable on ESP32-S3
+            // -- the chip often stays in the bootloader. Force a real
+            // hardware reset with IO0 held high so it boots into the
+            // freshly-flashed firmware instead of download mode.
+            hardResetIntoFirmware(port)
             _state.value = State.Done
             return@withContext true
         } catch (e: Exception) {
@@ -164,6 +163,46 @@ class UsbFlasher(private val context: Context) {
     }
 
     fun reset() { _state.value = State.Idle }
+
+    /**
+     * Standard ESP32 auto-reset sequence (DTR↔IO0, RTS↔EN through the
+     * inverting transistor pair on the Heltec V3 CP210x):
+     *   1. EN low, IO0 high → assert reset
+     *   2. EN high, IO0 low → release reset with IO0 latched as
+     *      download-mode select
+     *   3. release IO0 → bootloader settles
+     * Sleeps are stretched (200/100/300 ms) because phone USB stacks
+     * delay DTR/RTS writes by 40-80 ms each; the extra margin lets the
+     * CP210x actually latch each transition before the next one.
+     */
+    /**
+     * Force-reboot the chip into the freshly-flashed firmware. EN is
+     * pulsed low while IO0 stays high (DTR=false → CP210x transistor
+     * releases IO0 to its pullup), so the chip exits reset in normal
+     * boot mode rather than download mode. Mirrors esptool's
+     * `--after hard_reset` behaviour.
+     */
+    private fun hardResetIntoFirmware(port: UsbSerialPort) {
+        try {
+            port.setDTR(false); port.setRTS(true)   // EN low (assert reset)
+            Thread.sleep(100)
+            port.setDTR(false); port.setRTS(false)  // EN high → boot firmware
+            Thread.sleep(50)
+        } catch (_: Exception) { /* not all drivers support flow control */ }
+    }
+
+    private fun pulseIntoBootloader(port: UsbSerialPort) {
+        try {
+            port.setDTR(false); port.setRTS(true)
+            Thread.sleep(200)
+            port.setDTR(true);  port.setRTS(false)
+            Thread.sleep(100)
+            port.setDTR(false); port.setRTS(false)
+            // Boot banner + bootloader init takes ~250 ms after reset
+            // release; sync() will drain whatever's left after this.
+            Thread.sleep(300)
+        } catch (_: Exception) { /* not all drivers support flow control */ }
+    }
 
     companion object {
         private const val TAG = "UsbFlasher"

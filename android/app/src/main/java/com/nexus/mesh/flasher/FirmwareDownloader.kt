@@ -75,9 +75,20 @@ class FirmwareDownloader(private val context: Context) {
         cleanStaleTagsExcept(tag)
         val dir = File(firmwareDir(), tag).apply { mkdirs() }
         val out = File(dir, assetName)
+        // Cache hit only if the local file is non-empty AND its size
+        // matches what the release currently advertises. Re-using a
+        // stale cache after a re-upload under the same tag was the
+        // most common "binary already downloaded" trap -- CI sometimes
+        // overwrites release assets without bumping the tag.
         if (out.exists() && out.length() > 0) {
-            _progress.value = Progress.Done(assetName, out)
-            return@withContext out
+            val remoteSize = headSize(tag, assetName)
+            if (remoteSize == null || remoteSize == out.length()) {
+                _progress.value = Progress.Done(assetName, out)
+                return@withContext out
+            }
+            Log.i(TAG, "Cache size mismatch for $assetName " +
+                       "(local=${out.length()}, remote=$remoteSize) — re-downloading")
+            out.delete()
         }
 
         val url = "https://github.com/${BuildConfig.GITHUB_REPO}/releases/download/$tag/$assetName"
@@ -139,6 +150,25 @@ class FirmwareDownloader(private val context: Context) {
 
     /** Wipe every cached firmware image (e.g. on app start). */
     fun cleanAll() = cleanStaleTagsExcept(null)
+
+    /**
+     * HEAD the release asset and return Content-Length, or null on any
+     * failure (network down, redirect chain stripped header, etc.).
+     * Used to invalidate cache hits when CI re-uploaded an asset under
+     * the same tag.
+     */
+    private fun headSize(tag: String, assetName: String): Long? {
+        val url = "https://github.com/${BuildConfig.GITHUB_REPO}/releases/download/$tag/$assetName"
+        val req = Request.Builder().url(url).head().build()
+        return try {
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                resp.header("Content-Length")?.toLongOrNull()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "headSize $assetName failed: $e"); null
+        }
+    }
 
     private fun dirSize(d: File): Long {
         var sum = 0L

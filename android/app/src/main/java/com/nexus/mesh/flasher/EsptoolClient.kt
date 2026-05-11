@@ -26,10 +26,21 @@ class EsptoolClient(private val port: UsbSerialPort) {
      * Send the SYNC command repeatedly. Returns true if the chip
      * responds (it's now in ROM bootloader and ready to accept
      * commands).
+     *
+     * Real esptool retries for several seconds per "connection attempt"
+     * — the ROM boot banner (`ESP-ROM:esp32s3-...`) takes ~100 ms to
+     * print after a reset and the bootloader's own SYNC poll window is
+     * narrow, so a 700 ms cap (the previous default) consistently
+     * missed it on phones where USB writes are delayed by 40-80 ms.
      */
-    fun sync(maxAttempts: Int = 7): Boolean {
-        // Drain any garbage left in the OS buffer before we start.
-        drain()
+    fun sync(maxAttempts: Int = 10): Boolean {
+        // Clear the bootloader's boot banner and any leftover bytes
+        // before sending sync. Two passes: first an aggressive flush
+        // until the pipe is quiet for ~80 ms, then a hw purge if the
+        // driver supports it.
+        drainUntilQuiet(quietMs = 80, hardCapMs = 400)
+        try { port.purgeHwBuffers(true, true) } catch (_: Exception) {}
+
         val syncPayload = ByteArray(4 + 32).apply {
             this[0] = 0x07; this[1] = 0x07; this[2] = 0x12; this[3] = 0x20
             for (i in 4 until size) this[i] = 0x55
@@ -38,10 +49,12 @@ class EsptoolClient(private val port: UsbSerialPort) {
             try {
                 sendCommand(CMD_SYNC, syncPayload, 0)
                 // SYNC responds *eight* times — we only need to see one
-                // valid frame to know it's there.
-                val resp = readResponse(timeoutMs = 100, expectedCmd = CMD_SYNC)
+                // valid frame to know it's there. Give the chip enough
+                // wall-time to actually answer; ROM SYNC ack latency on
+                // Heltec V3 is 50-300 ms cold.
+                val resp = readResponse(timeoutMs = 500, expectedCmd = CMD_SYNC)
                 if (resp != null) {
-                    drain()
+                    drainUntilQuiet(quietMs = 50, hardCapMs = 200)
                     return true
                 }
             } catch (_: Exception) {}
@@ -177,6 +190,26 @@ class EsptoolClient(private val port: UsbSerialPort) {
     private fun drain() {
         val tmp = ByteArray(256)
         try { port.read(tmp, 50) } catch (_: Exception) {}
+    }
+
+    /**
+     * Keep reading until the pipe has been quiet for [quietMs] ms or
+     * we've spent [hardCapMs] ms total. Used to clear the ROM boot
+     * banner before SYNC — a single short read isn't enough on phones
+     * where USB events arrive in bursts.
+     */
+    private fun drainUntilQuiet(quietMs: Int, hardCapMs: Int) {
+        val tmp = ByteArray(512)
+        val hardDeadline = System.currentTimeMillis() + hardCapMs
+        var lastDataAt = System.currentTimeMillis()
+        while (System.currentTimeMillis() < hardDeadline) {
+            val n = try { port.read(tmp, 25) } catch (_: Exception) { 0 }
+            if (n > 0) {
+                lastDataAt = System.currentTimeMillis()
+            } else if (System.currentTimeMillis() - lastDataAt >= quietMs) {
+                return
+            }
+        }
     }
 
     /* ── SLIP encoding ─────────────────────────────────────────────── */

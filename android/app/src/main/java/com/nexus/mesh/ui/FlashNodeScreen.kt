@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.OpenInBrowser
@@ -87,6 +88,23 @@ fun FlashNodeScreen(activity: MainActivity) {
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Spacer(Modifier.height(8.dp))
+                        TextButton(
+                            onClick = {
+                                scope.launch {
+                                    downloader.cleanAll()
+                                    downloader.reset()
+                                    Toast.makeText(ctx,
+                                        "Cached firmware cleared. Re-download to get the latest.",
+                                        Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Clear cached firmware (ESP32 + nRF52)")
+                        }
                     }
                 }
             }
