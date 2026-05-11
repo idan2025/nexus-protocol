@@ -78,6 +78,10 @@ class NexusService : Service(), NexusNode.Callback {
         private const val KEY_PILLARS_ENABLED = "pillars_enabled"
         private const val KEY_PILLARS_ALLOW_METERED = "pillars_allow_metered"
 
+        private const val PREFS_ROLE = "nexus_role"
+        private const val KEY_ROLE = "node_role"
+        const val DEFAULT_ROLE = NexusNode.ROLE_RELAY
+
         // Mesh tick cadence. The poll handles housekeeping; inbound
         // packets arrive via callbacks on each transport, so a fast
         // tick isn't needed for responsiveness. 500ms cycle = 2Hz.
@@ -185,6 +189,9 @@ class NexusService : Service(), NexusNode.Callback {
 
     private val _announceIntervalMs = MutableStateFlow(DEFAULT_ANNOUNCE_INTERVAL_MS)
     val announceIntervalMs: StateFlow<Long> = _announceIntervalMs
+
+    private val _role = MutableStateFlow(DEFAULT_ROLE)
+    val role: StateFlow<Int> = _role
 
     /** Name of the device exposing a LoRa radio over BLE-NUS, if any.
      *  Set by [setBleBridge] from MainActivity when the BLE-bridge connects.
@@ -580,11 +587,14 @@ class NexusService : Service(), NexusNode.Callback {
 
         val savedBytes = encPrefs.getString(KEY_IDENTITY, null)
 
+        loadRole()
+        val startRole = _role.value
+
         val ok = if (savedBytes != null) {
             val bytes = android.util.Base64.decode(savedBytes, android.util.Base64.DEFAULT)
-            node.initWithIdentity(NexusNode.ROLE_RELAY, bytes, this)
+            node.initWithIdentity(startRole, bytes, this)
         } else {
-            node.init(NexusNode.ROLE_RELAY, this)
+            node.init(startRole, this)
         }
 
         if (!ok) {
@@ -1609,6 +1619,20 @@ class NexusService : Service(), NexusNode.Callback {
     private fun loadMyName() {
         val prefs = getSharedPreferences(PREFS_NICKNAMES, Context.MODE_PRIVATE)
         _myName.value = prefs.getString(KEY_MY_NAME, "") ?: ""
+    }
+
+    /** Persist node role. Applies on next service start — the underlying
+     *  C node is created with the role at init, so changing it at runtime
+     *  would require tearing the node down and rebuilding it. */
+    fun setRole(role: Int) {
+        _role.value = role
+        getSharedPreferences(PREFS_ROLE, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_ROLE, role).apply()
+    }
+
+    private fun loadRole() {
+        val prefs = getSharedPreferences(PREFS_ROLE, Context.MODE_PRIVATE)
+        _role.value = prefs.getInt(KEY_ROLE, DEFAULT_ROLE)
     }
 
     // --- Helpers ---

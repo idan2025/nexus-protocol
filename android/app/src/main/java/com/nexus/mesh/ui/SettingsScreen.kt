@@ -42,6 +42,9 @@ fun SettingsScreen(
     val announceIntervalMs by service?.announceIntervalMs?.collectAsState()
         ?: remember { mutableStateOf(com.nexus.mesh.service.NexusService.DEFAULT_ANNOUNCE_INTERVAL_MS) }
     var showAnnouncePicker by remember { mutableStateOf(false) }
+    val currentRole by service?.role?.collectAsState()
+        ?: remember { mutableStateOf(com.nexus.mesh.service.NexusService.DEFAULT_ROLE) }
+    var showRolePicker by remember { mutableStateOf(false) }
 
     val tcpConfig = service?.getTcpConfig()
     var tcpPort by remember { mutableStateOf(tcpConfig?.first?.toString() ?: "4242") }
@@ -204,6 +207,27 @@ fun SettingsScreen(
                         label = "Auto-announce every",
                         value = formatAnnounceInterval(announceIntervalMs)
                     ) { showAnnouncePicker = true }
+                }
+            }
+
+            // Node Role -- LEAF/RELAY/GATEWAY. Heavier roles (Anchor, Vault,
+            // Pillar) are designed for always-on infra and aren't exposed
+            // here; pick them in the daemon config instead.
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Node Role", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "How this device participates in the mesh. Change takes " +
+                        "effect on next app start (Stop Mesh & Quit, then reopen).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    SettingsRow(
+                        label = "Role",
+                        value = roleLabel(currentRole)
+                    ) { showRolePicker = true }
                 }
             }
 
@@ -694,7 +718,29 @@ fun SettingsScreen(
             onDismiss = { showAnnouncePicker = false }
         )
     }
+
+    if (showRolePicker) {
+        ListPickerDialog(
+            title = "Node Role",
+            items = ROLE_OPTIONS.map { it.first },
+            onSelect = { idx ->
+                service?.setRole(ROLE_OPTIONS[idx].second)
+                showRolePicker = false
+            },
+            onDismiss = { showRolePicker = false }
+        )
+    }
 }
+
+private val ROLE_OPTIONS: List<Pair<String, Int>> = listOf(
+    "Leaf — endpoint only, never forwards"             to com.nexus.mesh.service.NexusNode.ROLE_LEAF,
+    "Relay — forwards + small store-and-forward"       to com.nexus.mesh.service.NexusNode.ROLE_RELAY,
+    "Gateway — bridges across transports"              to com.nexus.mesh.service.NexusNode.ROLE_GATEWAY,
+)
+
+private fun roleLabel(role: Int): String =
+    ROLE_OPTIONS.firstOrNull { it.second == role }?.first
+        ?: "Role $role"
 
 private val ANNOUNCE_INTERVAL_OPTIONS: List<Pair<String, Long>> = listOf(
     "Off (manual only)" to 0L,
