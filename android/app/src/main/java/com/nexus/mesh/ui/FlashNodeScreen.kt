@@ -230,6 +230,33 @@ private fun BoardFlashCard(
 
             // ESP32 boards: USB-OTG flash
             if (board.hasUsbFlash) {
+                // Default ON: write only the app partition at 0x10000, leaving
+                // bootloader/partitions/NVS intact. The merged image at 0x0
+                // wipes NVS and is only needed for first-time provisioning or
+                // recovery, so it's the explicit opt-out.
+                var preserveSettings by remember(board.id) {
+                    mutableStateOf(board.appBinAsset != null)
+                }
+                if (board.appBinAsset != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        Switch(checked = preserveSettings,
+                               onCheckedChange = { preserveSettings = it })
+                        Spacer(Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Preserve settings & identity",
+                                 style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                if (preserveSettings)
+                                    "App-only update at 0x10000 — saved radio config + identity kept."
+                                else
+                                    "Full reflash at 0x0 — bootloader+partitions overwritten, NVS wiped.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
                 OutlinedButton(
                     onClick = {
                         scope.launch {
@@ -244,19 +271,24 @@ private fun BoardFlashCard(
                                 return@launch
                             }
                             val t = tag ?: return@launch
-                            val asset = board.webflashAsset ?: return@launch
+                            val useAppOnly = preserveSettings && board.appBinAsset != null
+                            val asset = if (useAppOnly) board.appBinAsset!!
+                                        else board.webflashAsset ?: return@launch
+                            val offset = if (useAppOnly) 0x10000 else 0
                             val file = downloader.fetch(t, asset) ?: run {
                                 Toast.makeText(ctx, "Download failed", Toast.LENGTH_SHORT).show()
                                 return@launch
                             }
-                            usbFlasher.flash(driver, file, offset = 0)
+                            usbFlasher.flash(driver, file, offset = offset)
                         }
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(Icons.Default.Usb, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("Flash via USB OTG cable")
+                    Text(if (preserveSettings && board.appBinAsset != null)
+                            "Update firmware (keep settings)"
+                         else "Full reflash (wipes settings)")
                 }
                 UsbFlashStatusLine(usbState)
             }

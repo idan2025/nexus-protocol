@@ -15,7 +15,11 @@ data class BoardSpec(
     val mcu: String,
     val hasUsbFlash: Boolean,  // ESP32 family -> USB-OTG flashable
     val hasBleDfu: Boolean,    // nRF52 family -> Nordic DFU flashable
+    /** Full merged image (bootloader+partitions+app) flashed at 0x0. Wipes NVS. */
     val webflashAsset: String? = null,
+    /** App-only image flashed at 0x10000. Preserves bootloader/partitions/NVS
+     *  so saved radio config + identity survive the update. ESP32 only. */
+    val appBinAsset: String? = null,
     val uf2Asset: String? = null,
     val dfuZipAsset: String? = null,
     /** Short summary shown on the card. */
@@ -31,6 +35,7 @@ object FirmwareCatalog {
             hasUsbFlash   = true,
             hasBleDfu     = false,
             webflashAsset = "nexus-heltec_v3-webflash.bin",
+            appBinAsset   = "nexus-heltec_v3.bin",
             tagline       = "OLED display, integrated USB-UART (CP210x)."
         ),
         BoardSpec(
@@ -40,6 +45,7 @@ object FirmwareCatalog {
             hasUsbFlash   = true,
             hasBleDfu     = false,
             webflashAsset = "nexus-xiao_esp32s3-webflash.bin",
+            appBinAsset   = "nexus-xiao_esp32s3.bin",
             tagline       = "Headless. Native USB-Serial-JTAG (experimental)."
         ),
         BoardSpec(
