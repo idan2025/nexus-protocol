@@ -22,6 +22,20 @@ extern "C" {
   #define NX_ISR_ATTR
 #endif
 
+/* Verbose LoRa logging: when set, every TX/RX event is printed to
+ * Serial so "no comms" symptoms can be diagnosed without a logic
+ * analyzer. Leave on for the v0.6.x debug builds; gate off for v0.7.0
+ * release builds via -DNX_LORA_VERBOSE=0. */
+#ifndef NX_LORA_VERBOSE
+#define NX_LORA_VERBOSE 1
+#endif
+
+#if NX_LORA_VERBOSE
+  #define LORA_LOG(...) do { Serial.printf("[LORA] " __VA_ARGS__); } while (0)
+#else
+  #define LORA_LOG(...) do {} while (0)
+#endif
+
 /* ── Internal state ───────────────────────────────────────────────────── */
 
 typedef struct {
@@ -98,17 +112,40 @@ static nx_err_t rl_init(nx_lora_radio_t *radio, const nx_lora_config_t *config)
         rl->explicitHeader();
     }
 
-    /* Interrupt-driven RX: wire DIO1 -> ISR, arm continuous receive. */
+    /* Interrupt-driven RX: wire DIO1 -> ISR, arm continuous receive.
+     * The same ISR also fires on TX-done -- rl_transmit() uses the
+     * s_rx_flag as a generic "DIO1 fired" signal and re-arms RX
+     * afterwards. */
     rl->setPacketReceivedAction(rl_dio1_isr);
     rl_arm_rx(rl);
 
     memcpy(&radio->config, config, sizeof(nx_lora_config_t));
     radio->state = NX_RADIO_RX;
+    LORA_LOG("init OK freq=%.3fMHz bw=%.1fkHz sf=%u cr=%u sw=0x%02X "
+             "pwr=%ddBm pre=%u tcxo=%.2fV\n",
+             freq, bw, (unsigned)sf, (unsigned)cr, (unsigned)sw,
+             (int)power, (unsigned)pre, tcxo);
     return NX_OK;
 }
 
-/* ── HAL: transmit ────────────────────────────────────────────────────── */
-
+/* ── HAL: transmit ──────────────────────────────────────────────────────
+ *
+ * Async, cooperative TX. Previously this used RadioLib's synchronous
+ * transmit() which blocks the core for the full airtime (~350 ms at
+ * SF9). On ESP32-S3 + NimBLE that holds the core long enough for BLE
+ * GATT writes to time out, and on long packets risks the task
+ * watchdog. The new flow:
+ *   1. Park the radio in standby (SX1262 can't TX while RX is armed).
+ *   2. startTransmit() arms the radio asynchronously.
+ *   3. Yield while polling DIO1 (s_rx_flag is reused as a generic
+ *      "DIO1 fired" signal -- TX-done uses the same line).
+ *   4. finishTransmit() reads the result code.
+ *   5. Re-arm RX so the next packet from a peer doesn't get missed.
+ *
+ * Transient errors (-706 TCXO timeout, -16 invalid parameter) get a
+ * single retry with a short backoff -- a single packet loss used to
+ * silently drop the announce / RREQ on the floor.
+ */
 static nx_err_t rl_transmit(nx_lora_radio_t *radio,
                              const uint8_t *data, size_t len)
 {
@@ -121,9 +158,54 @@ static nx_err_t rl_transmit(nx_lora_radio_t *radio,
     }
 
     radio->state = NX_RADIO_TX;
-    int state = rl->transmit((uint8_t *)data, len);
+    int state = RADIOLIB_ERR_NONE;
 
-    /* Re-arm RX regardless of TX result. */
+    for (int attempt = 0; attempt < 2; attempt++) {
+        uint32_t t0 = millis();
+
+        /* Clear the DIO1 flag and arm async TX. */
+        s_rx_flag = false;
+        state = rl->startTransmit((uint8_t *)data, len);
+        if (state != RADIOLIB_ERR_NONE) {
+            LORA_LOG("TX startTransmit err=%d (attempt %d)\n", state, attempt + 1);
+            if (attempt + 1 < 2) {
+                nx_platform_sleep_ms(20);
+                continue;
+            }
+            break;
+        }
+
+        /* Poll DIO1 for TX-done. Cap the wait at twice the calculated
+         * airtime plus a fixed slack -- if DIO1 never fires we don't
+         * want to wedge the loop forever. */
+        uint32_t airtime = nx_lora_airtime_ms(&radio->config, len);
+        uint32_t budget = airtime * 2 + 200;
+        while (!s_rx_flag) {
+            if (millis() - t0 > budget) {
+                LORA_LOG("TX timeout after %lu ms (budget=%lu, len=%zu)\n",
+                         (unsigned long)(millis() - t0),
+                         (unsigned long)budget, len);
+                state = RADIOLIB_ERR_TX_TIMEOUT;
+                break;
+            }
+            yield();
+            nx_platform_sleep_ms(1);
+        }
+
+        if (state == RADIOLIB_ERR_NONE) {
+            state = rl->finishTransmit();
+            LORA_LOG("TX seq ok len=%zu took=%lums err=%d\n",
+                     len, (unsigned long)(millis() - t0), state);
+            if (state == RADIOLIB_ERR_NONE) break;
+        }
+
+        if (attempt + 1 < 2) {
+            nx_platform_sleep_ms(20);
+            LORA_LOG("TX retry\n");
+        }
+    }
+
+    /* Re-arm RX regardless of final TX result. */
     rl_arm_rx(rl);
     radio->state = NX_RADIO_RX;
 
@@ -173,9 +255,12 @@ static nx_err_t rl_receive(nx_lora_radio_t *radio,
             rx_info->snr = (int8_t)rl->getSNR();
             rx_info->freq_error = (uint32_t)rl->getFrequencyError();
         }
+        LORA_LOG("RX len=%zu rssi=%d snr=%d\n",
+                 plen, (int)rl->getRSSI(), (int)rl->getSNR());
         return NX_OK;
     }
 
+    LORA_LOG("RX readData err=%d (plen=%zu)\n", state, plen);
     *out_len = 0;
     return NX_ERR_IO;
 }

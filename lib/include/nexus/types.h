@@ -44,6 +44,7 @@ typedef enum {
     NX_ERR_FULL           = -9,
     NX_ERR_ALREADY_EXISTS = -10,
     NX_ERR_IO             = -11,
+    NX_ERR_BUSY           = -12,  /* Temporarily unavailable (CAD busy, etc.) */
 } nx_err_t;
 
 /* ── Node Roles ──────────────────────────────────────────────────────── */

@@ -23,8 +23,18 @@
 #define LORA_BACKOFF_MIN_MS   20
 #define LORA_BACKOFF_MAX_MS  200
 
-/* Duty cycle: max fraction of time transmitting (1% = 100) */
-#define LORA_DUTY_CYCLE_DENOM 100
+/* Duty cycle, expressed as percent of the 60 s window allowed for TX.
+ * 0 disables the gate entirely -- correct for US915, AU915, KR920 and
+ * other regions that limit dwell time per channel rather than aggregate
+ * airtime. Override at compile time for EU868 (-DNX_LORA_DUTY_CYCLE_PCT=1)
+ * or other duty-cycle regions.
+ *
+ * Previously hardcoded to 1% which silently throttled to ~1 announce per
+ * minute at SF9/BW250 everywhere -- a major contributor to "no neighbors
+ * visible" on default-config boards. */
+#ifndef NX_LORA_DUTY_CYCLE_PCT
+#define NX_LORA_DUTY_CYCLE_PCT 0
+#endif
 
 typedef struct {
     nx_lora_radio_t *radio;
@@ -44,13 +54,11 @@ static uint32_t random_backoff_ms(void)
     return LORA_BACKOFF_MIN_MS + (r % range);
 }
 
-/* Busy-wait for ms (no OS sleep on bare-metal) */
+/* Cooperative sleep -- platform layer yields to the scheduler so BLE
+ * and other tasks keep running during CAD backoff. */
 static void delay_ms(uint32_t ms)
 {
-    uint64_t start = nx_platform_time_ms();
-    while (nx_platform_time_ms() - start < ms) {
-        /* spin */
-    }
+    nx_platform_sleep_ms(ms);
 }
 
 /* ── Duty Cycle ──────────────────────────────────────────────────────── */
@@ -59,6 +67,7 @@ static void delay_ms(uint32_t ms)
 
 static bool duty_cycle_ok(lora_state_t *s, uint32_t airtime_ms)
 {
+#if NX_LORA_DUTY_CYCLE_PCT > 0
     uint64_t now = nx_platform_time_ms();
 
     /* Reset window if expired */
@@ -67,8 +76,14 @@ static bool duty_cycle_ok(lora_state_t *s, uint32_t airtime_ms)
         s->tx_airtime_sum_ms = 0;
     }
 
-    uint64_t max_airtime = DUTY_WINDOW_MS / LORA_DUTY_CYCLE_DENOM;
+    /* max_airtime = window * pct / 100 */
+    uint64_t max_airtime =
+        ((uint64_t)DUTY_WINDOW_MS * NX_LORA_DUTY_CYCLE_PCT) / 100u;
     return (s->tx_airtime_sum_ms + airtime_ms) <= max_airtime;
+#else
+    (void)s; (void)airtime_ms;
+    return true;
+#endif
 }
 
 /* ── Airtime Calculation ─────────────────────────────────────────────── */
@@ -136,20 +151,24 @@ static nx_err_t lora_send(nx_transport_t *t, const uint8_t *data, size_t len)
     uint32_t airtime = nx_lora_airtime_ms(&s->radio->config, len);
     if (!duty_cycle_ok(s, airtime)) return NX_ERR_FULL;
 
-    /* CAD-based collision avoidance */
-    for (int retry = 0; retry < LORA_MAX_CAD_RETRIES; retry++) {
-        if (s->radio->ops->cad) {
+    /* CAD-based collision avoidance. If the channel reports busy on
+     * every retry we now return NX_ERR_BUSY instead of transmitting
+     * into the collision -- the caller (announce / route) can drop or
+     * defer to the next tick. */
+    if (s->radio->ops->cad) {
+        bool channel_clear = false;
+        for (int retry = 0; retry < LORA_MAX_CAD_RETRIES; retry++) {
             bool activity = false;
             nx_err_t err = s->radio->ops->cad(s->radio, &activity);
             if (err != NX_OK) return err;
-            if (activity) {
-                /* Channel busy -- random backoff */
-                delay_ms(random_backoff_ms());
-                continue;
+            if (!activity) {
+                channel_clear = true;
+                break;
             }
+            /* Channel busy -- random backoff and retry */
+            delay_ms(random_backoff_ms());
         }
-        /* Channel clear -- transmit */
-        break;
+        if (!channel_clear) return NX_ERR_BUSY;
     }
 
     nx_err_t err = s->radio->ops->transmit(s->radio, data, len);

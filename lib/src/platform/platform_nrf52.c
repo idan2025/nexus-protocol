@@ -38,6 +38,14 @@ uint64_t nx_platform_time_ms(void)
     return (uint64_t)k_uptime_get();
 }
 
+/* ── Cooperative Sleep ───────────────────────────────────────────────── */
+
+void nx_platform_sleep_ms(uint32_t ms)
+{
+    /* k_msleep yields to the Zephyr scheduler so other threads run. */
+    k_msleep((int32_t)ms);
+}
+
 /* ── Memory ──────────────────────────────────────────────────────────── */
 
 /* Use static pool to avoid heap fragmentation on constrained MCU.

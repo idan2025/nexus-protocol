@@ -549,7 +549,12 @@ nx_err_t nx_node_poll(nx_node_t *node, uint32_t poll_timeout_ms)
         }
     }
 
-    /* Periodic beacon */
+    /* Periodic beacon. Firmware mains call nx_node_announce() once
+     * directly after node init so peers see the device within ~1 s of
+     * boot; here we just maintain the steady-state cadence. (Issuing
+     * the boot announce inside the periodic tick would change behaviour
+     * for the integration test harness, which doesn't expect any TX
+     * on the very first poll.) */
     if (now - node->route_table.last_beacon_ms >=
         node->config.beacon_interval_ms) {
         nx_node_announce(node);

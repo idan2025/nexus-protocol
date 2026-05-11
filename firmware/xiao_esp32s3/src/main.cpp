@@ -12,6 +12,7 @@
  * - BOOT button: short press = announce, long hold = deep sleep
  */
 #include <Arduino.h>
+#include <SPI.h>
 #include <RadioLib.h>
 #include <esp_sleep.h>
 #include <soc/rtc_cntl_reg.h>
@@ -51,6 +52,15 @@ extern "C" {
 #define LORA_RST    1   /* D0 = GPIO1 */
 #define LORA_BUSY   2   /* D1 = GPIO2 */
 
+/* WIO-SX1262 SPI pins per the schematic. The board variant's "default
+ * SPI" generally maps to these, but we call SPI.begin() with explicit
+ * pins anyway -- the Heltec V3 firmware ran into silent init failures
+ * when relying on framework defaults, and the cost of being explicit
+ * is one extra line. */
+#define LORA_SCK    7   /* D8  = GPIO7  */
+#define LORA_MISO   8   /* D9  = GPIO8  */
+#define LORA_MOSI   9   /* D10 = GPIO9  */
+
 /* XIAO ESP32S3 built-in LED (active LOW on most variants) */
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 21
@@ -62,7 +72,11 @@ extern "C" {
 
 /* -- Globals ------------------------------------------------------------- */
 
-SX1262 radio = new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
+/* RadioLib SX1262 is constructed inside setup() (after SPI.begin and
+ * Serial are up) so any first-touch issue surfaces in a serial log,
+ * matching the safer pattern used by heltec_v3 / xiao_nrf52840 / rak4631.
+ * Previously a global ctor here ran before Arduino framework was ready. */
+static SX1262 *radio_ptr = nullptr;
 
 static nx_node_t node;
 static nx_identity_t stored_identity;
@@ -479,13 +493,25 @@ void setup()
      * also pick up the correct value (mirrors heltec_v3/xiao_nrf52840). */
     settings.lora_config.tcxo_voltage = 1.8f;
 
+    /* Bring up SPI on the WIO-SX1262 pins explicitly before constructing
+     * the radio. Heltec V3 ran into silent init failures when relying on
+     * the framework's default SPI pin map; doing it explicitly here costs
+     * one line and removes one whole class of "no comms" mystery. */
+    SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);
+
+    /* Construct the RadioLib SX1262 here (NOT as a global) so SPI is up
+     * and Serial is available before any RadioLib call runs. */
+    static Module lora_module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY);
+    static SX1262 lora_radio_obj(&lora_module);
+    radio_ptr = &lora_radio_obj;
+
     /* LoRa radio via RadioLib HAL.
      * If the WIO-SX1262 expansion isn't attached we still want to come up
      * on BLE so the user can pair the phone -- mirrors heltec_v3/rak4631
      * behaviour. Previously we infinite-blinked here, which presented as
      * "the device doesn't boot". */
     bool lora_ok = false;
-    g_lora_radio = nx_radiolib_create(&radio);
+    g_lora_radio = nx_radiolib_create(radio_ptr);
     if (!g_lora_radio || g_lora_radio->ops->init(g_lora_radio, &settings.lora_config) != NX_OK) {
         Serial.println("[NEXUS] LoRa radio init failed -- continuing BLE-only");
         Serial.println("[NEXUS] Check WIO-SX1262 expansion board connection");

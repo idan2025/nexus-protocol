@@ -45,6 +45,16 @@ uint64_t nx_platform_time_ms(void)
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
+/* ── Cooperative Sleep ───────────────────────────────────────────────── */
+
+void nx_platform_sleep_ms(uint32_t ms)
+{
+    struct timespec ts;
+    ts.tv_sec  = ms / 1000;
+    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+}
+
 /* ── Memory ──────────────────────────────────────────────────────────── */
 
 void *nx_platform_alloc(size_t size)

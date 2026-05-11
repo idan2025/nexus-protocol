@@ -36,6 +36,14 @@ uint64_t nx_platform_time_ms(void)
     return (uint64_t)xTaskGetTickCount() * portTICK_PERIOD_MS;
 }
 
+/* ── Cooperative Sleep ───────────────────────────────────────────────── */
+
+void nx_platform_sleep_ms(uint32_t ms)
+{
+    /* vTaskDelay yields to the scheduler so BLE / WiFi tasks keep running. */
+    vTaskDelay(pdMS_TO_TICKS(ms));
+}
+
 /* ── Memory ──────────────────────────────────────────────────────────── */
 
 void *nx_platform_alloc(size_t size)

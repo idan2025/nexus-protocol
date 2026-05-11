@@ -48,6 +48,15 @@ uint64_t nx_platform_time_ms(void)
     return (uint64_t)millis();
 }
 
+/* ── Cooperative Sleep ───────────────────────────────────────────────── */
+
+void nx_platform_sleep_ms(uint32_t ms)
+{
+    /* Adafruit nRF52 BSP runs FreeRTOS underneath -- Arduino's delay()
+     * calls vTaskDelay so BLE and other tasks keep ticking. */
+    delay(ms);
+}
+
 /* ── Memory ──────────────────────────────────────────────────────────── */
 
 void *nx_platform_alloc(size_t size)

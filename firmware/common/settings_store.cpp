@@ -35,7 +35,10 @@ nx_err_t nx_settings_load(nx_settings_t *settings)
     cfg_prefs.getBytes(NVS_KEY, settings, sizeof(nx_settings_t));
     cfg_prefs.end();
 
-    if (settings->magic != NX_SETTINGS_MAGIC) {
+    if (settings->magic != NX_SETTINGS_MAGIC ||
+        settings->version != NX_SETTINGS_VERSION) {
+        /* Stale layout from previous firmware -- discard and fall back
+         * to defaults. The caller (main.cpp) saves defaults afterwards. */
         return NX_ERR_NOT_FOUND;
     }
 
@@ -96,7 +99,11 @@ nx_err_t nx_settings_load(nx_settings_t *settings)
     size_t rd = f.read(settings, sizeof(nx_settings_t));
     f.close();
 
-    if (rd != sizeof(nx_settings_t) || settings->magic != NX_SETTINGS_MAGIC) {
+    if (rd != sizeof(nx_settings_t) ||
+        settings->magic != NX_SETTINGS_MAGIC ||
+        settings->version != NX_SETTINGS_VERSION) {
+        /* Stale layout from previous firmware -- discard and fall back
+         * to defaults. */
         return NX_ERR_NOT_FOUND;
     }
 
