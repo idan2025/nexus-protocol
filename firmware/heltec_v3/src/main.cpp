@@ -1015,6 +1015,17 @@ void loop()
 {
     nx_node_poll(&node, 10);
 
+    /* Rising-edge BLE connect: announce immediately so the phone sees us
+     * (and via the pipe→LoRa bridge, so does every LoRa peer) without
+     * waiting up to a full beacon_interval_ms. */
+    static bool ble_was_connected = false;
+    bool ble_now_connected = nx_ble_bridge_connected();
+    if (ble_now_connected && !ble_was_connected) {
+        Serial.println("[NEXUS] BLE client connected -- announcing");
+        nx_node_announce(&node);
+    }
+    ble_was_connected = ble_now_connected;
+
     /* Bridge BLE-NUS <-> registered NEXUS pipe transport.
      * Inbound: phone bytes are raw NEXUS packets -> push into the "app"
      *          side of the pipe so nx_node_poll dispatches them via the
@@ -1022,7 +1033,7 @@ void loop()
      * Outbound: drain anything libnexus routed to this transport (its own
      *           announces, LoRa-bridged announces, session msgs, etc.)
      *           and forward over BLE-NUS to the phone. */
-    if (nx_ble_bridge_connected()) {
+    if (ble_now_connected) {
         uint8_t ble_buf[NX_MAX_PACKET];
         size_t ble_len = 0;
 

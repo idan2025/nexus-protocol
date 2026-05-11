@@ -729,9 +729,20 @@ void loop()
 {
     nx_node_poll(&node, 10);
 
+    /* Rising-edge BLE connect: announce immediately so the phone sees us
+     * (and via pipe→LoRa, every LoRa peer) without waiting a full
+     * beacon_interval_ms. */
+    static bool ble_was_connected = false;
+    bool ble_now_connected = nx_ble_bridge_connected();
+    if (ble_now_connected && !ble_was_connected) {
+        Serial.println("[NEXUS] BLE client connected -- announcing");
+        nx_node_announce(&node);
+    }
+    ble_was_connected = ble_now_connected;
+
     /* Bridge BLE-NUS <-> registered NEXUS pipe transport. See heltec_v3
      * main.cpp for the full rationale. */
-    if (nx_ble_bridge_connected()) {
+    if (ble_now_connected) {
         uint8_t ble_buf[NX_MAX_PACKET];
         size_t ble_len = 0;
 

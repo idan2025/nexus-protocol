@@ -295,8 +295,17 @@ class NexusService : Service(), NexusNode.Callback {
      *  disconnected. Surfaces as a "LoRa (BLE)" row in the Interfaces card. */
     fun setBleBridge(name: String?) {
         if (bleBridgeName == name) return
+        val justConnected = bleBridgeName == null && name != null
         bleBridgeName = name
         rebuildNetworkState()
+        /* Rising-edge BLE connect: announce immediately so the firmware
+         * (and every LoRa peer it bridges to) sees us without waiting up
+         * to a full announce interval. Mirrors the firmware-side
+         * rising-edge announce. */
+        if (justConnected && node.isRunning) {
+            Log.i(TAG, "BLE bridge connected ($name) -- announcing")
+            node.announce()
+        }
     }
 
     private fun registerUsbReceiver() {
