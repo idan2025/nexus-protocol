@@ -17,7 +17,7 @@
  * value is what unsigned dev builds report. */
 #define NX_VERSION_MAJOR  0
 #define NX_VERSION_MINOR  6
-#define NX_VERSION_PATCH  22
+#define NX_VERSION_PATCH  23
 
 #define NX_STRINGIFY_(x) #x
 #define NX_STRINGIFY(x)  NX_STRINGIFY_(x)

@@ -191,8 +191,9 @@ private fun BoardFlashCard(
             if (primaryAsset != null) {
                 Button(
                     onClick = {
-                        tag?.let { t ->
-                            scope.launch { downloader.fetch(t, primaryAsset) }
+                        scope.launch {
+                            val t = downloader.latestTag() ?: tag ?: return@launch
+                            downloader.fetch(t, primaryAsset)
                         }
                     },
                     enabled = tag != null,
@@ -298,7 +299,12 @@ private fun BoardFlashCard(
                                 Toast.makeText(ctx, "USB permission denied", Toast.LENGTH_SHORT).show()
                                 return@launch
                             }
-                            val t = tag ?: return@launch
+                            /* Always re-resolve the latest tag at flash time --
+                             * the screen's LaunchedEffect captures the tag once on
+                             * open, so a release published after the screen was
+                             * opened would otherwise re-download the OLD bin under
+                             * its OLD tag dir. */
+                            val t = downloader.latestTag() ?: tag ?: return@launch
                             val useAppOnly = preserveSettings && board.appBinAsset != null
                             val asset = if (useAppOnly) board.appBinAsset!!
                                         else board.webflashAsset ?: return@launch
@@ -335,9 +341,12 @@ private fun BoardFlashCard(
                                 Toast.LENGTH_LONG).show()
                             return@onClick
                         }
-                        val t = tag ?: return@onClick
                         val asset = board.dfuZipAsset ?: return@onClick
                         scope.launch {
+                            /* Same rationale as the USB path: refresh the tag at
+                             * flash time so a freshly published release doesn't
+                             * get missed by a long-open screen. */
+                            val t = downloader.latestTag() ?: tag ?: return@launch
                             val zip = downloader.fetch(t, asset) ?: run {
                                 Toast.makeText(ctx, "DFU zip not found in release",
                                     Toast.LENGTH_LONG).show()
