@@ -152,6 +152,29 @@ class UsbFlasher(private val context: Context) {
             if (eraseFirst) {
                 _state.value = State.Erasing
                 client.eraseFlash(flashSizeBytes)
+                // After our stub-less erase trick (FLASH_BEGIN with
+                // numBlocks=0 + FLASH_END) the ROM is in a non-standard
+                // state -- a follow-up FLASH_BEGIN from writeImage()
+                // never gets acked. Hard-reset back into the bootloader
+                // and re-sync so the actual write starts from a clean
+                // download-mode state.
+                _state.value = State.Syncing
+                var resynced = false
+                for (attempt in 1..4) {
+                    pulseIntoBootloader(port)
+                    try { port.purgeHwBuffers(true, true) } catch (_: Exception) {}
+                    if (client.sync()) { resynced = true; break }
+                    Log.w(TAG, "post-erase sync attempt $attempt failed, re-resetting")
+                }
+                if (!resynced) {
+                    _state.value = State.Error(
+                        "Erase succeeded but post-erase sync failed. " +
+                        "Tap 'Enter Flash Mode' over BLE (if still " +
+                        "possible) or BOOT+RESET manually, then retry " +
+                        "without the erase toggle."
+                    )
+                    return@withContext false
+                }
             }
             val image = imageFile.readBytes()
             client.writeImage(image, offset = offset) { done, total ->

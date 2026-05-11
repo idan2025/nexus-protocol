@@ -71,7 +71,10 @@ class EsptoolClient(private val port: UsbSerialPort) {
         // ESP32-S3 ROM uses the 16-byte FLASH_BEGIN form (no encrypted flag).
         val payload = packLeInts(size, numBlocks, blockSize, offset)
         sendCommand(CMD_FLASH_BEGIN, payload, 0)
-        readResponse(timeoutMs = 30_000, expectedCmd = CMD_FLASH_BEGIN)
+        // ROM erases the target region up front before acking. esptool
+        // budgets ~30 s per MB; we want a comfortable margin so flash
+        // chips on the slow end of the spec sheet don't get rejected.
+        readResponse(timeoutMs = 60_000, expectedCmd = CMD_FLASH_BEGIN)
             ?: throw IOException("FLASH_BEGIN: no response (chip in download mode?)")
     }
 
