@@ -39,7 +39,9 @@ enum class NxmFieldType(val value: Int) {
     CODEC(0x11),
     SIGNATURE(0x12),
     TITLE(0x13),
-    STAMP(0x14);  // PoW stamp: [difficulty(1)][nonce(8 BE)]
+    STAMP(0x14),  // PoW stamp: [difficulty(1)][nonce(8 BE)]
+    PART_IDX(0x15),    // u16 LE: 0-based index of this chunk in a multi-part transfer
+    PART_TOTAL(0x16);  // u16 LE: total number of chunks (1 = single message)
 
     companion object {
         fun fromValue(v: Int): NxmFieldType? = entries.find { it.value == v }
@@ -102,4 +104,26 @@ data class NxmMessage(
 
     val filedata: ByteArray?
         get() = findField(NxmFieldType.FILEDATA)?.data
+
+    /** 0-based chunk index in a multi-part transfer (null = legacy single-message). */
+    val partIdx: Int?
+        get() = findField(NxmFieldType.PART_IDX)?.data?.takeIf { it.size >= 2 }?.let {
+            (it[0].toInt() and 0xFF) or ((it[1].toInt() and 0xFF) shl 8)
+        }
+
+    /** Total chunks in this transfer. >1 means this message is one chunk of N. */
+    val partTotal: Int?
+        get() = findField(NxmFieldType.PART_TOTAL)?.data?.takeIf { it.size >= 2 }?.let {
+            (it[0].toInt() and 0xFF) or ((it[1].toInt() and 0xFF) shl 8)
+        }
+
+    /** Duration in seconds (voice notes), parsed from DURATION field. */
+    val durationSec: Int?
+        get() = findField(NxmFieldType.DURATION)?.data?.takeIf { it.size >= 2 }?.let {
+            (it[0].toInt() and 0xFF) or ((it[1].toInt() and 0xFF) shl 8)
+        }
+
+    /** Thumbnail bytes (images). */
+    val thumbnail: ByteArray?
+        get() = findField(NxmFieldType.THUMBNAIL)?.data
 }

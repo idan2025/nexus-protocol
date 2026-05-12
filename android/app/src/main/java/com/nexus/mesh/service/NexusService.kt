@@ -82,6 +82,16 @@ class NexusService : Service(), NexusNode.Callback {
         private const val KEY_ROLE = "node_role"
         const val DEFAULT_ROLE = NexusNode.ROLE_RELAY
 
+        /* Chunked media transfer.
+         *
+         * NXM envelope + fragment exthdr + session AEAD eat ~150-300B of
+         * the 3824B fragmenter ceiling depending on field set. 2800B per
+         * chunk leaves comfortable headroom even with a long filename
+         * and a 256-byte thumbnail in the first chunk. */
+        const val CHUNK_PAYLOAD = 2800
+        const val MEDIA_MAX_BYTES = 1024 * 1024       /* 1 MB hard cap */
+        const val CHUNK_TIMEOUT_MS = 5 * 60 * 1000L   /* 5 min stale-buffer GC */
+
         // Mesh tick cadence. The poll handles housekeeping; inbound
         // packets arrive via callbacks on each transport, so a fast
         // tick isn't needed for responsiveness. 500ms cycle = 2Hz.
@@ -124,6 +134,26 @@ class NexusService : Service(), NexusNode.Callback {
      * Keyed by addrHex (uppercase). Reset implicitly on process restart and
      * explicitly when the user changes their own name. */
     private val nicknameSentTo = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /* In-flight chunked media transfers (receive side). Keyed by
+     * "$srcHex:$msgIdHex". A transfer enters here when the first chunk
+     * arrives and is removed when reassembly completes or the entry
+     * times out (5 minutes). Per-message memory is bounded by 1 MB cap. */
+    private val chunkBuffers =
+        java.util.concurrent.ConcurrentHashMap<String, ChunkedTransfer>()
+
+    private class ChunkedTransfer(
+        val type: NxmType,
+        val total: Int,
+        val filename: String?,
+        val mime: String?,
+        val thumbnail: ByteArray?,
+        val duration: Int,
+        val parts: Array<ByteArray?>,
+        @Volatile var receivedCount: Int,
+        @Volatile var lastUpdateMs: Long
+    )
+
 
     // --- Data models (kept for backward compat with UI references) ---
 
@@ -1022,8 +1052,127 @@ class NexusService : Service(), NexusNode.Callback {
         showMessageNotification(srcHex, text)
     }
 
+    /**
+     * Intercept a chunked-media NXM (IMAGE/FILE/VOICE_NOTE with PART_IDX/
+     * PART_TOTAL). Returns true if the caller should NOT fall through to
+     * the single-message handlers. The function buffers chunks and, once
+     * all parts have arrived, hands the reassembled message off to
+     * [completeChunkedMedia] for disk write + DB insert + ACK.
+     */
+    private fun maybeHandleChunkedMedia(
+        srcHex: String, src: ByteArray, nxm: NxmMessage, isDirect: Boolean
+    ): Boolean {
+        if (nxm.type != NxmType.IMAGE && nxm.type != NxmType.FILE
+            && nxm.type != NxmType.VOICE_NOTE) return false
+        val idx = nxm.partIdx ?: return false
+        val total = nxm.partTotal ?: return false
+        if (total <= 1) return false  /* single-message: fall through */
+        val msgId = nxm.msgId ?: return false
+        val msgIdHex = nxm.msgIdHex ?: return false
+        val chunk = nxm.filedata ?: return true
+        if (idx < 0 || idx >= total) return true
+
+        val key = "$srcHex:$msgIdHex"
+        val xfer = chunkBuffers.compute(key) { _, existing ->
+            val t = existing ?: ChunkedTransfer(
+                type = nxm.type,
+                total = total,
+                filename = nxm.filename,
+                mime = nxm.mimetype,
+                thumbnail = nxm.thumbnail,
+                duration = nxm.durationSec ?: 0,
+                parts = arrayOfNulls(total),
+                receivedCount = 0,
+                lastUpdateMs = System.currentTimeMillis()
+            )
+            if (t.parts[idx] == null) {
+                /* Cap total in-memory bytes per transfer at 1 MB. */
+                val projected = (t.parts.sumOf { it?.size ?: 0 }) + chunk.size
+                if (projected <= MEDIA_MAX_BYTES) {
+                    t.parts[idx] = chunk
+                    t.receivedCount += 1
+                }
+            }
+            t.lastUpdateMs = System.currentTimeMillis()
+            t
+        } ?: return true
+
+        gcStaleChunkBuffers()
+
+        if (xfer.receivedCount >= xfer.total) {
+            chunkBuffers.remove(key)
+            completeChunkedMedia(srcHex, src, msgId, msgIdHex, xfer, isDirect)
+        }
+        return true  /* always swallow chunked NXMs; never fall through */
+    }
+
+    /** Reassemble + persist + DB-insert + ACK. */
+    private fun completeChunkedMedia(
+        srcHex: String, src: ByteArray, msgId: ByteArray, msgIdHex: String,
+        xfer: ChunkedTransfer, isDirect: Boolean
+    ) {
+        val totalSize = xfer.parts.sumOf { it?.size ?: 0 }
+        val full = ByteArray(totalSize)
+        var pos = 0
+        for (p in xfer.parts) {
+            if (p == null) { Log.w(TAG, "chunked $msgIdHex: gap at reassembly"); return }
+            System.arraycopy(p, 0, full, pos, p.size); pos += p.size
+        }
+
+        val fname = xfer.filename ?: when (xfer.type) {
+            NxmType.IMAGE -> "image_$msgIdHex.jpg"
+            NxmType.VOICE_NOTE -> "voice_$msgIdHex.amr"
+            else -> "file_$msgIdHex"
+        }
+        val text = when (xfer.type) {
+            NxmType.IMAGE -> "Image: $fname"
+            NxmType.VOICE_NOTE -> "Voice note (${xfer.duration}s)"
+            else -> "File: $fname"
+        }
+        val msgType = when (xfer.type) {
+            NxmType.IMAGE -> MessageType.IMAGE
+            NxmType.VOICE_NOTE -> MessageType.VOICE_NOTE
+            else -> MessageType.FILE
+        }
+
+        scope.launch {
+            val mediaPath = persistMedia(fname, full)
+            repository.insertMessage(MessageEntity(
+                peerAddr = srcHex,
+                text = text,
+                timestamp = System.currentTimeMillis(),
+                isOutgoing = false,
+                isDirect = isDirect,
+                nxmMsgId = msgIdHex,
+                messageType = msgType,
+                mediaPath = mediaPath,
+                fileName = fname,
+                mimeType = xfer.mime,
+                duration = xfer.duration
+            ))
+            /* Single ACK per transfer (not per chunk). */
+            val ack = NxmBuilder.buildAck(msgId)
+            if (!node.sendSession(src, ack)) node.send(src, ack)
+        }
+        showMessageNotification(srcHex, text)
+    }
+
+    /** Drop chunked-transfer buffers idle for more than CHUNK_TIMEOUT_MS. */
+    private fun gcStaleChunkBuffers() {
+        val cutoff = System.currentTimeMillis() - CHUNK_TIMEOUT_MS
+        val it = chunkBuffers.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            if (e.value.lastUpdateMs < cutoff) {
+                Log.w(TAG, "chunked ${e.key}: dropping stale buffer")
+                it.remove()
+            }
+        }
+    }
+
     private fun handleNxmMessage(srcHex: String, src: ByteArray,
                                   nxm: NxmMessage, isDirect: Boolean) {
+        if (maybeHandleChunkedMedia(srcHex, src, nxm, isDirect)) return
         when (nxm.type) {
             NxmType.TEXT -> {
                 val text = nxm.text ?: return
@@ -1264,25 +1413,28 @@ class NexusService : Service(), NexusNode.Callback {
     }
 
     /**
-     * Send an image. [data] is the full encoded JPEG/PNG bytes — caller is
-     * responsible for downscaling before calling (max NX_FRAG_MAX_MESSAGE
-     * minus NXM envelope, ~3.5 kB of attachment in practice).
+     * Send an image (encoded JPEG/PNG bytes). Up to MEDIA_MAX_BYTES (1 MB).
+     * Small images go as a single NXM; larger ones are split into chunks
+     * of CHUNK_PAYLOAD bytes, each its own NXM, all sharing one MSG_ID.
      */
     fun sendImage(dest: String, filename: String, data: ByteArray,
                   thumbnail: ByteArray? = null): Boolean {
+        if (data.size > MEDIA_MAX_BYTES) {
+            Log.w(TAG, "sendImage: ${data.size}B exceeds 1MB cap")
+            return false
+        }
         val destBytes = hexToBytes(dest) ?: return false
-        val nxmData = NxmBuilder.buildImage(filename, data, thumbnail)
-        val ok = node.sendLarge(destBytes, nxmData)
+        val msgId = NxmBuilder.generateMsgId()
+        val msgIdHex = msgId.joinToString("") { "%02X".format(it) }
+
+        val ok = sendMediaChunks(destBytes, NxmType.IMAGE, msgId,
+            filename = filename, mime = "image/jpeg",
+            data = data, thumbnail = thumbnail,
+            durationSec = null, codec = null)
+
         if (ok) {
             scope.launch {
-                val dir = getExternalFilesDir("nexus_media")
-                var mediaPath: String? = null
-                if (dir != null) {
-                    dir.mkdirs()
-                    val f = java.io.File(dir, "${System.currentTimeMillis()}_$filename")
-                    f.writeBytes(data)
-                    mediaPath = f.absolutePath
-                }
+                val mediaPath = persistMedia(filename, data)
                 repository.insertMessage(MessageEntity(
                     peerAddr = dest,
                     text = "Image: $filename",
@@ -1290,6 +1442,7 @@ class NexusService : Service(), NexusNode.Callback {
                     isOutgoing = true,
                     isDirect = node.isNeighbor(destBytes) >= 0,
                     deliveryStatus = DeliveryStatus.SENT,
+                    nxmMsgId = msgIdHex,
                     messageType = MessageType.IMAGE,
                     mediaPath = mediaPath,
                     fileName = filename,
@@ -1300,21 +1453,75 @@ class NexusService : Service(), NexusNode.Callback {
         return ok
     }
 
+    /** Write media bytes to nexus_media/ and return the absolute path. */
+    private fun persistMedia(filename: String, data: ByteArray): String? {
+        val dir = getExternalFilesDir("nexus_media") ?: return null
+        dir.mkdirs()
+        val f = java.io.File(dir, "${System.currentTimeMillis()}_$filename")
+        f.writeBytes(data)
+        return f.absolutePath
+    }
+
+    /**
+     * Slice [data] into CHUNK_PAYLOAD-sized chunks and ship each as its own
+     * NXM. All chunks share [msgId]; the first chunk carries the metadata
+     * fields (filename/mime/thumbnail/duration/codec) so the receiver can
+     * build the message envelope eagerly.
+     */
+    private fun sendMediaChunks(destBytes: ByteArray,
+                                 type: NxmType,
+                                 msgId: ByteArray,
+                                 filename: String?,
+                                 mime: String?,
+                                 data: ByteArray,
+                                 thumbnail: ByteArray?,
+                                 durationSec: Int?,
+                                 codec: Int?): Boolean {
+        val total = if (data.isEmpty()) 1
+                    else (data.size + CHUNK_PAYLOAD - 1) / CHUNK_PAYLOAD
+        for (i in 0 until total) {
+            val start = i * CHUNK_PAYLOAD
+            val end = minOf(start + CHUNK_PAYLOAD, data.size)
+            val chunk = if (start < end) data.copyOfRange(start, end) else ByteArray(0)
+            val nxm = NxmBuilder.buildChunk(
+                type = type,
+                msgId = msgId,
+                partIdx = i,
+                partTotal = total,
+                chunk = chunk,
+                firstFilename = if (i == 0) filename else null,
+                firstMime = if (i == 0) mime else null,
+                firstThumbnail = if (i == 0) thumbnail else null,
+                firstDurationSec = if (i == 0) durationSec else null,
+                firstCodec = if (i == 0) codec else null
+            )
+            val ok = node.sendLarge(destBytes, nxm)
+            if (!ok) {
+                Log.w(TAG, "sendMediaChunks: failed at chunk $i/$total")
+                return false
+            }
+        }
+        return true
+    }
+
     fun sendFile(dest: String, filename: String, mimetype: String,
                  data: ByteArray): Boolean {
+        if (data.size > MEDIA_MAX_BYTES) {
+            Log.w(TAG, "sendFile: ${data.size}B exceeds 1MB cap")
+            return false
+        }
         val destBytes = hexToBytes(dest) ?: return false
-        val nxmData = NxmBuilder.buildFile(filename, mimetype, data)
-        val ok = node.sendLarge(destBytes, nxmData)
+        val msgId = NxmBuilder.generateMsgId()
+        val msgIdHex = msgId.joinToString("") { "%02X".format(it) }
+
+        val ok = sendMediaChunks(destBytes, NxmType.FILE, msgId,
+            filename = filename, mime = mimetype,
+            data = data, thumbnail = null,
+            durationSec = null, codec = null)
+
         if (ok) {
             scope.launch {
-                val dir = getExternalFilesDir("nexus_media")
-                var mediaPath: String? = null
-                if (dir != null) {
-                    dir.mkdirs()
-                    val f = java.io.File(dir, "${System.currentTimeMillis()}_$filename")
-                    f.writeBytes(data)
-                    mediaPath = f.absolutePath
-                }
+                val mediaPath = persistMedia(filename, data)
                 repository.insertMessage(MessageEntity(
                     peerAddr = dest,
                     text = "File: $filename",
@@ -1322,6 +1529,7 @@ class NexusService : Service(), NexusNode.Callback {
                     isOutgoing = true,
                     isDirect = node.isNeighbor(destBytes) >= 0,
                     deliveryStatus = DeliveryStatus.SENT,
+                    nxmMsgId = msgIdHex,
                     messageType = MessageType.FILE,
                     mediaPath = mediaPath,
                     fileName = filename,
@@ -1334,19 +1542,23 @@ class NexusService : Service(), NexusNode.Callback {
 
     fun sendVoice(dest: String, data: ByteArray, durationSec: Int,
                   codec: Int = 1): Boolean {
+        if (data.size > MEDIA_MAX_BYTES) {
+            Log.w(TAG, "sendVoice: ${data.size}B exceeds 1MB cap")
+            return false
+        }
         val destBytes = hexToBytes(dest) ?: return false
-        val nxmData = NxmBuilder.buildVoice(data, durationSec, codec)
-        val ok = node.sendLarge(destBytes, nxmData)
+        val msgId = NxmBuilder.generateMsgId()
+        val msgIdHex = msgId.joinToString("") { "%02X".format(it) }
+        val filename = "voice_${System.currentTimeMillis()}.amr"
+
+        val ok = sendMediaChunks(destBytes, NxmType.VOICE_NOTE, msgId,
+            filename = filename, mime = "audio/amr",
+            data = data, thumbnail = null,
+            durationSec = durationSec, codec = codec)
+
         if (ok) {
             scope.launch {
-                val dir = getExternalFilesDir("nexus_media")
-                var mediaPath: String? = null
-                if (dir != null) {
-                    dir.mkdirs()
-                    val f = java.io.File(dir, "${System.currentTimeMillis()}_voice.amr")
-                    f.writeBytes(data)
-                    mediaPath = f.absolutePath
-                }
+                val mediaPath = persistMedia("voice.amr", data)
                 repository.insertMessage(MessageEntity(
                     peerAddr = dest,
                     text = "Voice note (${durationSec}s)",
@@ -1354,8 +1566,10 @@ class NexusService : Service(), NexusNode.Callback {
                     isOutgoing = true,
                     isDirect = node.isNeighbor(destBytes) >= 0,
                     deliveryStatus = DeliveryStatus.SENT,
+                    nxmMsgId = msgIdHex,
                     messageType = MessageType.VOICE_NOTE,
                     mediaPath = mediaPath,
+                    mimeType = "audio/amr",
                     duration = durationSec
                 ))
             }

@@ -827,8 +827,10 @@ private fun openFileExternally(ctx: android.content.Context, path: String, mime:
 }
 
 /**
- * Decode an image from a content URI, downscale so the long edge is ≤1024px,
- * recompress as JPEG until it fits in ~3300 bytes (leaves headroom for NXM).
+ * Decode an image from a content URI, downscale so the long edge is ≤1600px,
+ * recompress as JPEG. With app-layer chunking (see NexusService.sendImage),
+ * the on-wire budget is now 1 MB; quality steps down only if encoded size
+ * would blow that cap.
  */
 private fun loadAndDownscaleImage(
     ctx: android.content.Context,
@@ -844,7 +846,7 @@ private fun loadAndDownscaleImage(
     val srcH = opts.outHeight
     if (srcW <= 0 || srcH <= 0) return null
 
-    val maxEdge = 1024
+    val maxEdge = 1600
     var sample = 1
     while (srcW / sample > maxEdge * 2 || srcH / sample > maxEdge * 2) sample *= 2
 
@@ -867,16 +869,17 @@ private fun loadAndDownscaleImage(
         ).also { if (it !== bmp) bmp.recycle() }
     } else bmp
 
-    // Compress, stepping quality down until we fit the fragment budget.
-    var quality = 80
-    val cap = 3300
+    // Compress at quality 85 by default; step down only if we'd blow the
+    // 1 MB cap. App-layer chunking handles wire framing.
+    var quality = 85
+    val cap = 1024 * 1024  // 1 MB
     var bytes: ByteArray
     while (true) {
         val baos = ByteArrayOutputStream()
         scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
         bytes = baos.toByteArray()
-        if (bytes.size <= cap || quality <= 20) break
-        quality -= 15
+        if (bytes.size <= cap || quality <= 30) break
+        quality -= 10
     }
     scaled.recycle()
     if (bytes.size > cap) return null

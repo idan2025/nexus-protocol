@@ -87,6 +87,49 @@ object NxmBuilder {
         return serialize(NxmType.VOICE_NOTE, 0, fields)
     }
 
+    /** Encode a u16 as little-endian 2-byte array (PART_IDX / PART_TOTAL). */
+    private fun u16le(v: Int): ByteArray = byteArrayOf(
+        (v and 0xFF).toByte(),
+        ((v shr 8) and 0xFF).toByte()
+    )
+
+    /**
+     * One chunk of a multi-part media transfer. All chunks of the same
+     * transfer share [msgId]; the first chunk (partIdx == 0) additionally
+     * carries filename/mimetype/thumbnail/duration so the receiver can
+     * construct the message envelope without waiting for all parts.
+     *
+     * type must be IMAGE, FILE, or VOICE_NOTE.
+     *
+     * Caller slices the source into chunks small enough to fit the
+     * NX_FRAG_MAX_MESSAGE (3824B) ceiling after the envelope. In practice
+     * keep chunk size ≤ 2800 bytes for headroom.
+     */
+    fun buildChunk(type: NxmType,
+                   msgId: ByteArray,
+                   partIdx: Int,
+                   partTotal: Int,
+                   chunk: ByteArray,
+                   firstFilename: String? = null,
+                   firstMime: String? = null,
+                   firstThumbnail: ByteArray? = null,
+                   firstDurationSec: Int? = null,
+                   firstCodec: Int? = null): ByteArray {
+        val fields = mutableListOf<Pair<NxmFieldType, ByteArray>>()
+        fields.add(NxmFieldType.MSG_ID to msgId)
+        fields.add(NxmFieldType.PART_IDX to u16le(partIdx))
+        fields.add(NxmFieldType.PART_TOTAL to u16le(partTotal))
+        if (partIdx == 0) {
+            firstFilename?.let { fields.add(NxmFieldType.FILENAME to it.toByteArray(Charsets.UTF_8)) }
+            firstMime?.let { fields.add(NxmFieldType.MIMETYPE to it.toByteArray(Charsets.UTF_8)) }
+            firstThumbnail?.let { fields.add(NxmFieldType.THUMBNAIL to it) }
+            firstDurationSec?.let { fields.add(NxmFieldType.DURATION to u16le(it)) }
+            firstCodec?.let { fields.add(NxmFieldType.CODEC to byteArrayOf((it and 0xFF).toByte())) }
+        }
+        fields.add(NxmFieldType.FILEDATA to chunk)
+        return serialize(type, 0, fields)
+    }
+
     fun buildNickname(name: String): ByteArray {
         return serialize(NxmType.NICKNAME, 0,
             listOf(NxmFieldType.NICKNAME to name.toByteArray(Charsets.UTF_8).take(32).toByteArray()))
