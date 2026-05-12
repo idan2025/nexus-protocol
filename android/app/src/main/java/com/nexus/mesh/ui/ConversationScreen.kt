@@ -782,27 +782,63 @@ private fun MediaAttachment(msg: MessageEntity, tint: androidx.compose.ui.graphi
                     .padding(bottom = 6.dp)
                     .clickable {
                         if (playing) {
-                            player.value?.stop()
-                            player.value?.release()
+                            runCatching { player.value?.stop() }
+                            runCatching { player.value?.release() }
                             player.value = null
                             playing = false
                         } else {
-                            val mp = MediaPlayer().apply {
-                                setDataSource(path)
-                                setOnCompletionListener {
+                            /* Wrap MediaPlayer setup so a missing or
+                             * malformed AMR file surfaces as a toast
+                             * instead of an uncaught IOException that
+                             * silently swallows the user's tap. */
+                            val f = File(path)
+                            if (!f.exists() || f.length() == 0L) {
+                                android.widget.Toast.makeText(
+                                    ctx, "Voice file missing (${f.length()}B)",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                                return@clickable
+                            }
+                            try {
+                                val mp = MediaPlayer()
+                                mp.setOnErrorListener { _, what, extra ->
+                                    android.util.Log.w("voice",
+                                        "MediaPlayer error what=$what extra=$extra path=$path size=${f.length()}")
                                     playing = false
-                                    it.release()
+                                    runCatching { mp.release() }
+                                    if (player.value === mp) player.value = null
+                                    android.widget.Toast.makeText(
+                                        ctx, "Playback failed (codec $what/$extra)",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                    true
+                                }
+                                mp.setOnCompletionListener {
+                                    playing = false
+                                    runCatching { it.release() }
                                     if (player.value === it) player.value = null
                                 }
-                                prepare()
-                                start()
+                                mp.setDataSource(path)
+                                mp.prepare()
+                                mp.start()
+                                player.value = mp
+                                playing = true
+                            } catch (e: Exception) {
+                                android.util.Log.w("voice",
+                                    "MediaPlayer setup failed path=$path size=${f.length()}", e)
+                                android.widget.Toast.makeText(
+                                    ctx, "Cannot play voice note: ${e.message}",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
                             }
-                            player.value = mp
-                            playing = true
                         }
                     }
             ) {
-                Icon(Icons.Default.PlayArrow, contentDescription = "play", tint = tint)
+                Icon(
+                    if (playing) Icons.Default.Close else Icons.Default.PlayArrow,
+                    contentDescription = if (playing) "stop" else "play",
+                    tint = tint
+                )
                 Spacer(Modifier.width(6.dp))
                 Text(
                     "${msg.duration}s",
