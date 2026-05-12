@@ -408,6 +408,11 @@ class BleTransport(private val context: Context) {
                 _connectedDevice.value = null
                 _nodeConfig.value = null
                 rxChar = null
+                /* Release the GATT handle. Android caps these per process;
+                 * leaking one per reconnect eventually returns
+                 * GATT_INSUFFICIENT_RESOURCES and silently breaks BLE. */
+                runCatching { g.close() }
+                if (gatt === g) gatt = null
             }
         }
 

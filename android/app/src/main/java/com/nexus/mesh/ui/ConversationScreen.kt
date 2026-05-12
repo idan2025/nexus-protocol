@@ -1009,6 +1009,24 @@ private fun VoiceRecorderDialog(
                         rec.setAudioEncodingBitRate(4750)
                         rec.setMaxDuration(60_000)
                         rec.setOutputFile(f.absolutePath)
+                        /* When the 60s cap is hit, MediaRecorder stops
+                         * emitting audio. Auto-stop + auto-send so the
+                         * dialog timer can't drift past the actual
+                         * recording length. */
+                        rec.setOnInfoListener { mr, what, _ ->
+                            if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
+                                try { mr.stop() } catch (_: Exception) {}
+                                runCatching { mr.release() }
+                                recorderRef.value = null
+                                recording = false
+                                val captured = f
+                                if (captured.exists()) {
+                                    val bytes = captured.readBytes()
+                                    captured.delete()
+                                    if (bytes.isNotEmpty()) onSend(bytes, 60)
+                                }
+                            }
+                        }
                         rec.prepare()
                         rec.start()
                         recorderRef.value = rec

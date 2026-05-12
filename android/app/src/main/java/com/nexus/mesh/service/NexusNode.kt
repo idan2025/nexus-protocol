@@ -35,7 +35,11 @@ class NexusNode {
         fun onGroup(groupId: ByteArray, src: ByteArray, data: ByteArray)
     }
 
-    var isRunning = false
+    /* Volatile because native JNI callbacks (onData, onSession, onNeighbor,
+     * onGroup) fire from a poll thread while stop() / init() can run on
+     * the main thread. Without @Volatile a callback could see a stale
+     * isRunning=true after stop() returned. */
+    @Volatile var isRunning = false
         private set
 
     fun init(role: Int = ROLE_RELAY, callback: Callback): Boolean {

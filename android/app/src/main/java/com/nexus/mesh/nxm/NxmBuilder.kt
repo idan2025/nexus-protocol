@@ -55,37 +55,10 @@ object NxmBuilder {
         return serialize(NxmType.LOCATION, 0, fields)
     }
 
-    fun buildImage(filename: String, data: ByteArray,
-                   thumbnail: ByteArray? = null): ByteArray {
-        val fields = mutableListOf<Pair<NxmFieldType, ByteArray>>()
-        fields.add(NxmFieldType.MSG_ID to generateMsgId())
-        fields.add(NxmFieldType.FILENAME to filename.toByteArray(Charsets.UTF_8))
-        fields.add(NxmFieldType.MIMETYPE to "image/jpeg".toByteArray(Charsets.UTF_8))
-        fields.add(NxmFieldType.FILEDATA to data)
-        if (thumbnail != null) {
-            fields.add(NxmFieldType.THUMBNAIL to thumbnail)
-        }
-        return serialize(NxmType.IMAGE, 0, fields)
-    }
-
-    fun buildFile(filename: String, mimetype: String, data: ByteArray): ByteArray {
-        val fields = mutableListOf<Pair<NxmFieldType, ByteArray>>()
-        fields.add(NxmFieldType.MSG_ID to generateMsgId())
-        fields.add(NxmFieldType.FILENAME to filename.toByteArray(Charsets.UTF_8))
-        fields.add(NxmFieldType.MIMETYPE to mimetype.toByteArray(Charsets.UTF_8))
-        fields.add(NxmFieldType.FILEDATA to data)
-        return serialize(NxmType.FILE, 0, fields)
-    }
-
-    fun buildVoice(data: ByteArray, durationSec: Int, codec: Int = 0): ByteArray {
-        val fields = mutableListOf<Pair<NxmFieldType, ByteArray>>()
-        fields.add(NxmFieldType.MSG_ID to generateMsgId())
-        fields.add(NxmFieldType.FILEDATA to data)
-        fields.add(NxmFieldType.DURATION to
-            ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(durationSec.toShort()).array())
-        fields.add(NxmFieldType.CODEC to byteArrayOf((codec and 0xFF).toByte()))
-        return serialize(NxmType.VOICE_NOTE, 0, fields)
-    }
+    /* Legacy single-message media builders (buildImage / buildFile /
+     * buildVoice) were removed -- everything now goes through buildChunk()
+     * so the sender's MSG_ID matches the receiver's reassembled message
+     * id for ACK / delivery-tick tracking. */
 
     /** Encode a u16 as little-endian 2-byte array (PART_IDX / PART_TOTAL). */
     private fun u16le(v: Int): ByteArray = byteArrayOf(

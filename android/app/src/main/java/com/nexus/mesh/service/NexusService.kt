@@ -91,6 +91,8 @@ class NexusService : Service(), NexusNode.Callback {
         const val CHUNK_PAYLOAD = 2800
         const val MEDIA_MAX_BYTES = 1024 * 1024       /* 1 MB hard cap */
         const val CHUNK_TIMEOUT_MS = 5 * 60 * 1000L   /* 5 min stale-buffer GC */
+        const val CHUNK_MAX_PARTS = 512               /* DoS guard: 1 MB / 2 KB */
+        const val CHUNK_MAX_TRANSFERS = 16            /* concurrent in-flight max */
 
         // Mesh tick cadence. The poll handles housekeeping; inbound
         // packets arrive via callbacks on each transport, so a fast
@@ -664,8 +666,16 @@ class NexusService : Service(), NexusNode.Callback {
         // Cutting from ~100 ms cycle to ~500 ms is the single largest
         // battery win in the foreground service.
         pollJob = scope.launch {
+            var ticks = 0
             while (isActive) {
                 node.poll(POLL_BUDGET_MS.toInt())
+                /* Every ~30s sweep chunked-media buffers so transfers that
+                 * stall mid-flow don't squat in memory until the service
+                 * dies. 30s / POLL_INTERVAL_MS = 60 ticks. */
+                if (++ticks >= 60) {
+                    ticks = 0
+                    runCatching { gcStaleChunkBuffers() }
+                }
                 delay(POLL_INTERVAL_MS - POLL_BUDGET_MS)
             }
         }
@@ -908,7 +918,11 @@ class NexusService : Service(), NexusNode.Callback {
             }
         }
 
-        // Fallback: raw text
+        // Fallback: raw text, printability-gated.
+        if (!looksLikeText(data)) {
+            Log.w(TAG, "onGroup: non-text payload from $srcHex (${data.size}B), dropping")
+            return
+        }
         val text = String(data, Charsets.UTF_8)
         scope.launch {
             repository.ensureGroup(groupIdHex)
@@ -943,8 +957,13 @@ class NexusService : Service(), NexusNode.Callback {
             }
         }
 
-        // Fallback: legacy plain-UTF-8 senders (kept so older apps stay
-        // interoperable until the network is fully on NXM).
+        // Fallback: legacy plain-UTF-8 senders. Guarded so that binary
+        // garbage (e.g. mis-decrypted ciphertext) doesn't get inserted
+        // as a chat bubble -- only mostly-printable payloads pass.
+        if (!looksLikeText(data)) {
+            Log.w(TAG, "onData: non-text payload from $srcHex (${data.size}B), dropping")
+            return
+        }
         val text = String(data, Charsets.UTF_8)
         scope.launch {
             repository.insertMessage(MessageEntity(
@@ -1038,7 +1057,11 @@ class NexusService : Service(), NexusNode.Callback {
             }
         }
 
-        // Fallback: treat as raw text for backward compat
+        // Fallback: treat as raw text. Same printability guard as onData.
+        if (!looksLikeText(data)) {
+            Log.w(TAG, "onSession: non-text payload from $srcHex (${data.size}B), dropping")
+            return
+        }
         val text = String(data, Charsets.UTF_8)
         scope.launch {
             repository.insertMessage(MessageEntity(
@@ -1067,10 +1090,28 @@ class NexusService : Service(), NexusNode.Callback {
         val idx = nxm.partIdx ?: return false
         val total = nxm.partTotal ?: return false
         if (total <= 1) return false  /* single-message: fall through */
+        /* Reject obviously hostile values before allocating. partTotal is
+         * attacker-controlled (u16, up to 65535); 512 covers a legitimate
+         * 1 MB transfer at the smallest sensible chunk size. */
+        if (total > CHUNK_MAX_PARTS) {
+            Log.w(TAG, "chunked $srcHex: partTotal=$total exceeds cap, dropping")
+            return true
+        }
         val msgId = nxm.msgId ?: return false
         val msgIdHex = nxm.msgIdHex ?: return false
         val chunk = nxm.filedata ?: return true
         if (idx < 0 || idx >= total) return true
+
+        /* Bound concurrent transfers across all peers. If we're already at
+         * the limit and this is a NEW transfer, drop it -- existing ones
+         * get to finish or time out via gcStaleChunkBuffers. */
+        if (chunkBuffers.size >= CHUNK_MAX_TRANSFERS) {
+            val key0 = "$srcHex:$msgIdHex"
+            if (!chunkBuffers.containsKey(key0)) {
+                Log.w(TAG, "chunked: transfer table full (${chunkBuffers.size}), dropping new transfer from $srcHex")
+                return true
+            }
+        }
 
         val key = "$srcHex:$msgIdHex"
         val xfer = chunkBuffers.compute(key) { _, existing ->
@@ -1155,6 +1196,28 @@ class NexusService : Service(), NexusNode.Callback {
             if (!node.sendSession(src, ack)) node.send(src, ack)
         }
         showMessageNotification(srcHex, text)
+    }
+
+    /** Heuristic: refuse to surface bytes as a "message" unless they look
+     * like real text. Guards against C-side bugs (or buggy peers) that
+     * deliver ciphertext / binary garbage to the on_data callback -- the
+     * pre-existing fallback path used to insert that as a chat bubble
+     * (the "pillar gibberish" the user saw). */
+    private fun looksLikeText(data: ByteArray): Boolean {
+        if (data.isEmpty()) return false
+        var printable = 0
+        var n = 0
+        for (b in data) {
+            n++
+            if (n > 256) break
+            val v = b.toInt() and 0xFF
+            if (v == 0x09 || v == 0x0A || v == 0x0D || v in 0x20..0x7E ||
+                v in 0xC0..0xF4) {
+                printable++
+            }
+        }
+        /* >= 90% printable in the sampled prefix. */
+        return printable * 10 >= n * 9
     }
 
     /** Drop chunked-transfer buffers idle for more than CHUNK_TIMEOUT_MS. */
