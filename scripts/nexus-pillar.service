@@ -33,6 +33,10 @@ WorkingDirectory=/var/lib/nexus
 
 # Foreground (-f) is required under Type=simple so systemd tracks the PID.
 # Adjust port/peers/flags as needed.
+#
+# To give the pillar a friendly name shown on connecting phones, either
+# pass `-N "My-Pillar"` on the ExecStart line or set the env var below.
+#Environment=PILLAR_NAME=My-Pillar
 ExecStart=/usr/local/bin/pillard -f -p 4242 -i /var/lib/nexus/pillar.identity -u /run/nexus/pillard.sock
 ExecReload=/bin/kill -HUP $MAINPID
 

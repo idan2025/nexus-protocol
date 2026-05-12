@@ -33,6 +33,7 @@
 #include "nexus/identity.h"
 #include "nexus/transport.h"
 #include "nexus/platform.h"
+#include "nexus/message.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,6 +79,11 @@ typedef struct {
     uint32_t peer_rate_window_s; /* announces-per-window threshold window */
     uint32_t peer_rate_limit;    /* warn when a peer exceeds this in window */
     char     admin_socket[256];  /* UDS path for admin commands; "" disables */
+
+    /* Friendly display name pushed to every connecting peer (e.g. phones)
+     * as a NICKNAME NXM, so users see "Tel-Aviv-Pillar" instead of a 4-byte
+     * address. Capped at NX_MSG_MAX_NICKNAME (32 chars). Empty = disabled. */
+    char     pillar_name[NX_MSG_MAX_NICKNAME + 1];
 } pillard_config_t;
 
 /* Per-peer rate-limit tracker. Keyed by 4-byte short address. Not a hard
@@ -91,6 +97,15 @@ typedef struct {
     int      used;
     int      warned;             /* one WARN per window */
 } peer_rate_slot_t;
+
+/* Peers we've already greeted with our nickname in this service session.
+ * Sized to PILLARD_MAX_PEERS * 8 so it covers heavy churn without GC.
+ * Linear scan is fine -- only consulted when a new neighbor appears. */
+#define PILLARD_GREETED_SLOTS 256
+typedef struct {
+    uint8_t addr[NX_SHORT_ADDR_SIZE];
+    int     used;
+} greeted_slot_t;
 
 /* ── Globals ─────────────────────────────────────────────────────────── */
 
@@ -112,6 +127,9 @@ static time_t   g_start_time    = 0;
 
 static peer_rate_slot_t g_rate_slots[PILLARD_RATE_SLOTS];
 static pthread_mutex_t  g_rate_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static greeted_slot_t   g_greeted_slots[PILLARD_GREETED_SLOTS];
+static pthread_mutex_t  g_greeted_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_t g_metrics_thread;
 static int       g_metrics_running = 0;
@@ -386,6 +404,49 @@ static int rate_record(const uint8_t addr[NX_SHORT_ADDR_SIZE])
     return 0;
 }
 
+/* Return 1 if this is the first time we've seen `addr` this session (and
+ * record it for future calls), 0 if we've already greeted them. */
+static int greeted_seen_first_time(const uint8_t addr[NX_SHORT_ADDR_SIZE])
+{
+    pthread_mutex_lock(&g_greeted_mutex);
+    int free_slot = -1;
+    for (int i = 0; i < PILLARD_GREETED_SLOTS; i++) {
+        if (g_greeted_slots[i].used) {
+            if (memcmp(g_greeted_slots[i].addr, addr, NX_SHORT_ADDR_SIZE) == 0) {
+                pthread_mutex_unlock(&g_greeted_mutex);
+                return 0;
+            }
+        } else if (free_slot < 0) {
+            free_slot = i;
+        }
+    }
+    /* Table full: overwrite slot 0. Worst case we re-greet someone -- harmless. */
+    int slot = (free_slot >= 0) ? free_slot : 0;
+    memcpy(g_greeted_slots[slot].addr, addr, NX_SHORT_ADDR_SIZE);
+    g_greeted_slots[slot].used = 1;
+    pthread_mutex_unlock(&g_greeted_mutex);
+    return 1;
+}
+
+/* Send a NICKNAME NXM to one peer so their device displays our friendly
+ * name instead of our 4-byte address. Tries session-encrypted first,
+ * falls back to plaintext send (a fresh peer may not have a session yet). */
+static void send_pillar_nickname_to(const nx_addr_short_t *addr)
+{
+    if (g_cfg.pillar_name[0] == '\0') return;
+
+    uint8_t buf[NX_MSG_MAX_NICKNAME + 32];
+    size_t  n = nx_msg_build_nickname(buf, sizeof(buf), g_cfg.pillar_name);
+    if (n == 0) return;
+
+    if (nx_node_send_session(&g_node, addr, buf, n) != NX_OK) {
+        (void)nx_node_send(&g_node, addr, buf, n);
+    }
+    LOG_DEBUG("sent NICKNAME '%s' to %02X%02X%02X%02X",
+              g_cfg.pillar_name,
+              addr->bytes[0], addr->bytes[1], addr->bytes[2], addr->bytes[3]);
+}
+
 static void on_neighbor(const nx_addr_short_t *addr, nx_role_t role, void *user)
 {
     (void)user;
@@ -401,6 +462,11 @@ static void on_neighbor(const nx_addr_short_t *addr, nx_role_t role, void *user)
     const char *rn = ((int)role >= 0 && (int)role <= 6) ? role_names[role] : "?";
     LOG_INFO("peer: %02X%02X%02X%02X role=%s",
              addr->bytes[0], addr->bytes[1], addr->bytes[2], addr->bytes[3], rn);
+
+    /* Greet new peers once per session with our nickname (if configured). */
+    if (greeted_seen_first_time(addr->bytes)) {
+        send_pillar_nickname_to(addr);
+    }
 }
 
 /* ── Metrics HTTP (Prometheus text format) ───────────────────────────── */
@@ -778,6 +844,9 @@ static void print_usage(const char *prog)
         "  -u PATH        Admin control socket (default: /run/nexus/pillard.sock,\n"
         "                 fallback $HOME/.nexus/pillard.sock). 'off' disables.\n"
         "                 Commands: ping reload stats shutdown (newline terminated).\n"
+        "  -N NAME        Friendly pillar name (max 32 chars). Pushed to every\n"
+        "                 connecting peer as a NICKNAME NXM so phones show the\n"
+        "                 name instead of the 4-byte address. Env: PILLAR_NAME.\n"
         "  -v             Verbose debug logging\n"
         "  -h             Show this help\n"
         "\n"
@@ -848,9 +917,21 @@ int main(int argc, char **argv)
         }
     }
 
+    /* Pre-populate pillar_name from $PILLAR_NAME so Docker users can
+     * configure via an env var without touching CMD. -N flag overrides. */
+    const char *env_name = getenv("PILLAR_NAME");
+    if (env_name && env_name[0] != '\0') {
+        strncpy(g_cfg.pillar_name, env_name, NX_MSG_MAX_NICKNAME);
+        g_cfg.pillar_name[NX_MSG_MAX_NICKNAME] = '\0';
+    }
+
     int opt;
-    while ((opt = getopt(argc, argv, "p:i:c:mVfM:r:u:vh")) != -1) {
+    while ((opt = getopt(argc, argv, "p:i:c:mVfM:r:u:N:vh")) != -1) {
         switch (opt) {
+        case 'N':
+            strncpy(g_cfg.pillar_name, optarg, NX_MSG_MAX_NICKNAME);
+            g_cfg.pillar_name[NX_MSG_MAX_NICKNAME] = '\0';
+            break;
         case 'p':
             g_cfg.listen_port = (uint16_t)atoi(optarg);
             break;
@@ -928,6 +1009,10 @@ int main(int argc, char **argv)
              g_cfg.listen_port, g_cfg.peer_count,
              g_cfg.enable_multicast ? "on" : "off",
              g_cfg.vault_mode ? "VAULT" : "PILLAR");
+    if (g_cfg.pillar_name[0] != '\0') {
+        LOG_INFO("pillar name: \"%s\" (will be pushed to connecting peers)",
+                 g_cfg.pillar_name);
+    }
 
     /* ── Identity ─────────────────────────────────────────────────────── */
 

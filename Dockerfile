@@ -17,8 +17,14 @@
 # Run:
 #   docker run -d --name nexus-pillar \
 #     -p 4242:4242 \
+#     -e PILLAR_NAME="Tel-Aviv-Pillar" \
 #     -v nexus-pillar-data:/var/lib/nexus \
 #     idan2025/nexus-pillar:latest
+#
+# PILLAR_NAME (optional, 32 chars max): friendly display name. Phones
+# that connect get a NICKNAME NXM with this string so they show
+# "Tel-Aviv-Pillar" instead of the pillar's 4-byte address. Leave unset
+# to keep the pillar visually anonymous on connecting devices.
 #
 # The mounted volume holds the persistent identity at
 # /var/lib/nexus/pillar.identity so the pillar's short address is
