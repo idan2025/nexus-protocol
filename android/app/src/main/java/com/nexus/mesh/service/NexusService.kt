@@ -120,6 +120,11 @@ class NexusService : Service(), NexusNode.Callback {
     // Dedup set for inbox-pull requests (once per neighbor per session)
     private val inboxRequested = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+    /* Peers we've already sent our nickname to in this service session.
+     * Keyed by addrHex (uppercase). Reset implicitly on process restart and
+     * explicitly when the user changes their own name. */
+    private val nicknameSentTo = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     // --- Data models (kept for backward compat with UI references) ---
 
     data class Neighbor(val addr: String, val role: Int)
@@ -962,6 +967,27 @@ class NexusService : Service(), NexusNode.Callback {
                 Log.i(TAG, "Inbox pull requested from $addrHex (role=$role)")
             }
         }
+
+        // Greet non-infrastructure peers with our nickname so they can show
+        // a friendly name instead of our 4-byte address. Skip pillars/vaults
+        // (they don't have a UI) and skip if we have no name set.
+        if (role < NexusNode.ROLE_PILLAR) {
+            sendNicknameIfNeeded(addr, addrHex)
+        }
+    }
+
+    /** Send a NICKNAME NXM to one peer, once per service session.
+     *  Falls back to raw send when no session is established yet so a
+     *  fresh peer still learns our name on first contact. */
+    private fun sendNicknameIfNeeded(addr: ByteArray, addrHex: String) {
+        val name = _myName.value
+        if (name.isBlank()) return
+        if (!nicknameSentTo.add(addrHex)) return
+        val nxm = NxmBuilder.buildNickname(name)
+        scope.launch {
+            val ok = node.sendSession(addr, nxm) || node.send(addr, nxm)
+            if (!ok) nicknameSentTo.remove(addrHex)  // retry next announce
+        }
     }
 
     override fun onSession(src: ByteArray, data: ByteArray) {
@@ -1012,11 +1038,16 @@ class NexusService : Service(), NexusNode.Callback {
                         nxmMsgId = msgIdHex,
                         messageType = MessageType.TEXT
                     ))
-                    // Auto-send ACK back
+                    // Auto-send ACK back. Fall back to raw send when no
+                    // session exists yet (the inbound TEXT may have arrived
+                    // via the unencrypted fallback path); otherwise the
+                    // sender's delivery-tick never updates.
                     val msgId = nxm.msgId
                     if (msgId != null) {
                         val ack = NxmBuilder.buildAck(msgId)
-                        node.sendSession(src, ack)
+                        if (!node.sendSession(src, ack)) {
+                            node.send(src, ack)
+                        }
                     }
                 }
                 showMessageNotification(srcHex, text)
@@ -1623,9 +1654,31 @@ class NexusService : Service(), NexusNode.Callback {
     }
 
     fun setMyName(name: String) {
-        _myName.value = name.trim()
+        val trimmed = name.trim()
+        val changed = _myName.value != trimmed
+        _myName.value = trimmed
         val prefs = getSharedPreferences(PREFS_NICKNAMES, Context.MODE_PRIVATE)
-        prefs.edit().putString(KEY_MY_NAME, name.trim()).apply()
+        prefs.edit().putString(KEY_MY_NAME, trimmed).apply()
+        if (changed) {
+            // Force re-announce: every currently-known neighbor needs the
+            // new name. Clearing the set lets onNeighbor (or the loop below)
+            // send a fresh NICKNAME on the next tick.
+            nicknameSentTo.clear()
+            if (trimmed.isNotBlank()) broadcastNicknameToNeighbors()
+        }
+    }
+
+    /** Push the current nickname to every currently-known neighbor right
+     *  now (in addition to the on-announce path). Called when the user
+     *  changes their name in Settings so peers update without waiting for
+     *  the next announce cycle. */
+    private fun broadcastNicknameToNeighbors() {
+        val snapshot = _neighbors.value
+        for (n in snapshot) {
+            if (n.role >= NexusNode.ROLE_PILLAR) continue
+            val addr = hexToBytes(n.addr) ?: continue
+            sendNicknameIfNeeded(addr, n.addr)
+        }
     }
 
     private fun loadMyName() {
