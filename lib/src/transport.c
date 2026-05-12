@@ -41,6 +41,15 @@ nx_err_t nx_transport_send(nx_transport_t *t, const uint8_t *data, size_t len)
     return t->ops->send(t, data, len);
 }
 
+nx_err_t nx_transport_send_bridge(nx_transport_t *t,
+                                  const uint8_t *data, size_t len)
+{
+    if (!t || !t->ops) return NX_ERR_INVALID_ARG;
+    if (!t->ops->send_bridge) return NX_ERR_INVALID_ARG;
+    if (!t->active) return NX_ERR_TRANSPORT;
+    return t->ops->send_bridge(t, data, len);
+}
+
 nx_err_t nx_transport_recv(nx_transport_t *t, uint8_t *buf, size_t buf_len,
                            size_t *out_len, uint32_t timeout_ms)
 {

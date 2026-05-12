@@ -104,6 +104,12 @@ typedef struct {
     int                failover_peer_count;    /* How many outbound peers configured */
     int                failover_first_slot;    /* conns index where outbound peers start */
     uint64_t           failover_attempt_ms;    /* When we started trying current peer */
+
+    /* Hub bridging: tracks which connection delivered the most-recently
+     * returned packet from tcp_inet_recv(). send_bridge() uses this to
+     * forward to every OTHER peer (Pillar / multi-phone scenario). -1 if
+     * no packet has been received yet. */
+    int                last_rx_conn_idx;
 } tcp_inet_state_t;
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
@@ -272,6 +278,7 @@ static nx_err_t tcp_inet_init(nx_transport_t *t, const void *config)
     memset(s, 0, sizeof(*s));
 
     s->listen_fd = -1;
+    s->last_rx_conn_idx = -1;
     s->reconnect_interval_ms = cfg->reconnect_interval_ms;
     if (s->reconnect_interval_ms == 0)
         s->reconnect_interval_ms = 5000;
@@ -597,13 +604,13 @@ static bool auth_pump(tcp_inet_state_t *s, tcp_inet_conn_t *c)
     return true;
 }
 
-/* ── Send (broadcast to all peers) ───────────────────────────────────── */
+/* ── Send (broadcast to all peers, optionally skipping one) ──────────── */
 
-static nx_err_t tcp_inet_send(nx_transport_t *t, const uint8_t *data, size_t len)
+static nx_err_t tcp_inet_broadcast(tcp_inet_state_t *s,
+                                    const uint8_t *data, size_t len,
+                                    int except_idx)
 {
-    tcp_inet_state_t *s = (tcp_inet_state_t *)t->state;
     if (!s) return NX_ERR_TRANSPORT;
-
     if (len > NX_MAX_PACKET) return NX_ERR_INVALID_ARG;
 
     uint8_t frame[TCP_MAX_FRAME];
@@ -616,11 +623,15 @@ static nx_err_t tcp_inet_send(nx_transport_t *t, const uint8_t *data, size_t len
     frame[pos++] = TCP_FRAME_DELIM;
 
     bool any_sent = false;
+    bool any_eligible = false;
 
     for (int i = 0; i < NX_TCP_INET_MAX_PEERS; i++) {
+        if (i == except_idx) continue;
         tcp_inet_conn_t *c = &s->conns[i];
         if (!c->active || c->fd < 0) continue;
         if (!conn_is_authed(c)) continue;
+
+        any_eligible = true;
 
         size_t written = 0;
         bool failed = false;
@@ -649,7 +660,24 @@ static nx_err_t tcp_inet_send(nx_transport_t *t, const uint8_t *data, size_t len
         }
     }
 
-    return any_sent ? NX_OK : NX_ERR_TRANSPORT;
+    if (any_sent) return NX_OK;
+    /* Distinguish "no peers to talk to" from "all writes failed". The hub
+     * bridge case (one peer, which is the ingress) returns NX_OK so the
+     * node layer doesn't log it as a transport error. */
+    return any_eligible ? NX_ERR_TRANSPORT : NX_OK;
+}
+
+static nx_err_t tcp_inet_send(nx_transport_t *t, const uint8_t *data, size_t len)
+{
+    return tcp_inet_broadcast((tcp_inet_state_t *)t->state, data, len, -1);
+}
+
+static nx_err_t tcp_inet_send_bridge(nx_transport_t *t,
+                                      const uint8_t *data, size_t len)
+{
+    tcp_inet_state_t *s = (tcp_inet_state_t *)t->state;
+    if (!s) return NX_ERR_TRANSPORT;
+    return tcp_inet_broadcast(s, data, len, s->last_rx_conn_idx);
 }
 
 /* ── Recv (poll all connections, return first complete packet) ────────── */
@@ -791,6 +819,7 @@ static nx_err_t tcp_inet_recv(nx_transport_t *t, uint8_t *buf, size_t buf_len,
                             memcpy(buf, c->rx.buf, c->rx.frame_len);
                             *out_len = c->rx.frame_len;
                             c->rx.state = RX_WAIT_START;
+                            s->last_rx_conn_idx = ci;
                             return NX_OK;
                         }
                         /* Buffer too small, drop */
@@ -827,6 +856,7 @@ static void tcp_inet_destroy(nx_transport_t *t)
 static const nx_transport_ops_t tcp_inet_ops = {
     .init    = tcp_inet_init,
     .send    = tcp_inet_send,
+    .send_bridge = tcp_inet_send_bridge,
     .recv    = tcp_inet_recv,
     .destroy = tcp_inet_destroy,
 };

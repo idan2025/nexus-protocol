@@ -30,6 +30,13 @@ typedef struct {
     nx_err_t (*recv)(nx_transport_t *t, uint8_t *buf, size_t buf_len,
                      size_t *out_len, uint32_t timeout_ms);
     void     (*destroy)(nx_transport_t *t);
+
+    /* Optional: hub-style re-distribution. Multi-peer transports (e.g. the
+     * Pillar's tcp_inet hub) implement this to forward a packet to all
+     * connected peers EXCEPT the one it just arrived on. Single-peer
+     * transports (serial, BLE) leave this NULL -- the node layer then
+     * treats them as non-bridging on ingress (no echo). */
+    nx_err_t (*send_bridge)(nx_transport_t *t, const uint8_t *data, size_t len);
 } nx_transport_ops_t;
 
 /* Transport instance */
@@ -58,6 +65,15 @@ nx_transport_t *nx_transport_get(int index);
 
 /* Send raw bytes on a specific transport. */
 nx_err_t nx_transport_send(nx_transport_t *t, const uint8_t *data, size_t len);
+
+/* Hub-bridge send: ask a multi-peer transport to re-distribute a packet to
+ * all of its peers except the one it most recently received from. For
+ * transports that do not implement send_bridge (single-peer transports),
+ * returns NX_ERR_INVALID_ARG without sending. The node layer uses this to
+ * forward floods/routed packets through the same transport they arrived
+ * on (Pillar use case). */
+nx_err_t nx_transport_send_bridge(nx_transport_t *t,
+                                  const uint8_t *data, size_t len);
 
 /* Receive raw bytes from a specific transport. */
 nx_err_t nx_transport_recv(nx_transport_t *t, uint8_t *buf, size_t buf_len,

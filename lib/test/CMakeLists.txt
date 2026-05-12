@@ -19,6 +19,7 @@ set(TESTS
     test_stress
     test_stress_1k
     test_tcp_inet
+    test_pillar_bridge
     test_udp_mcast
     test_message
     test_msgring

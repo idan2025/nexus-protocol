@@ -104,7 +104,17 @@ static nx_err_t transmit_all(const nx_packet_t *pkt)
     return any_sent ? NX_OK : last_err;
 }
 
-/* ── Internal: bridge packet to all transports except ingress ────────── */
+/* ── Internal: bridge packet to all transports except ingress ──────────
+ *
+ * For single-peer transports (serial, BLE), the ingress transport is fully
+ * skipped to avoid echoing back to the sender.
+ *
+ * For multi-peer "hub" transports (tcp_inet, future multi-peer transports),
+ * we ALSO ask the ingress transport to re-distribute the packet to its OTHER
+ * connected peers via send_bridge. This is what makes a Pillar actually
+ * relay traffic between two phones that are both attached to it: without
+ * it, an announce from phone A arriving on the pillar's tcp_inet transport
+ * would never reach phone B because phone B sits on the same transport. */
 
 static nx_err_t transmit_bridge(const nx_packet_t *pkt, int exclude_idx)
 {
@@ -117,15 +127,26 @@ static nx_err_t transmit_bridge(const nx_packet_t *pkt, int exclude_idx)
     bool any_sent = false;
 
     for (int i = 0; i < count; i++) {
-        if (i == exclude_idx) continue;  /* Skip ingress transport */
         nx_transport_t *t = nx_transport_get(i);
-        if (t && t->active) {
-            nx_err_t err = nx_transport_send(t, wire, (size_t)n);
-            if (err == NX_OK) {
-                any_sent = true;
+        if (!t || !t->active) continue;
+
+        nx_err_t err;
+        if (i == exclude_idx) {
+            /* Ingress transport: ask it to re-distribute among its OTHER
+             * peers if it supports hub bridging; otherwise skip. */
+            if (t->ops && t->ops->send_bridge) {
+                err = nx_transport_send_bridge(t, wire, (size_t)n);
             } else {
-                last_err = err;
+                continue;
             }
+        } else {
+            err = nx_transport_send(t, wire, (size_t)n);
+        }
+
+        if (err == NX_OK) {
+            any_sent = true;
+        } else {
+            last_err = err;
         }
     }
 
