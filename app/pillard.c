@@ -439,8 +439,13 @@ static void send_pillar_nickname_to(const nx_addr_short_t *addr)
     size_t  n = nx_msg_build_nickname(buf, sizeof(buf), g_cfg.pillar_name);
     if (n == 0) return;
 
+    /* Use _raw (plaintext) for the fallback, NOT nx_node_send: the latter
+     * ephemeral-encrypts but the receiver's handle_data path doesn't run
+     * the matching decrypt, so the phone parses ciphertext as NXM and
+     * shows a gibberish text bubble. NICKNAME is public info; plaintext
+     * is fine and matches what Android does for all non-session sends. */
     if (nx_node_send_session(&g_node, addr, buf, n) != NX_OK) {
-        (void)nx_node_send(&g_node, addr, buf, n);
+        (void)nx_node_send_raw(&g_node, addr, buf, n);
     }
     LOG_DEBUG("sent NICKNAME '%s' to %02X%02X%02X%02X",
               g_cfg.pillar_name,
