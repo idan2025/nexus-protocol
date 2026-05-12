@@ -50,6 +50,22 @@ nx_err_t nx_transport_send_bridge(nx_transport_t *t,
     return t->ops->send_bridge(t, data, len);
 }
 
+void nx_transport_note_peer_addr(nx_transport_t *t, const uint8_t *short_addr)
+{
+    if (!t || !t->ops || !t->ops->note_peer_addr || !short_addr) return;
+    t->ops->note_peer_addr(t, short_addr);
+}
+
+nx_err_t nx_transport_send_to_addr(nx_transport_t *t,
+                                    const uint8_t *short_addr,
+                                    const uint8_t *data, size_t len)
+{
+    if (!t || !t->ops || !short_addr) return NX_ERR_INVALID_ARG;
+    if (!t->ops->send_to_addr) return NX_ERR_INVALID_ARG;
+    if (!t->active) return NX_ERR_TRANSPORT;
+    return t->ops->send_to_addr(t, short_addr, data, len);
+}
+
 nx_err_t nx_transport_recv(nx_transport_t *t, uint8_t *buf, size_t buf_len,
                            size_t *out_len, uint32_t timeout_ms)
 {

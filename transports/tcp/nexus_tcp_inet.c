@@ -77,6 +77,13 @@ typedef struct {
     uint8_t      auth_rx[NX_TCP_INET_AUTH_HELLO_SIZE];
     size_t       auth_rx_pos;
     size_t       auth_rx_need;
+
+    /* Reverse-ARP for unicast forwarding. Populated by the node layer via
+     * note_peer_addr() each time it parses a packet's src on this conn.
+     * send_to_addr() scans these to route a unicast packet to exactly one
+     * peer (no broadcast / metadata leak). Cleared on conn_close. */
+    uint8_t      peer_short_addr[NX_SHORT_ADDR_SIZE];
+    bool         peer_addr_valid;
 } tcp_inet_conn_t;
 
 /* ── Transport state ─────────────────────────────────────────────────── */
@@ -210,6 +217,8 @@ static void conn_close(tcp_inet_conn_t *c)
     c->rx.state = RX_WAIT_START;
     c->rx.frame_len = 0;
     c->rx.payload_pos = 0;
+    c->peer_addr_valid = false;
+    memset(c->peer_short_addr, 0, sizeof(c->peer_short_addr));
 }
 
 static tcp_inet_conn_t *find_free_slot(tcp_inet_state_t *s)
@@ -680,6 +689,78 @@ static nx_err_t tcp_inet_send_bridge(nx_transport_t *t,
     return tcp_inet_broadcast(s, data, len, s->last_rx_conn_idx);
 }
 
+/* ── Reverse-ARP: associate the last-received conn with a short address  */
+
+static void tcp_inet_note_peer_addr(nx_transport_t *t, const uint8_t *short_addr)
+{
+    tcp_inet_state_t *s = (tcp_inet_state_t *)t->state;
+    if (!s || !short_addr) return;
+    int idx = s->last_rx_conn_idx;
+    if (idx < 0 || idx >= NX_TCP_INET_MAX_PEERS) return;
+    tcp_inet_conn_t *c = &s->conns[idx];
+    if (!c->active) return;
+    memcpy(c->peer_short_addr, short_addr, NX_SHORT_ADDR_SIZE);
+    c->peer_addr_valid = true;
+}
+
+/* ── Unicast: send only to the peer owning the given short address ───── */
+
+static nx_err_t tcp_inet_send_to_addr(nx_transport_t *t,
+                                       const uint8_t *short_addr,
+                                       const uint8_t *data, size_t len)
+{
+    tcp_inet_state_t *s = (tcp_inet_state_t *)t->state;
+    if (!s || !short_addr) return NX_ERR_INVALID_ARG;
+    if (len > NX_MAX_PACKET) return NX_ERR_INVALID_ARG;
+
+    int target = -1;
+    for (int i = 0; i < NX_TCP_INET_MAX_PEERS; i++) {
+        tcp_inet_conn_t *c = &s->conns[i];
+        if (!c->active || c->fd < 0) continue;
+        if (!conn_is_authed(c)) continue;
+        if (!c->peer_addr_valid) continue;
+        if (memcmp(c->peer_short_addr, short_addr, NX_SHORT_ADDR_SIZE) == 0) {
+            target = i;
+            break;
+        }
+    }
+    if (target < 0) return NX_ERR_NOT_FOUND;
+
+    /* Build frame once and write to the single target conn. Reuses the
+     * same write/poll logic as broadcast for EAGAIN handling. */
+    uint8_t frame[TCP_MAX_FRAME];
+    size_t pos = 0;
+    frame[pos++] = TCP_FRAME_DELIM;
+    frame[pos++] = (uint8_t)(len >> 8);
+    frame[pos++] = (uint8_t)(len);
+    memcpy(&frame[pos], data, len);
+    pos += len;
+    frame[pos++] = TCP_FRAME_DELIM;
+
+    tcp_inet_conn_t *c = &s->conns[target];
+    size_t written = 0;
+    while (written < pos) {
+        ssize_t n = write(c->fd, frame + written, pos - written);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                struct pollfd pfd = { .fd = c->fd, .events = POLLOUT };
+                if (poll(&pfd, 1, 100) <= 0) {
+                    conn_close(c);
+                    s->conn_count--;
+                    return NX_ERR_TRANSPORT;
+                }
+                continue;
+            }
+            conn_close(c);
+            s->conn_count--;
+            return NX_ERR_TRANSPORT;
+        }
+        written += (size_t)n;
+    }
+    return NX_OK;
+}
+
 /* ── Recv (poll all connections, return first complete packet) ────────── */
 
 static nx_err_t tcp_inet_recv(nx_transport_t *t, uint8_t *buf, size_t buf_len,
@@ -856,7 +937,9 @@ static void tcp_inet_destroy(nx_transport_t *t)
 static const nx_transport_ops_t tcp_inet_ops = {
     .init    = tcp_inet_init,
     .send    = tcp_inet_send,
-    .send_bridge = tcp_inet_send_bridge,
+    .send_bridge   = tcp_inet_send_bridge,
+    .note_peer_addr = tcp_inet_note_peer_addr,
+    .send_to_addr   = tcp_inet_send_to_addr,
     .recv    = tcp_inet_recv,
     .destroy = tcp_inet_destroy,
 };

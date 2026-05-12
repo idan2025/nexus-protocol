@@ -247,7 +247,119 @@ static void test_send_bridge_alternating_ingress(void)
     PASS();
 }
 
-/* ── Test 5: send_bridge on single-peer transport returns INVALID_ARG ── */
+/* ── Test 5: per-peer unicast via note_peer_addr + send_to_addr ──────── */
+
+static void test_unicast_to_named_peer(void)
+{
+    TEST("send_to_addr delivers to one peer, not the others");
+
+    nx_transport_t *pillar = make_pillar(19204);
+    nx_transport_t *a = make_phone(19204);
+    nx_transport_t *b = make_phone(19204);
+    nx_transport_t *cc = make_phone(19204);
+    ASSERT(pillar && a && b && cc, "init");
+
+    pump_pillar(pillar, 200);
+    pump_pillar(pillar, 50);
+
+    /* Each phone sends one priming packet so the pillar's reverse-ARP
+     * map populates conn -> short_addr. We use distinct 4-byte addrs. */
+    uint8_t addr_a[4] = {0xAA, 0xAA, 0xAA, 0xAA};
+    uint8_t addr_b[4] = {0xBB, 0xBB, 0xBB, 0xBB};
+    uint8_t addr_c[4] = {0xCC, 0xCC, 0xCC, 0xCC};
+
+    uint8_t buf[64];
+    size_t  n = 0;
+
+    /* Prime A. */
+    uint8_t prime_a[] = "prime-A";
+    ASSERT(a->ops->send(a, prime_a, sizeof(prime_a)) == NX_OK, "a send");
+    ASSERT(drain_one(pillar, buf, sizeof(buf), &n, 2000) == NX_OK, "p recv A");
+    nx_transport_note_peer_addr(pillar, addr_a);
+
+    /* Prime B. */
+    uint8_t prime_b[] = "prime-B";
+    ASSERT(b->ops->send(b, prime_b, sizeof(prime_b)) == NX_OK, "b send");
+    ASSERT(drain_one(pillar, buf, sizeof(buf), &n, 2000) == NX_OK, "p recv B");
+    nx_transport_note_peer_addr(pillar, addr_b);
+
+    /* Prime C. */
+    uint8_t prime_c[] = "prime-C";
+    ASSERT(cc->ops->send(cc, prime_c, sizeof(prime_c)) == NX_OK, "c send");
+    ASSERT(drain_one(pillar, buf, sizeof(buf), &n, 2000) == NX_OK, "p recv C");
+    nx_transport_note_peer_addr(pillar, addr_c);
+
+    /* Now send a unicast to B's address only. */
+    uint8_t msg[] = "unicast-to-B-only";
+    ASSERT(nx_transport_send_to_addr(pillar, addr_b, msg, sizeof(msg)) == NX_OK,
+           "send_to_addr B");
+
+    /* B must receive. */
+    uint8_t bbuf[64];
+    size_t lb = 0;
+    ASSERT(drain_one(b, bbuf, sizeof(bbuf), &lb, 1500) == NX_OK, "b recv");
+    ASSERT(lb == sizeof(msg) && memcmp(bbuf, msg, lb) == 0, "b payload");
+
+    /* A must NOT receive. */
+    uint8_t abuf[64];
+    size_t la = 0;
+    ASSERT(drain_one(a, abuf, sizeof(abuf), &la, 300) == NX_ERR_TIMEOUT,
+           "A must not receive");
+
+    /* C must NOT receive. */
+    uint8_t cbuf[64];
+    size_t lc = 0;
+    ASSERT(drain_one(cc, cbuf, sizeof(cbuf), &lc, 300) == NX_ERR_TIMEOUT,
+           "C must not receive");
+
+    destroy(a); destroy(b); destroy(cc); destroy(pillar);
+    PASS();
+}
+
+/* ── Test 6: send_to_addr returns NOT_FOUND for unknown address ──────── */
+
+static void test_unicast_unknown_addr(void)
+{
+    TEST("send_to_addr returns NOT_FOUND for unmapped peer");
+
+    nx_transport_t *pillar = make_pillar(19205);
+    nx_transport_t *a = make_phone(19205);
+    ASSERT(pillar && a, "init");
+
+    pump_pillar(pillar, 200);
+
+    uint8_t unknown[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    uint8_t msg[] = "no-one-home";
+    nx_err_t err = nx_transport_send_to_addr(pillar, unknown,
+                                              msg, sizeof(msg));
+    ASSERT(err == NX_ERR_NOT_FOUND, "must be NOT_FOUND");
+
+    destroy(a); destroy(pillar);
+    PASS();
+}
+
+/* ── Test 7: send_to_addr on single-peer transport returns INVALID_ARG ─ */
+
+static void test_send_to_addr_unsupported(void)
+{
+    TEST("non-hub transport rejects send_to_addr");
+
+    nx_transport_t *p = nx_pipe_transport_create();
+    ASSERT(p != NULL, "alloc");
+    ASSERT(p->ops->init(p, NULL) == NX_OK, "init");
+    ASSERT(p->ops->send_to_addr == NULL, "no send_to_addr op");
+
+    p->active = true;
+    uint8_t addr[4] = {1,2,3,4};
+    uint8_t msg[] = "x";
+    nx_err_t err = nx_transport_send_to_addr(p, addr, msg, sizeof(msg));
+    ASSERT(err == NX_ERR_INVALID_ARG, "must reject");
+
+    p->ops->destroy(p);
+    PASS();
+}
+
+/* ── Test 8: send_bridge on single-peer transport returns INVALID_ARG ── */
 
 static void test_send_bridge_unsupported(void)
 {
@@ -281,6 +393,9 @@ int main(void)
     test_send_bridge_no_ingress();
     test_send_bridge_skips_ingress();
     test_send_bridge_alternating_ingress();
+    test_unicast_to_named_peer();
+    test_unicast_unknown_addr();
+    test_send_to_addr_unsupported();
     test_send_bridge_unsupported();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);

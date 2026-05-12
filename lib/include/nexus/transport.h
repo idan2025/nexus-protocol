@@ -37,6 +37,19 @@ typedef struct {
      * transports (serial, BLE) leave this NULL -- the node layer then
      * treats them as non-bridging on ingress (no echo). */
     nx_err_t (*send_bridge)(nx_transport_t *t, const uint8_t *data, size_t len);
+
+    /* Optional: per-peer addressing. The node layer calls note_peer_addr
+     * immediately after parsing a packet's src so a hub transport can
+     * build a (short_addr -> peer) map. send_to_addr then forwards a
+     * unicast packet to ONLY the peer matching the short address (no
+     * broadcast / metadata leak across other connected peers). Returns
+     * NX_ERR_NOT_FOUND if the address is unknown -- callers should fall
+     * back to send_bridge in that case. Single-peer transports leave
+     * both NULL. */
+    void     (*note_peer_addr)(nx_transport_t *t, const uint8_t *short_addr);
+    nx_err_t (*send_to_addr)(nx_transport_t *t,
+                              const uint8_t *short_addr,
+                              const uint8_t *data, size_t len);
 } nx_transport_ops_t;
 
 /* Transport instance */
@@ -74,6 +87,23 @@ nx_err_t nx_transport_send(nx_transport_t *t, const uint8_t *data, size_t len);
  * on (Pillar use case). */
 nx_err_t nx_transport_send_bridge(nx_transport_t *t,
                                   const uint8_t *data, size_t len);
+
+/* Tell a hub transport that the most-recently-received packet was sourced
+ * from this short address. No-op for transports that do not implement
+ * note_peer_addr. The node layer calls this right after parsing every
+ * incoming packet's src so the hub can build a peer map for unicast
+ * forwarding. short_addr points to NX_SHORT_ADDR_SIZE bytes. */
+void nx_transport_note_peer_addr(nx_transport_t *t, const uint8_t *short_addr);
+
+/* Hub-direct send: forward a packet to ONLY the peer that owns short_addr.
+ * Used by the node layer to perform metadata-private unicast forwarding
+ * inside a hub transport (no broadcast to unrelated peers). Returns
+ * NX_ERR_NOT_FOUND when the address is not in the hub's peer map; callers
+ * should fall back to send_bridge in that case. Returns NX_ERR_INVALID_ARG
+ * when the transport does not implement send_to_addr. */
+nx_err_t nx_transport_send_to_addr(nx_transport_t *t,
+                                    const uint8_t *short_addr,
+                                    const uint8_t *data, size_t len);
 
 /* Receive raw bytes from a specific transport. */
 nx_err_t nx_transport_recv(nx_transport_t *t, uint8_t *buf, size_t buf_len,

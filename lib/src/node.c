@@ -482,9 +482,32 @@ static void handle_data(nx_node_t *node, const nx_packet_t *pkt,
 
         if (route || nx_packet_flag_rtype(pkt->header.flags) == NX_RTYPE_FLOOD
             || nx_packet_flag_rtype(pkt->header.flags) == NX_RTYPE_DOMAIN) {
-            /* Reticulum-style: any relay node bridges across transports,
-             * forwarding on all interfaces except the one it arrived on */
-            (void)transmit_bridge(&fwd, ingress_transport);
+
+            /* Metadata-private unicast: if we have a route and the via
+             * transport supports per-peer addressing (hub), send to ONLY
+             * the next-hop peer. Falls back to bridge for unknown peers
+             * or transports without the capability. */
+            bool delivered = false;
+            if (route &&
+                nx_packet_flag_rtype(pkt->header.flags) == NX_RTYPE_ROUTED) {
+                nx_transport_t *vt =
+                    nx_transport_get(route->via_transport);
+                if (vt && vt->ops && vt->ops->send_to_addr) {
+                    uint8_t wire[NX_MAX_PACKET];
+                    int n = nx_packet_serialize(&fwd, wire, sizeof(wire));
+                    if (n > 0) {
+                        nx_err_t e = nx_transport_send_to_addr(
+                            vt, route->next_hop.bytes, wire, (size_t)n);
+                        if (e == NX_OK) delivered = true;
+                    }
+                }
+            }
+
+            if (!delivered) {
+                /* Reticulum-style: any relay node bridges across transports,
+                 * forwarding on all interfaces except the one it arrived on */
+                (void)transmit_bridge(&fwd, ingress_transport);
+            }
 
             /* PROPAGATE flag: also store-and-forward even when route exists */
             if (node->anchor.max_slots > 0 &&
@@ -565,6 +588,10 @@ nx_err_t nx_node_poll(nx_node_t *node, uint32_t poll_timeout_ms)
         if (err == NX_OK && wire_len >= NX_HEADER_SIZE) {
             nx_packet_t pkt;
             if (nx_packet_deserialize(wire, wire_len, &pkt) == NX_OK) {
+                /* Reverse-ARP for hub transports: tell the ingress
+                 * transport which short address this conn is owned by, so
+                 * later unicast forwarding can target only that peer. */
+                nx_transport_note_peer_addr(t, pkt.header.src.bytes);
                 dispatch_packet(node, &pkt, i);
             }
         }
