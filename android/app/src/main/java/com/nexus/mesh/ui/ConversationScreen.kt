@@ -835,7 +835,7 @@ private fun MediaAttachment(msg: MessageEntity, tint: androidx.compose.ui.graphi
                     }
             ) {
                 Icon(
-                    if (playing) Icons.Default.Close else Icons.Default.PlayArrow,
+                    Icons.Default.PlayArrow,
                     contentDescription = if (playing) "stop" else "play",
                     tint = tint
                 )
