@@ -36,7 +36,7 @@ static volatile uint8_t rx_read  = 0;
 static NimBLEServer *ble_server = nullptr;
 static NimBLECharacteristic *tx_char = nullptr;
 static NimBLECharacteristic *rx_char = nullptr;
-static bool client_connected = false;
+static volatile bool client_connected = false;
 
 /* ── BLE Callbacks ────────────────────────────────────────────────────── */
 
