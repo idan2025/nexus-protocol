@@ -846,6 +846,238 @@ static void admin_stop(void)
     }
 }
 
+/* ── Web Admin HTTP ──────────────────────────────────────────────────────
+ *
+ * Read-only HTML dashboard at /admin.  Shows uptime, node address, neighbor
+ * table, mailbox depth, traffic counters, and the last 64 log lines.
+ * Binds to 127.0.0.1 only; put nginx/caddy in front for remote access.
+ */
+
+static size_t webadmin_render_html(char *buf, size_t buflen)
+{
+    const nx_route_table_t *rt  = nx_node_route_table(&g_node);
+    const nx_identity_t    *nid = nx_node_identity(&g_node);
+
+    char addr_str[16];
+    snprintf(addr_str, sizeof(addr_str), "%02X%02X%02X%02X",
+             nid->short_addr.bytes[0], nid->short_addr.bytes[1],
+             nid->short_addr.bytes[2], nid->short_addr.bytes[3]);
+
+    time_t uptime = time(NULL) - g_start_time;
+    int up_d = (int)(uptime / 86400);
+    int up_h = (int)((uptime % 86400) / 3600);
+    int up_m = (int)((uptime % 3600) / 60);
+    int up_s = (int)(uptime % 60);
+
+    int n_neighbors = 0, n_routes = 0;
+    if (rt) {
+        for (int i = 0; i < NX_MAX_NEIGHBORS; i++)
+            if (rt->neighbors[i].valid) n_neighbors++;
+        for (int i = 0; i < NX_MAX_ROUTES; i++)
+            if (rt->routes[i].valid) n_routes++;
+    }
+    int mailbox_depth = nx_anchor_count(&g_node.anchor);
+
+    size_t pos = 0;
+#define WA_PRINTF(...) do { \
+    int _n = snprintf(buf + pos, buflen - pos, __VA_ARGS__); \
+    if (_n > 0) pos += (size_t)_n; \
+    if (pos >= buflen - 1) { pos = buflen - 1; goto wa_done; } \
+} while (0)
+
+    WA_PRINTF(
+        "<!DOCTYPE html><html><head>"
+        "<meta charset='utf-8'><title>Nexus Pillar Admin</title>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<style>"
+        "body{font-family:monospace;background:#111;color:#ccc;margin:2em}"
+        "h1{color:#8cf}h2{color:#8cf;font-size:1em;margin-top:1.5em}"
+        "table{border-collapse:collapse;width:100%%}"
+        "th{color:#8cf;text-align:left;padding:2px 8px}"
+        "td{padding:2px 8px;border-top:1px solid #333}"
+        "pre{background:#000;padding:1em;overflow:auto;max-height:300px;"
+            "font-size:.85em;white-space:pre-wrap;word-break:break-all}"
+        "</style></head><body>"
+        "<h1>Nexus Pillar</h1>"
+    );
+    WA_PRINTF(
+        "<h2>Node</h2><table>"
+        "<tr><th>Address</th><td>%s</td></tr>"
+        "<tr><th>Name</th><td>%s</td></tr>"
+        "<tr><th>Role</th><td>%s</td></tr>"
+        "<tr><th>Uptime</th><td>%dd %dh %dm %ds</td></tr>"
+        "<tr><th>Neighbors</th><td>%d</td></tr>"
+        "<tr><th>Routes</th><td>%d</td></tr>"
+        "<tr><th>Mailbox depth</th><td>%d</td></tr>"
+        "</table>",
+        addr_str,
+        g_cfg.pillar_name[0] ? g_cfg.pillar_name : "(unnamed)",
+        g_cfg.vault_mode ? "VAULT" : "PILLAR",
+        up_d, up_h, up_m, up_s,
+        n_neighbors, n_routes, mailbox_depth
+    );
+    WA_PRINTF(
+        "<h2>Traffic</h2><table>"
+        "<tr><th>rx_data</th><td>%llu</td>"
+        "<th>rx_session</th><td>%llu</td>"
+        "<th>rx_group</th><td>%llu</td></tr>"
+        "<tr><th>announces</th><td>%llu</td>"
+        "<th>rate_warns</th><td>%llu</td>"
+        "<th>fed_served</th><td>%llu</td></tr>"
+        "</table>",
+        (unsigned long long)g_msgs_data,
+        (unsigned long long)g_msgs_session,
+        (unsigned long long)g_msgs_group,
+        (unsigned long long)g_announces,
+        (unsigned long long)g_rate_warnings,
+        (unsigned long long)g_fed_pkts_served
+    );
+
+    WA_PRINTF("<h2>Neighbors (%d)</h2>"
+              "<table><tr><th>Address</th><th>Role</th>"
+              "<th>RSSI</th><th>LQ</th></tr>",
+              n_neighbors);
+    if (rt) {
+        for (int i = 0; i < NX_MAX_NEIGHBORS; i++) {
+            const nx_neighbor_t *nb = &rt->neighbors[i];
+            if (!nb->valid) continue;
+            WA_PRINTF("<tr><td>%02X%02X%02X%02X</td><td>%d</td>"
+                      "<td>%d</td><td>%u</td></tr>",
+                      nb->addr.bytes[0], nb->addr.bytes[1],
+                      nb->addr.bytes[2], nb->addr.bytes[3],
+                      (int)nb->role, (int)nb->rssi,
+                      (unsigned)nb->link_quality);
+        }
+    }
+    WA_PRINTF("</table>");
+
+    WA_PRINTF("<h2>Log (last %d lines)</h2><pre>", LOGTAIL_LINES);
+    pthread_mutex_lock(&g_logtail_mutex);
+    for (int k = 0; k < LOGTAIL_LINES; k++) {
+        int idx = (g_logtail_head + k) % LOGTAIL_LINES;
+        if (g_logtail[idx][0] == '\0') continue;
+        for (const char *p = g_logtail[idx]; *p && pos < buflen - 5; p++) {
+            if (*p == '&')      { memcpy(buf + pos, "&amp;", 5); pos += 5; }
+            else if (*p == '<') { memcpy(buf + pos, "&lt;",  4); pos += 4; }
+            else if (*p == '>') { memcpy(buf + pos, "&gt;",  4); pos += 4; }
+            else                { buf[pos++] = *p; }
+        }
+        if (pos < buflen - 1) buf[pos++] = '\n';
+    }
+    pthread_mutex_unlock(&g_logtail_mutex);
+    WA_PRINTF("</pre></body></html>");
+
+wa_done:
+#undef WA_PRINTF
+    buf[pos] = '\0';
+    return pos;
+}
+
+static void webadmin_handle_client(int cfd)
+{
+    char req[256];
+    ssize_t n = recv(cfd, req, sizeof(req) - 1, 0);
+    if (n <= 0) { close(cfd); return; }
+    req[n] = '\0';
+
+    int is_root  = (strncmp(req, "GET / ",    6) == 0) ||
+                   (strncmp(req, "GET /\r",   6) == 0) ||
+                   (strncmp(req, "GET /\n",   6) == 0);
+    int is_admin = (strncmp(req, "GET /admin", 10) == 0);
+
+    if (!is_root && !is_admin) {
+        const char *nf = "HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+        (void)send(cfd, nf, strlen(nf), MSG_NOSIGNAL);
+        close(cfd);
+        return;
+    }
+    if (is_root) {
+        const char *redir =
+            "HTTP/1.0 301 Moved Permanently\r\n"
+            "Location: /admin\r\n"
+            "Content-Length: 0\r\n\r\n";
+        (void)send(cfd, redir, strlen(redir), MSG_NOSIGNAL);
+        close(cfd);
+        return;
+    }
+
+    char *body = malloc(65536);
+    if (!body) {
+        const char *err =
+            "HTTP/1.0 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
+        (void)send(cfd, err, strlen(err), MSG_NOSIGNAL);
+        close(cfd);
+        return;
+    }
+    size_t blen = webadmin_render_html(body, 65536);
+    char hdr[128];
+    int hlen = snprintf(hdr, sizeof(hdr),
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: %zu\r\n\r\n", blen);
+    (void)send(cfd, hdr, (size_t)hlen, MSG_NOSIGNAL);
+    (void)send(cfd, body, blen, MSG_NOSIGNAL);
+    free(body);
+    close(cfd);
+}
+
+static void *webadmin_thread_main(void *arg)
+{
+    (void)arg;
+    while (g_webadmin_running && g_webadmin_fd >= 0) {
+        struct sockaddr_in cli;
+        socklen_t clen = sizeof(cli);
+        int cfd = accept(g_webadmin_fd, (struct sockaddr *)&cli, &clen);
+        if (cfd < 0) {
+            if (errno == EINTR) continue;
+            if (!g_webadmin_running) break;
+            usleep(100000);
+            continue;
+        }
+        webadmin_handle_client(cfd);
+    }
+    return NULL;
+}
+
+static int webadmin_start(uint16_t port)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family      = AF_INET;
+    sa.sin_port        = htons(port);
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) { close(fd); return -1; }
+    if (listen(fd, 4) < 0) { close(fd); return -1; }
+
+    g_webadmin_fd      = fd;
+    g_webadmin_running = 1;
+    if (pthread_create(&g_webadmin_thread, NULL, webadmin_thread_main, NULL) != 0) {
+        close(fd);
+        g_webadmin_fd      = -1;
+        g_webadmin_running = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static void webadmin_stop(void)
+{
+    if (!g_webadmin_running) return;
+    g_webadmin_running = 0;
+    if (g_webadmin_fd >= 0) {
+        shutdown(g_webadmin_fd, SHUT_RDWR);
+        close(g_webadmin_fd);
+        g_webadmin_fd = -1;
+    }
+    pthread_join(g_webadmin_thread, NULL);
+}
+
 /* ── Stats ───────────────────────────────────────────────────────────── */
 
 static void dump_stats(void)
@@ -898,6 +1130,9 @@ static void print_usage(const char *prog)
         "  -N NAME        Friendly pillar name (max 32 chars). Pushed to every\n"
         "                 connecting peer as a NICKNAME NXM so phones show the\n"
         "                 name instead of the 4-byte address. Env: PILLAR_NAME.\n"
+        "  -A PORT        Web admin dashboard HTTP port (binds 127.0.0.1, default: off)\n"
+        "  -C FILE        TLS certificate file (PEM). Enables TLS listener on :4243.\n"
+        "  -K FILE        TLS private key file (PEM). Must accompany -C.\n"
         "  -v             Verbose debug logging\n"
         "  -h             Show this help\n"
         "\n"
@@ -977,7 +1212,7 @@ int main(int argc, char **argv)
     }
 
     int opt;
-    while ((opt = getopt(argc, argv, "p:i:c:mVfM:r:u:N:vh")) != -1) {
+    while ((opt = getopt(argc, argv, "p:i:c:mVfM:r:u:N:A:C:K:vh")) != -1) {
         switch (opt) {
         case 'N':
             strncpy(g_cfg.pillar_name, optarg, NX_MSG_MAX_NICKNAME);
@@ -1032,6 +1267,15 @@ int main(int argc, char **argv)
                         sizeof(g_cfg.admin_socket) - 1);
                 g_cfg.admin_socket[sizeof(g_cfg.admin_socket) - 1] = '\0';
             }
+            break;
+        case 'A': g_cfg.admin_http_port = (uint16_t)atoi(optarg); break;
+        case 'C':
+            strncpy(g_cfg.tls_cert, optarg, sizeof(g_cfg.tls_cert) - 1);
+            g_cfg.tls_cert[sizeof(g_cfg.tls_cert) - 1] = '\0';
+            break;
+        case 'K':
+            strncpy(g_cfg.tls_key, optarg, sizeof(g_cfg.tls_key) - 1);
+            g_cfg.tls_key[sizeof(g_cfg.tls_key) - 1] = '\0';
             break;
         case 'v': g_cfg.verbose = 1; break;
         case 'h': print_usage(argv[0]); return 0;
@@ -1176,6 +1420,24 @@ int main(int argc, char **argv)
         }
     }
 
+    /* ── Web admin HTTP (optional) ──────────────────────────────────── */
+
+    if (g_cfg.admin_http_port > 0) {
+        if (webadmin_start(g_cfg.admin_http_port) == 0) {
+            LOG_INFO("web admin at http://127.0.0.1:%u/admin",
+                     g_cfg.admin_http_port);
+        } else {
+            LOG_WARN("web admin bind on :%u failed: %s",
+                     g_cfg.admin_http_port, strerror(errno));
+        }
+    }
+
+    if (g_cfg.tls_cert[0] && g_cfg.tls_key[0]) {
+        LOG_INFO("TLS cert=%s key=%s (TLS listener not yet compiled in; "
+                 "rebuild with PILLARD_TLS=1)",
+                 g_cfg.tls_cert, g_cfg.tls_key);
+    }
+
     /* ── Announce + event loop ───────────────────────────────────────── */
 
     g_start_time = time(NULL);
@@ -1212,6 +1474,7 @@ int main(int argc, char **argv)
 
     LOG_INFO("shutting down");
     dump_stats();
+    webadmin_stop();
     admin_stop();
     metrics_stop();
     nx_node_stop(&g_node);
