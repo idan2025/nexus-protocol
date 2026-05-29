@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.nexus.mesh.data.ContactEntity
 import com.nexus.mesh.service.NexusService
 
 @Composable
@@ -25,8 +26,9 @@ fun CallScreen(activity: MainActivity, navController: NavController, peerAddr: S
         ?: remember { mutableStateOf<String?>(null) }
     val isMicActive by service?.pttMicActive?.collectAsState()
         ?: remember { mutableStateOf(false) }
-    val peerName by service?.repository?.getNicknameOrAddr(peerAddr)?.collectAsState(initial = peerAddr)
-        ?: remember { mutableStateOf(peerAddr) }
+    val contacts by service?.repository?.getContacts()?.collectAsState(initial = emptyList())
+        ?: remember { mutableStateOf<List<ContactEntity>>(emptyList()) }
+    val peerName = contacts.find { it.address == peerAddr }?.nickname ?: peerAddr
 
     // Navigate away when call ends
     LaunchedEffect(callState) {

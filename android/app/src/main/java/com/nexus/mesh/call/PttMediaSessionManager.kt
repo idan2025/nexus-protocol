@@ -82,8 +82,13 @@ class PttMediaSessionManager {
     }
 
     fun playAudioChunk(data: ByteArray) {
-        if (audioTrack == null) startPlayback()
+        if (audioTrack == null) ensurePlayback()
         audioTrack?.write(data, 0, data.size)
+    }
+
+    fun ensurePlayback() {
+        if (audioTrack != null) return
+        startPlayback()
     }
 
     private fun startPlayback() {

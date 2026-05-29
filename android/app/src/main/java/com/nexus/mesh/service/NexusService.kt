@@ -1511,6 +1511,195 @@ class NexusService : Service(), NexusNode.Callback {
         return node.isRunning
     }
 
+    // --- Voice call public API ---
+
+    /** Initiate an outgoing call to [peerAddr]. */
+    fun startCall(peerAddr: String) {
+        if (_callState.value != CallState.IDLE) return
+        val destBytes = hexToBytes(peerAddr) ?: return
+        val sid = NxmBuilder.generateMsgId()
+        callSessionId = sid
+        _callPeer.value = peerAddr
+        _callState.value = CallState.RINGING_OUT
+        val nxm = NxmBuilder.buildVoiceCallSignal(sid, VoiceCallState.INVITE, PttMediaSessionManager.CODEC)
+        scope.launch { node.sendSession(destBytes, nxm) || node.send(destBytes, nxm) }
+    }
+
+    /** Accept an incoming call (must be in RINGING_IN state). */
+    fun acceptCall() {
+        val peer = _callPeer.value ?: return
+        val sid = callSessionId ?: return
+        val destBytes = hexToBytes(peer) ?: return
+        val nxm = NxmBuilder.buildVoiceCallSignal(sid, VoiceCallState.ACCEPT)
+        scope.launch {
+            node.sendSession(destBytes, nxm) || node.send(destBytes, nxm)
+        }
+        _callState.value = CallState.CONNECTED
+        pttMedia.ensurePlayback()
+    }
+
+    /** Reject an incoming call. */
+    fun rejectCall() {
+        val peer = _callPeer.value ?: return
+        val sid = callSessionId ?: return
+        val destBytes = hexToBytes(peer) ?: return
+        val nxm = NxmBuilder.buildVoiceCallSignal(sid, VoiceCallState.REJECT)
+        scope.launch { node.sendSession(destBytes, nxm) || node.send(destBytes, nxm) }
+        _callState.value = CallState.IDLE
+        _callPeer.value = null
+        callSessionId = null
+    }
+
+    /** Hang up or cancel the current call. */
+    fun hangUp() {
+        val peer = _callPeer.value
+        val sid = callSessionId
+        if (peer != null && sid != null) {
+            val destBytes = hexToBytes(peer)
+            if (destBytes != null) {
+                val nxm = NxmBuilder.buildVoiceCallSignal(sid, VoiceCallState.HANGUP)
+                scope.launch { node.sendSession(destBytes, nxm) || node.send(destBytes, nxm) }
+            }
+        }
+        pttMedia.stopCapture()
+        _callState.value = CallState.ENDED
+        _callPeer.value = null
+        callSessionId = null
+        scope.launch {
+            kotlinx.coroutines.delay(500)
+            _callState.value = CallState.IDLE
+        }
+    }
+
+    /** Begin PTT transmission (hold-to-talk). */
+    fun pttStart() {
+        if (_callState.value != CallState.CONNECTED) return
+        val peer = _callPeer.value ?: return
+        val sid = callSessionId ?: return
+        val destBytes = hexToBytes(peer) ?: return
+        val nxm = NxmBuilder.buildVoiceCallSignal(sid, VoiceCallState.PTT_START)
+        scope.launch { node.sendSession(destBytes, nxm) || node.send(destBytes, nxm) }
+        pttMedia.startCapture()
+    }
+
+    /** End PTT transmission (release). */
+    fun pttEnd() {
+        pttMedia.stopCapture()
+        val peer = _callPeer.value ?: return
+        val sid = callSessionId ?: return
+        val destBytes = hexToBytes(peer) ?: return
+        val nxm = NxmBuilder.buildVoiceCallSignal(sid, VoiceCallState.PTT_END)
+        scope.launch { node.sendSession(destBytes, nxm) || node.send(destBytes, nxm) }
+    }
+
+    private fun handleVoiceCall(srcHex: String, src: ByteArray, nxm: NxmMessage) {
+        val sid = nxm.msgId ?: return
+        val state = nxm.callState ?: return
+        when (state) {
+            VoiceCallState.INVITE -> {
+                if (_callState.value != CallState.IDLE) {
+                    // Already in a call — auto-reject
+                    val reject = NxmBuilder.buildVoiceCallSignal(sid, VoiceCallState.REJECT)
+                    scope.launch { node.sendSession(src, reject) || node.send(src, reject) }
+                    return
+                }
+                callSessionId = sid
+                _callPeer.value = srcHex
+                _callState.value = CallState.RINGING_IN
+                showCallNotification(srcHex)
+            }
+            VoiceCallState.ACCEPT -> {
+                if (_callState.value == CallState.RINGING_OUT && _callPeer.value == srcHex) {
+                    _callState.value = CallState.CONNECTED
+                    pttMedia.ensurePlayback()
+                }
+            }
+            VoiceCallState.REJECT -> {
+                if (_callPeer.value == srcHex) {
+                    _callState.value = CallState.ENDED
+                    _callPeer.value = null
+                    callSessionId = null
+                    scope.launch {
+                        kotlinx.coroutines.delay(500)
+                        _callState.value = CallState.IDLE
+                    }
+                }
+            }
+            VoiceCallState.HANGUP -> {
+                if (_callPeer.value == srcHex) {
+                    pttMedia.stopCapture()
+                    _callState.value = CallState.ENDED
+                    _callPeer.value = null
+                    callSessionId = null
+                    scope.launch {
+                        kotlinx.coroutines.delay(500)
+                        _callState.value = CallState.IDLE
+                    }
+                }
+            }
+            VoiceCallState.AUDIO -> {
+                if (_callState.value == CallState.CONNECTED && _callPeer.value == srcHex) {
+                    val audio = nxm.filedata ?: return
+                    pttMedia.playAudioChunk(audio)
+                }
+            }
+        }
+    }
+
+    private fun showCallNotification(fromAddr: String) {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Incoming Call")
+            .setContentText("Call from $fromAddr")
+            .setSmallIcon(R.drawable.ic_mesh)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setContentIntent(openAppPendingIntent())
+            .build()
+        getSystemService(NotificationManager::class.java).notify(fromAddr.hashCode() + 1000, notification)
+    }
+
+    // --- Multi-identity public API ---
+
+    /**
+     * Switch the active identity. Restarts the node and re-opens the
+     * per-identity database. Must be called from the main thread / a coroutine.
+     */
+    fun switchIdentity(identityId: String) {
+        val rec = identityManager.getAll().find { it.id == identityId } ?: return
+        identityManager.setActive(identityId)
+
+        pollJob?.cancel()
+        pollJob = null
+        node.stop()
+
+        // Re-open DB for the new identity
+        val newDbTag = rec.dbTag
+        db = NexusDatabase.getInstance(this, newDbTag)
+        repository = MessageRepository(db)
+
+        // Re-init node with the new identity bytes (or fresh keypair if blank)
+        val bytes = identityManager.getIdentityBytes(identityId)
+        val startRole = _role.value
+        val ok = if (bytes != null) node.initWithIdentity(startRole, bytes, this)
+                  else node.init(startRole, this)
+
+        if (!ok) { Log.e(TAG, "switchIdentity: node init failed"); return }
+
+        // Persist the identity bytes if this was a blank (new) identity
+        if (bytes == null) {
+            node.getIdentityBytes()?.let { identityManager.saveIdentityBytes(identityId, it) }
+        }
+        identityManager.saveAddrHex(identityId, node.getAddressHex())
+        _address.value = node.getAddressHex()
+        loadMyName()
+
+        pollJob = scope.launch {
+            while (isActive) { node.poll(500); kotlinx.coroutines.delay(500) }
+        }
+        updateNotification("Node: ${_address.value}")
+    }
+
     /**
      * Send READ receipts for every incoming message from [peerAddr] that hasn't
      * already been receipted, then mark them READ locally so we don't resend.
