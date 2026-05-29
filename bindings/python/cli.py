@@ -4,6 +4,7 @@
 import argparse
 import socket
 import sys
+import time
 
 from nexus import Identity
 
@@ -76,6 +77,89 @@ def cmd_announce(args):
     return _uds_cmd(args.sock, "announce")
 
 
+def cmd_pillar_probe(args):
+    """TCP probe of a pillard endpoint: measures RTT and reads version/peer info."""
+    target = args.target
+    if ":" not in target:
+        print(f"error: target must be host:port", file=sys.stderr)
+        return 1
+    host, _, port_str = target.rpartition(":")
+    try:
+        port = int(port_str)
+    except ValueError:
+        print(f"error: invalid port '{port_str}'", file=sys.stderr)
+        return 1
+
+    # Measure TCP connect RTT
+    t0 = time.monotonic()
+    try:
+        s = socket.create_connection((host, port), timeout=args.timeout)
+    except OSError as e:
+        print(f"error: cannot connect to {host}:{port}: {e}", file=sys.stderr)
+        return 1
+    rtt_ms = (time.monotonic() - t0) * 1000
+
+    # Send NEXUS probe: a raw NEXUS ANNOUNCE request is complex, so we use
+    # the pillard admin HTTP interface if -M port is known, or just read the
+    # banner.  pillard closes unrecognised connections immediately; we read
+    # whatever it sends back (typically nothing) and report connectivity.
+    try:
+        s.settimeout(args.timeout)
+        # pillard speaks raw NXM framing over TCP, not a text banner.
+        # Send a minimal ping by writing a zero-length frame and reading
+        # back. If the server drops us that still confirms reachability.
+        s.sendall(b"\x00\x00")  # zero-length NXM frame
+        banner = b""
+        try:
+            chunk = s.recv(64)
+            if chunk:
+                banner = chunk
+        except (socket.timeout, OSError):
+            pass
+    finally:
+        s.close()
+
+    print(f"host:    {host}")
+    print(f"port:    {port}")
+    print(f"rtt_ms:  {rtt_ms:.1f}")
+    print(f"status:  reachable")
+    if banner:
+        print(f"banner:  {banner[:32].hex()}")
+
+    # If an admin HTTP port was provided, query /admin for peer count / version
+    if args.admin_port:
+        try:
+            hs = socket.create_connection((host, args.admin_port), timeout=args.timeout)
+            hs.sendall(b"GET /admin HTTP/1.0\r\nHost: " +
+                       host.encode() + b"\r\n\r\n")
+            resp = b""
+            hs.settimeout(2.0)
+            try:
+                while True:
+                    chunk = hs.recv(4096)
+                    if not chunk:
+                        break
+                    resp += chunk
+                    if len(resp) > 32768:
+                        break
+            except (socket.timeout, OSError):
+                pass
+            hs.close()
+            # extract key fields from the HTML
+            text = resp.decode("utf-8", errors="replace")
+            for line in text.splitlines():
+                if "Neighbors" in line or "Mailbox" in line or "Uptime" in line:
+                    # strip HTML tags for a rough plain-text extract
+                    import re
+                    clean = re.sub(r"<[^>]+>", " ", line).split()
+                    if clean:
+                        print(f"admin:   {' '.join(clean)}")
+        except OSError as e:
+            print(f"admin:   unreachable ({e})")
+
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="nexus-cli",
@@ -110,6 +194,19 @@ def main():
     announce_parser = sub.add_parser("announce", help="Send an announce now")
     announce_parser.add_argument("--sock", default=DEFAULT_SOCK, help="nexusd UDS path")
 
+    probe_parser = sub.add_parser(
+        "pillar-probe",
+        help="Probe a pillard endpoint: TCP RTT + reachability",
+    )
+    probe_parser.add_argument("target", help="Pillar address as host:port")
+    probe_parser.add_argument(
+        "--timeout", type=float, default=5.0, help="Connection timeout (seconds)"
+    )
+    probe_parser.add_argument(
+        "--admin-port", type=int, default=0, metavar="PORT",
+        help="pillard -A port for peer/uptime info from /admin",
+    )
+
     args = parser.parse_args()
 
     rc = 0
@@ -130,6 +227,8 @@ def main():
         rc = cmd_status(args)
     elif args.command == "announce":
         rc = cmd_announce(args)
+    elif args.command == "pillar-probe":
+        rc = cmd_pillar_probe(args)
     else:
         parser.print_help()
     sys.exit(rc or 0)
