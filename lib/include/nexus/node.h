@@ -62,6 +62,31 @@ typedef struct {
     void             *user_ctx;    /* Passed to callbacks */
 } nx_node_config_t;
 
+/* ── Broadcast storm suppression ─────────────────────────────────────── */
+
+/* Max pending deferred rebroadcasts (flood jitter queue). */
+#define NX_FLOOD_DEFER_MAX      8
+#define NX_FLOOD_JITTER_MAX_MS  500  /* 0-500ms random jitter before re-flood */
+
+typedef struct {
+    nx_packet_t  pkt;
+    int          ingress_transport;
+    uint64_t     send_after_ms;
+    bool         valid;
+} nx_flood_defer_t;
+
+/* ── Opportunistic forwarding ─────────────────────────────────────────── */
+
+/* Packets buffered while waiting for route / neighbor to appear. */
+#define NX_OPFWD_SLOTS      8
+#define NX_OPFWD_TTL_MS     30000  /* 30s default hold time */
+
+typedef struct {
+    nx_packet_t  pkt;
+    uint64_t     expires_ms;
+    bool         valid;
+} nx_opfwd_slot_t;
+
 /* ── Node State ──────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -80,6 +105,11 @@ typedef struct {
     nx_announce_telemetry_t telemetry;
     /* Inbound message ring buffer for BLE resync after reboot. */
     nx_msgring_t            msgring;
+    /* Broadcast storm suppression: deferred flood rebroadcast queue */
+    nx_flood_defer_t        flood_defer[NX_FLOOD_DEFER_MAX];
+    uint32_t                flood_jitter_seed;  /* XORshift PRNG state */
+    /* Opportunistic forwarding: packets waiting for route/neighbor */
+    nx_opfwd_slot_t         opfwd[NX_OPFWD_SLOTS];
 } nx_node_t;
 
 /* ── Lifecycle ───────────────────────────────────────────────────────── */

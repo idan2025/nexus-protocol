@@ -12,8 +12,15 @@ data class ContactEntity(
     val x25519Pubkey: String? = null,
     val firstSeen: Long = System.currentTimeMillis(),
     val lastSeen: Long = System.currentTimeMillis(),
-    val role: Int? = null
+    val role: Int? = null,
+    val trustLevel: Int = ContactTrust.UNKNOWN
 )
+
+object ContactTrust {
+    const val UNKNOWN = 0
+    const val SEEN = 1
+    const val VERIFIED = 2
+}
 
 object ContactRole {
     fun isClientVisible(role: Int?): Boolean = role == null || role in 0..2

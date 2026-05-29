@@ -23,6 +23,12 @@ interface MessageDao {
     @Query("UPDATE messages SET deliveryStatus = :status WHERE nxmMsgId = :msgId")
     suspend fun updateDeliveryStatus(msgId: String, status: Int)
 
+    @Query("UPDATE messages SET reactions = :reactions WHERE nxmMsgId = :msgId")
+    suspend fun updateReactions(msgId: String, reactions: String)
+
+    @Query("SELECT reactions FROM messages WHERE nxmMsgId = :msgId LIMIT 1")
+    suspend fun getReactions(msgId: String): String?
+
     @Query("SELECT * FROM messages WHERE peerAddr = :peerAddr AND groupId IS NULL AND isOutgoing = 0 AND nxmMsgId IS NOT NULL AND deliveryStatus < :readStatus")
     suspend fun getUnreadIncomingForPeer(peerAddr: String, readStatus: Int): List<MessageEntity>
 

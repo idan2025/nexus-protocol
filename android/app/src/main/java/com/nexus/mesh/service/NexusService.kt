@@ -21,6 +21,7 @@ import androidx.core.app.NotificationCompat
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.nexus.mesh.R
+import com.nexus.mesh.call.PttMediaSessionManager
 import com.nexus.mesh.data.*
 import com.nexus.mesh.nxm.*
 import com.nexus.mesh.ui.MainActivity
@@ -230,6 +231,12 @@ class NexusService : Service(), NexusNode.Callback {
     private val _role = MutableStateFlow(DEFAULT_ROLE)
     val role: StateFlow<Int> = _role
 
+    // Map of peerAddrHex → last-typing-timestamp (ms). Auto-expires after 4s.
+    private val _typingPeers = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val typingPeers: StateFlow<Map<String, Long>> = _typingPeers
+
+    val hotspot: HotspotManager by lazy { HotspotManager(this) }
+
     /** Name of the device exposing a LoRa radio over BLE-NUS, if any.
      *  Set by [setBleBridge] from MainActivity when the BLE-bridge connects.
      *  Surfaces in [NetworkState.interfaces] as a "LoRa (BLE)" pseudo-row
@@ -243,6 +250,24 @@ class NexusService : Service(), NexusNode.Callback {
     private var announceJob: Job? = null
     private var usbReceiver: BroadcastReceiver? = null
 
+    // --- Multi-account identity ---
+    lateinit var identityManager: IdentityManager
+        private set
+
+    // --- Voice call state machine ---
+    enum class CallState { IDLE, RINGING_OUT, RINGING_IN, CONNECTED, ENDED }
+
+    private val _callState = MutableStateFlow(CallState.IDLE)
+    val callState: StateFlow<CallState> = _callState
+
+    private val _callPeer = MutableStateFlow<String?>(null)
+    val callPeer: StateFlow<String?> = _callPeer
+
+    @Volatile private var callSessionId: ByteArray? = null
+
+    private val pttMedia = PttMediaSessionManager()
+    val pttMicActive: StateFlow<Boolean> get() = pttMedia.isMicActive
+
     inner class LocalBinder : Binder() {
         fun getService(): NexusService = this@NexusService
     }
@@ -252,9 +277,21 @@ class NexusService : Service(), NexusNode.Callback {
     override fun onCreate() {
         super.onCreate()
 
-        // Init Room DB
-        db = NexusDatabase.getInstance(this)
+        identityManager = IdentityManager(this)
+
+        // Init Room DB using active identity's dbTag for per-identity isolation
+        val activeDbTag = identityManager.getActive()?.dbTag ?: ""
+        db = NexusDatabase.getInstance(this, activeDbTag)
         repository = MessageRepository(db)
+
+        // Wire PTT audio frame → NXM send
+        pttMedia.onAudioFrame = { frame ->
+            val peer = _callPeer.value ?: return@onAudioFrame
+            val sid = callSessionId ?: return@onAudioFrame
+            val destBytes = hexToBytes(peer) ?: return@onAudioFrame
+            val nxm = NxmBuilder.buildVoiceAudio(sid, frame, PttMediaSessionManager.CODEC)
+            node.sendSession(destBytes, nxm) || node.send(destBytes, nxm)
+        }
 
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Starting..."))
@@ -266,10 +303,12 @@ class NexusService : Service(), NexusNode.Callback {
     }
 
     override fun onDestroy() {
+        pttMedia.release()
         unregisterNetworkCallback()
         unregisterUsbReceiver()
         announceJob?.cancel()
         pollJob?.cancel()
+        hotspot.stop()
         node.stopTcpInet()
         node.stopUdpMulticast()
         multicastLock?.release()
@@ -1241,6 +1280,7 @@ class NexusService : Service(), NexusNode.Callback {
                 val text = nxm.text ?: return
                 val msgIdHex = nxm.msgIdHex
                 scope.launch {
+                    bumpTrust(srcHex, ContactTrust.SEEN)
                     repository.insertMessage(MessageEntity(
                         peerAddr = srcHex,
                         text = text,
@@ -1370,13 +1410,58 @@ class NexusService : Service(), NexusNode.Callback {
                 if (name != null) {
                     scope.launch {
                         repository.setNickname(srcHex, name)
+                        bumpTrust(srcHex, ContactTrust.SEEN)
                     }
                 }
             }
+            NxmType.REACTION -> {
+                val emoji = nxm.reaction ?: return
+                val targetMsgId = nxm.replyToHex ?: return
+                scope.launch {
+                    val current = db.messageDao().getReactions(targetMsgId) ?: ""
+                    val updated = if (current.isEmpty()) emoji else "$current,$emoji"
+                    db.messageDao().updateReactions(targetMsgId, updated)
+                }
+            }
+            NxmType.TYPING -> {
+                val now = System.currentTimeMillis()
+                _typingPeers.value = _typingPeers.value.toMutableMap().also { it[srcHex] = now }
+                // Auto-clear typing state after 4 seconds
+                scope.launch {
+                    kotlinx.coroutines.delay(4_000)
+                    val ts = _typingPeers.value[srcHex]
+                    if (ts != null && ts <= now) {
+                        _typingPeers.value = _typingPeers.value.toMutableMap().also { it.remove(srcHex) }
+                    }
+                }
+            }
+            NxmType.DELETE -> {
+                val targetId = nxm.replyToHex ?: return
+                scope.launch {
+                    val msg = db.messageDao().findByNxmMsgId(targetId)
+                    if (msg != null && !msg.isOutgoing) {
+                        db.messageDao().deleteById(msg.id)
+                    }
+                }
+            }
+            NxmType.CONTACT -> {
+                scope.launch { bumpTrust(srcHex, ContactTrust.SEEN) }
+            }
+            NxmType.VOICE_CALL -> handleVoiceCall(srcHex, src, nxm)
             else -> {
-                // Unhandled NXM type -- log and ignore
                 Log.w(TAG, "Unhandled NXM type: ${nxm.type}")
             }
+        }
+        // Stamp flag on incoming message → VERIFIED (native layer enforces stamp policy before delivery)
+        if ((nxm.flags and NxmFlag.STAMPED) != 0 && nxm.findField(NxmFieldType.STAMP) != null) {
+            scope.launch { bumpTrust(srcHex, ContactTrust.VERIFIED) }
+        }
+    }
+
+    private suspend fun bumpTrust(addrHex: String, level: Int) {
+        val contact = repository.getContact(addrHex) ?: return
+        if (contact.trustLevel < level) {
+            repository.upsertContact(contact.copy(trustLevel = level))
         }
     }
 
@@ -1445,6 +1530,19 @@ class NexusService : Service(), NexusNode.Callback {
             repository.markIncomingRead(peerAddr)
             repository.clearUnread(peerAddr)
         }
+    }
+
+    fun sendReaction(dest: String, emoji: String, targetMsgIdHex: String): Boolean {
+        val destBytes = hexToBytes(dest) ?: return false
+        val targetId = hexToBytes(targetMsgIdHex) ?: return false
+        val nxm = NxmBuilder.buildReaction(emoji, targetId)
+        return node.sendSession(destBytes, nxm) || node.send(destBytes, nxm)
+    }
+
+    fun sendTyping(dest: String) {
+        val destBytes = hexToBytes(dest) ?: return
+        val nxm = NxmBuilder.buildTyping()
+        scope.launch { node.sendSession(destBytes, nxm) || node.send(destBytes, nxm) }
     }
 
     fun sendMessage(dest: String, text: String): Boolean {

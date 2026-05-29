@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -37,6 +38,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.navigation.NavController
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import com.nexus.mesh.data.ContactTrust
 import com.nexus.mesh.data.DeliveryStatus
 import com.nexus.mesh.data.MessageEntity
 import com.nexus.mesh.data.MessageType
@@ -116,6 +123,22 @@ fun ConversationScreen(
     var showMenuExpanded by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
     var selectedMessage by remember { mutableStateOf<MessageEntity?>(null) }
+    var reactionTarget by remember { mutableStateOf<MessageEntity?>(null) }
+
+    // Typing indicator
+    val typingPeers by service?.typingPeers?.collectAsState() ?: remember { mutableStateOf(emptyMap()) }
+    val peerTyping = remember(typingPeers) {
+        val ts = typingPeers[peerAddr] ?: 0L
+        System.currentTimeMillis() - ts < 4_000L && ts > 0L
+    }
+
+    // Trust level badge from contacts
+    val allContacts by service?.repository?.getContacts()?.collectAsState(initial = emptyList())
+        ?: remember { mutableStateOf(emptyList()) }
+    val peerContact = remember(allContacts, peerAddr) { allContacts.find { it.address == peerAddr } }
+
+    // Debounce typing notification: send TYPING NXM when user types
+    var lastTypingSentMs by remember { mutableStateOf(0L) }
     var editNickname by remember(nickname) { mutableStateOf(nickname ?: "") }
     val dateFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val fullDateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()) }
@@ -140,9 +163,9 @@ fun ConversationScreen(
                     Column(
                         modifier = Modifier.clickable { showNicknameDialog = true }
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(displayName, style = MaterialTheme.typography.titleMedium)
-                            Spacer(Modifier.width(4.dp))
+                            peerContact?.let { TrustBadge(it.trustLevel) }
                             Icon(
                                 Icons.Default.Edit,
                                 contentDescription = "Edit name",
@@ -284,8 +307,14 @@ fun ConversationScreen(
                         ChatBubble(
                             msg = msg,
                             dateFormat = dateFormat,
-                            onLongClick = { selectedMessage = msg }
+                            onLongClick = {
+                                selectedMessage = msg
+                                reactionTarget = msg
+                            }
                         )
+                    }
+                    if (peerTyping) {
+                        item { TypingBubble() }
                     }
                 }
             }
@@ -348,9 +377,17 @@ fun ConversationScreen(
                     }
                     OutlinedTextField(
                         value = messageText,
-                        onValueChange = {
-                            messageText = it
+                        onValueChange = { v ->
+                            messageText = v
                             sendError = false
+                            // Debounce typing indicator: send at most once per 2s
+                            if (v.isNotEmpty()) {
+                                val now = System.currentTimeMillis()
+                                if (now - lastTypingSentMs > 2_000L) {
+                                    lastTypingSentMs = now
+                                    service?.sendTyping(peerAddr)
+                                }
+                            }
                         },
                         placeholder = { Text("Message") },
                         modifier = Modifier.weight(1f),
@@ -593,6 +630,42 @@ fun ConversationScreen(
         )
     }
 
+    // Emoji reaction picker
+    reactionTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { reactionTarget = null },
+            title = { Text("React to message") },
+            text = {
+                val emojis = listOf("👍", "❤️", "😂", "😮", "😢", "🔥", "✅", "👎")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    emojis.forEach { emoji ->
+                        Text(
+                            emoji,
+                            modifier = Modifier
+                                .clickable {
+                                    val msgId = target.nxmMsgId
+                                    if (msgId != null) {
+                                        coScope.launch {
+                                            service?.sendReaction(peerAddr, emoji, msgId)
+                                        }
+                                    }
+                                    reactionTarget = null
+                                }
+                                .padding(8.dp),
+                            style = MaterialTheme.typography.headlineMedium
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { reactionTarget = null }) { Text("Cancel") }
+            }
+        )
+    }
+
     if (showVoiceRecorder) {
         VoiceRecorderDialog(
             onDismiss = { showVoiceRecorder = false },
@@ -625,6 +698,52 @@ private fun InfoRow(label: String, value: String) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.primary
         )
+    }
+}
+
+@Composable
+private fun TypingBubble() {
+    val transition = rememberInfiniteTransition(label = "typing")
+    val dot1 by transition.animateFloat(
+        initialValue = 0.3f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(400), RepeatMode.Reverse,
+            initialStartOffset = androidx.compose.animation.core.StartOffset(0)),
+        label = "d1"
+    )
+    val dot2 by transition.animateFloat(
+        initialValue = 0.3f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(400), RepeatMode.Reverse,
+            initialStartOffset = androidx.compose.animation.core.StartOffset(133)),
+        label = "d2"
+    )
+    val dot3 by transition.animateFloat(
+        initialValue = 0.3f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(400), RepeatMode.Reverse,
+            initialStartOffset = androidx.compose.animation.core.StartOffset(266)),
+        label = "d3"
+    )
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+        Surface(
+            shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf(dot1, dot2, dot3).forEach { alpha ->
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
+                                androidx.compose.foundation.shape.CircleShape
+                            )
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -721,6 +840,27 @@ private fun ChatBubble(
                             color = statusColor,
                             style = MaterialTheme.typography.labelSmall
                         )
+                    }
+                }
+                // Reaction chips
+                if (msg.reactions.isNotEmpty()) {
+                    val counts = msg.reactions.split(",")
+                        .filter { it.isNotEmpty() }
+                        .groupingBy { it }.eachCount()
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        counts.forEach { (emoji, count) ->
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
+                            ) {
+                                Text(
+                                    if (count > 1) "$emoji $count" else emoji,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
                     }
                 }
             }

@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.nexus.mesh.data.ContactEntity
 import com.nexus.mesh.data.ContactRole
+import com.nexus.mesh.data.ContactTrust
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -132,10 +133,13 @@ private fun ContactCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        contact.nickname ?: contact.address,
-                        style = MaterialTheme.typography.titleMedium
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            contact.nickname ?: contact.address,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        TrustBadge(contact.trustLevel)
+                    }
                     if (contact.nickname != null) {
                         Text(
                             contact.address,
@@ -157,6 +161,27 @@ private fun ContactCard(
             Spacer(Modifier.height(4.dp))
             TextButton(onClick = onEdit) { Text("Set nickname") }
         }
+    }
+}
+
+@Composable
+fun TrustBadge(trustLevel: Int) {
+    if (trustLevel == ContactTrust.UNKNOWN) return
+    val (label, color) = when (trustLevel) {
+        ContactTrust.VERIFIED -> "✓ Verified" to MaterialTheme.colorScheme.primary
+        ContactTrust.SEEN     -> "Seen"       to MaterialTheme.colorScheme.secondary
+        else                  -> return
+    }
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = color.copy(alpha = 0.15f)
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = color
+        )
     }
 }
 

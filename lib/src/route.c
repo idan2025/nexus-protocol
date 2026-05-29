@@ -51,6 +51,31 @@ void nx_route_expire(nx_route_table_t *rt, uint64_t now_ms)
     }
 }
 
+/* ── Link quality helpers ─────────────────────────────────────────────── */
+
+/* Map RSSI (int8_t dBm) to 0-255 link_quality.
+ * rssi==0 means "unknown / wired TCP" and maps to a good-but-not-perfect 200
+ * so TCP links are preferred over weak RF but yield to excellent RF.
+ * Typical LoRa range: -30 (excellent) to -120 (floor noise). */
+static uint8_t rssi_to_link_quality(int8_t rssi)
+{
+    if (rssi == 0) return 200;
+    int q = ((int)rssi + 110) * 255 / 60;
+    if (q < 0)   q = 0;
+    if (q > 255) q = 255;
+    return (uint8_t)q;
+}
+
+/* Per-hop metric cost derived from link_quality (0-255, higher=better).
+ * Returns 1 (excellent link) to 8 (terrible link). */
+static uint8_t link_quality_to_cost(uint8_t lq)
+{
+    int c = (int)(255 - lq + 31) / 32;
+    if (c < 1) c = 1;
+    if (c > 8) c = 8;
+    return (uint8_t)c;
+}
+
 /* ── Neighbor Management ─────────────────────────────────────────────── */
 
 nx_err_t nx_neighbor_update(nx_route_table_t *rt,
@@ -63,12 +88,14 @@ nx_err_t nx_neighbor_update(nx_route_table_t *rt,
 {
     if (!rt || !addr) return NX_ERR_INVALID_ARG;
 
+    uint8_t lq = rssi_to_link_quality(rssi);
+
     /* Try to find existing entry */
     int free_slot = -1;
     for (int i = 0; i < NX_MAX_NEIGHBORS; i++) {
         if (rt->neighbors[i].valid) {
             if (nx_addr_short_cmp(&rt->neighbors[i].addr, addr) == 0) {
-                /* Update existing */
+                /* Update existing -- EMA-smooth link_quality to reduce jitter */
                 nx_neighbor_t *n = &rt->neighbors[i];
                 if (full_addr) n->full_addr = *full_addr;
                 if (sign_pubkey)
@@ -77,6 +104,9 @@ nx_err_t nx_neighbor_update(nx_route_table_t *rt,
                     memcpy(n->x25519_pubkey, x25519_pubkey, NX_PUBKEY_SIZE);
                 n->role = role;
                 n->rssi = rssi;
+                /* EMA α=0.25: new = 0.75*old + 0.25*sample */
+                n->link_quality = (uint8_t)(((uint16_t)n->link_quality * 3 +
+                                             (uint16_t)lq + 2) / 4);
                 n->last_seen_ms = now_ms;
                 return NX_OK;
             }
@@ -98,7 +128,7 @@ nx_err_t nx_neighbor_update(nx_route_table_t *rt,
         memcpy(n->x25519_pubkey, x25519_pubkey, NX_PUBKEY_SIZE);
     n->role = role;
     n->rssi = rssi;
-    n->link_quality = 128; /* Default medium quality */
+    n->link_quality = lq;
     n->last_seen_ms = now_ms;
     n->valid = true;
     return NX_OK;
@@ -271,6 +301,7 @@ int nx_route_build_rreq(nx_route_table_t *rt,
     memcpy(&buf[3], origin->bytes, NX_SHORT_ADDR_SIZE);
     memcpy(&buf[7], dest->bytes, NX_SHORT_ADDR_SIZE);
     buf[11] = 0; /* hop_count starts at 0 */
+    buf[12] = 0; /* accumulated metric starts at 0 */
 
     return NX_RREQ_PAYLOAD_LEN;
 }
@@ -338,11 +369,19 @@ nx_err_t nx_route_process(nx_route_table_t *rt,
         /* uint16_t rreq_id = read_be16(&payload[1]); */
         nx_addr_short_t origin;
         memcpy(origin.bytes, &payload[3], NX_SHORT_ADDR_SIZE);
-        uint8_t hop_count = payload[11];
+        uint8_t hop_count    = payload[11];
+        uint8_t accum_metric = payload[12];
+
+        /* Add RSSI-weighted cost for the link we just received this on. */
+        const nx_neighbor_t *nb = nx_neighbor_find(rt, from_neighbor);
+        uint8_t lq   = nb ? nb->link_quality : 128; /* default medium if unknown */
+        uint8_t cost = link_quality_to_cost(lq);
+        uint16_t new_metric = (uint16_t)accum_metric + cost;
+        if (new_metric > 255) new_metric = 255;
 
         /* Install reverse route to origin via the neighbor who sent this */
         nx_route_update(rt, &origin, from_neighbor,
-                        hop_count + 1, hop_count + 1, now_ms);
+                        hop_count + 1, (uint8_t)new_metric, now_ms);
         return NX_OK;
     }
     case NX_ROUTE_SUB_RREP: {

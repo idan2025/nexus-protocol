@@ -12,7 +12,8 @@ enum class NxmType(val value: Int) {
     READ(0x09),
     DELETE(0x0A),
     NICKNAME(0x0B),
-    CONTACT(0x0C);
+    CONTACT(0x0C),
+    VOICE_CALL(0x0D);
 
     companion object {
         fun fromValue(v: Int): NxmType? = entries.find { it.value == v }
@@ -41,7 +42,8 @@ enum class NxmFieldType(val value: Int) {
     TITLE(0x13),
     STAMP(0x14),  // PoW stamp: [difficulty(1)][nonce(8 BE)]
     PART_IDX(0x15),    // u16 LE: 0-based index of this chunk in a multi-part transfer
-    PART_TOTAL(0x16);  // u16 LE: total number of chunks (1 = single message)
+    PART_TOTAL(0x16),  // u16 LE: total number of chunks (1 = single message)
+    CALL_STATE(0x17);  // u8: VoiceCallState constant (INVITE/ACCEPT/REJECT/HANGUP/AUDIO)
 
     companion object {
         fun fromValue(v: Int): NxmFieldType? = entries.find { it.value == v }
@@ -93,6 +95,12 @@ data class NxmMessage(
     val nickname: String?
         get() = findField(NxmFieldType.NICKNAME)?.data?.toString(Charsets.UTF_8)
 
+    val replyToHex: String?
+        get() = findField(NxmFieldType.REPLY_TO)?.data?.joinToString("") { "%02X".format(it) }
+
+    val reaction: String?
+        get() = findField(NxmFieldType.REACTION)?.data?.toString(Charsets.UTF_8)
+
     val title: String?
         get() = findField(NxmFieldType.TITLE)?.data?.toString(Charsets.UTF_8)
 
@@ -126,4 +134,12 @@ data class NxmMessage(
     /** Thumbnail bytes (images). */
     val thumbnail: ByteArray?
         get() = findField(NxmFieldType.THUMBNAIL)?.data
+
+    /** CALL_STATE byte for VOICE_CALL messages. */
+    val callState: Int?
+        get() = findField(NxmFieldType.CALL_STATE)?.data?.firstOrNull()?.toInt()?.and(0xFF)
+
+    /** CODEC byte (used in VOICE_CALL audio frames). */
+    val codec: Int?
+        get() = findField(NxmFieldType.CODEC)?.data?.firstOrNull()?.toInt()?.and(0xFF)
 }

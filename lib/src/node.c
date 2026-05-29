@@ -17,6 +17,117 @@
 
 #include <string.h>
 
+/* ── Jitter PRNG (XORshift32) ────────────────────────────────────────── */
+
+static uint32_t jitter_rand(uint32_t *state)
+{
+    uint32_t x = *state ? *state : 0xdeadbeef;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
+
+/* Returns a random delay in [0, NX_FLOOD_JITTER_MAX_MS). */
+static uint32_t flood_jitter_ms(nx_node_t *node)
+{
+    /* Seed from platform on first call */
+    if (node->flood_jitter_seed == 0) {
+        (void)nx_platform_random((uint8_t *)&node->flood_jitter_seed,
+                                 sizeof(node->flood_jitter_seed));
+        if (node->flood_jitter_seed == 0) node->flood_jitter_seed = 1;
+    }
+    return jitter_rand(&node->flood_jitter_seed) % NX_FLOOD_JITTER_MAX_MS;
+}
+
+/* Enqueue a flood packet for deferred rebroadcast. Returns false if queue full
+ * (in that case we drop the deferral and fall back to immediate send). */
+static bool flood_defer_enqueue(nx_node_t *node, const nx_packet_t *pkt,
+                                 int ingress, uint64_t send_after_ms)
+{
+    for (int i = 0; i < NX_FLOOD_DEFER_MAX; i++) {
+        if (!node->flood_defer[i].valid) {
+            node->flood_defer[i].pkt              = *pkt;
+            node->flood_defer[i].ingress_transport = ingress;
+            node->flood_defer[i].send_after_ms    = send_after_ms;
+            node->flood_defer[i].valid            = true;
+            return true;
+        }
+    }
+    return false; /* Queue full: immediate send is the fallback */
+}
+
+/* Drain deferred flood entries whose timer has expired. */
+static void flood_defer_tick(nx_node_t *node, uint64_t now_ms)
+{
+    for (int i = 0; i < NX_FLOOD_DEFER_MAX; i++) {
+        if (node->flood_defer[i].valid &&
+            now_ms >= node->flood_defer[i].send_after_ms) {
+            (void)transmit_bridge(&node->flood_defer[i].pkt,
+                                  node->flood_defer[i].ingress_transport);
+            node->flood_defer[i].valid = false;
+        }
+    }
+}
+
+/* ── Opportunistic forwarding helpers ────────────────────────────────── */
+
+/* Buffer a packet that couldn't be delivered (no route, anchor full). */
+static void opfwd_enqueue(nx_node_t *node, const nx_packet_t *pkt,
+                           uint64_t now_ms)
+{
+    int oldest = -1;
+    uint64_t oldest_ts = UINT64_MAX;
+
+    for (int i = 0; i < NX_OPFWD_SLOTS; i++) {
+        if (!node->opfwd[i].valid) {
+            node->opfwd[i].pkt        = *pkt;
+            node->opfwd[i].expires_ms = now_ms + NX_OPFWD_TTL_MS;
+            node->opfwd[i].valid      = true;
+            return;
+        }
+        if (node->opfwd[i].expires_ms < oldest_ts) {
+            oldest_ts = node->opfwd[i].expires_ms;
+            oldest = i;
+        }
+    }
+    /* Evict oldest to make room */
+    if (oldest >= 0) {
+        node->opfwd[oldest].pkt        = *pkt;
+        node->opfwd[oldest].expires_ms = now_ms + NX_OPFWD_TTL_MS;
+        node->opfwd[oldest].valid      = true;
+    }
+}
+
+/* Try to deliver buffered opportunistic packets now that neighbor `addr`
+ * is reachable. Called from handle_announce. */
+static void opfwd_flush_for(nx_node_t *node, const nx_addr_short_t *addr,
+                             uint64_t now_ms)
+{
+    for (int i = 0; i < NX_OPFWD_SLOTS; i++) {
+        if (!node->opfwd[i].valid) continue;
+        if (now_ms > node->opfwd[i].expires_ms) {
+            node->opfwd[i].valid = false;
+            continue;
+        }
+        if (nx_addr_short_cmp(&node->opfwd[i].pkt.header.dst, addr) == 0) {
+            /* Destination is now reachable -- transmit and remove */
+            (void)transmit_all(&node->opfwd[i].pkt);
+            node->opfwd[i].valid = false;
+        }
+    }
+}
+
+/* Expire stale opportunistic forwarding entries. */
+static void opfwd_expire(nx_node_t *node, uint64_t now_ms)
+{
+    for (int i = 0; i < NX_OPFWD_SLOTS; i++) {
+        if (node->opfwd[i].valid && now_ms > node->opfwd[i].expires_ms)
+            node->opfwd[i].valid = false;
+    }
+}
+
 /* ── Lifecycle ───────────────────────────────────────────────────────── */
 
 nx_err_t nx_node_init(nx_node_t *node, const nx_node_config_t *config)
@@ -191,6 +302,9 @@ static void handle_announce(nx_node_t *node, const nx_packet_t *pkt,
             (void)transmit_all(&stored[i]);
         }
     }
+
+    /* Flush any opportunistically buffered packets for this destination */
+    opfwd_flush_for(node, &ann.short_addr, now);
 }
 
 /* ── Internal: handle a routing control packet ───────────────────────── */
@@ -225,9 +339,13 @@ static void handle_route(nx_node_t *node, const nx_packet_t *pkt)
             rrep_pkt.header.src = node->identity.short_addr;
             rrep_pkt.header.seq_id = node->next_seq_id++;
 
+            /* Carry the accumulated metric from the RREQ so the originator
+             * can compare path quality; add our own link cost to this hop. */
+            uint8_t rreq_metric = (pkt->header.payload_len >= NX_RREQ_PAYLOAD_LEN)
+                                  ? pkt->payload[12] : 1;
             int rlen = nx_route_build_rrep(rreq_id, &origin,
                                            &node->identity.short_addr,
-                                           1, 1,
+                                           1, rreq_metric,
                                            rrep_pkt.payload,
                                            sizeof(rrep_pkt.payload));
             if (rlen > 0 && rlen <= NX_MAX_PAYLOAD) {
@@ -516,9 +634,17 @@ static void handle_data(nx_node_t *node, const nx_packet_t *pkt,
                 (pkt->payload[2] & NX_MSG_FLAG_PROPAGATE)) {
                 (void)nx_anchor_store(&node->anchor, pkt, nx_platform_time_ms());
             }
-        } else if (node->anchor.max_slots > 0) {
-            /* Store for offline destination (all RELAY+ with storage) */
-            (void)nx_anchor_store(&node->anchor, pkt, nx_platform_time_ms());
+        } else {
+            /* No route yet. Try anchor first; fall back to opportunistic buffer. */
+            uint64_t ts = nx_platform_time_ms();
+            bool stored = false;
+            if (node->anchor.max_slots > 0) {
+                stored = (nx_anchor_store(&node->anchor, pkt, ts) == NX_OK);
+            }
+            if (!stored) {
+                /* Anchor unavailable or full: buffer opportunistically */
+                opfwd_enqueue(node, pkt, ts);
+            }
         }
     }
 }
@@ -553,7 +679,8 @@ static void dispatch_packet(nx_node_t *node, const nx_packet_t *pkt,
     }
 
     /* If this is a flooded packet and we relay, forward with decremented TTL.
-     * Reticulum-style: bridge across all transports except ingress. */
+     * Reticulum-style: bridge across all transports except ingress.
+     * Add a random jitter of 0-500ms before rebroadcast to suppress storms. */
     if (ptype == NX_PTYPE_ANNOUNCE || ptype == NX_PTYPE_ROUTE) {
         if (node->config.role >= NX_ROLE_RELAY &&
             nx_packet_flag_rtype(pkt->header.flags) == NX_RTYPE_FLOOD &&
@@ -561,7 +688,11 @@ static void dispatch_packet(nx_node_t *node, const nx_packet_t *pkt,
             nx_packet_t fwd = *pkt;
             fwd.header.hop_count++;
             fwd.header.ttl--;
-            (void)transmit_bridge(&fwd, ingress_transport);
+            uint64_t defer_until = now + flood_jitter_ms(node);
+            if (!flood_defer_enqueue(node, &fwd, ingress_transport, defer_until)) {
+                /* Queue full: send immediately as fallback */
+                (void)transmit_bridge(&fwd, ingress_transport);
+            }
         }
     }
 }
@@ -614,6 +745,10 @@ nx_err_t nx_node_poll(nx_node_t *node, uint32_t poll_timeout_ms)
     nx_frag_expire(&node->frag_buffer, now);
     if (node->anchor.max_slots > 0)
         nx_anchor_expire(&node->anchor, now);
+
+    /* Flush deferred flood rebroadcasts and opportunistic forward buffer */
+    flood_defer_tick(node, now);
+    opfwd_expire(node, now);
 
     return NX_OK;
 }

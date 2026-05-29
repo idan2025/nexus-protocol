@@ -103,6 +103,53 @@ object NxmBuilder {
         return serialize(type, 0, fields)
     }
 
+    fun buildReaction(emoji: String, targetMsgId: ByteArray): ByteArray {
+        return serialize(NxmType.REACTION, 0, listOf(
+            NxmFieldType.MSG_ID to generateMsgId(),
+            NxmFieldType.REACTION to emoji.toByteArray(Charsets.UTF_8),
+            NxmFieldType.REPLY_TO to targetMsgId
+        ))
+    }
+
+    fun buildTyping(): ByteArray {
+        return serialize(NxmType.TYPING, 0, emptyList())
+    }
+
+    /**
+     * Build a VOICE_CALL signaling frame (INVITE / ACCEPT / REJECT / HANGUP /
+     * PTT_START / PTT_END).  [sessionId] is a 4-byte shared call ID generated
+     * by the caller.  [codec] is only required on INVITE so the peer knows
+     * which codec will be used for audio.
+     */
+    fun buildVoiceCallSignal(
+        sessionId: ByteArray,
+        callState: Int,
+        codec: Int? = null
+    ): ByteArray {
+        val fields = mutableListOf<Pair<NxmFieldType, ByteArray>>()
+        fields.add(NxmFieldType.MSG_ID to sessionId)
+        fields.add(NxmFieldType.CALL_STATE to byteArrayOf(callState.toByte()))
+        codec?.let { fields.add(NxmFieldType.CODEC to byteArrayOf(it.toByte())) }
+        return serialize(NxmType.VOICE_CALL, NxmFlag.URGENT, fields)
+    }
+
+    /**
+     * Build a VOICE_CALL audio frame carrying one PCM/Opus chunk.
+     * Marked URGENT so the mesh does not queue it behind bulk traffic.
+     */
+    fun buildVoiceAudio(sessionId: ByteArray, audio: ByteArray, codec: Int): ByteArray {
+        return serialize(
+            NxmType.VOICE_CALL,
+            NxmFlag.URGENT,
+            listOf(
+                NxmFieldType.MSG_ID    to sessionId,
+                NxmFieldType.CALL_STATE to byteArrayOf(VoiceCallState.AUDIO.toByte()),
+                NxmFieldType.CODEC      to byteArrayOf(codec.toByte()),
+                NxmFieldType.FILEDATA   to audio
+            )
+        )
+    }
+
     fun buildNickname(name: String): ByteArray {
         return serialize(NxmType.NICKNAME, 0,
             listOf(NxmFieldType.NICKNAME to name.toByteArray(Charsets.UTF_8).take(32).toByteArray()))

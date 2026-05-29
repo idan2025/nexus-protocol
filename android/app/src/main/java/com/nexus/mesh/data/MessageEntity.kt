@@ -29,7 +29,8 @@ data class MessageEntity(
     val duration: Int = 0,
     val latitude: Double? = null,
     val longitude: Double? = null,
-    val groupId: String? = null
+    val groupId: String? = null,
+    val reactions: String = ""
 )
 
 object DeliveryStatus {

@@ -83,12 +83,15 @@ typedef enum {
 } nx_route_subtype_t;
 
 /*
- * RREQ payload: [subtype(1)][rreq_id(2)][origin(4)][dest(4)][hop_count(1)] = 12
+ * RREQ payload: [subtype(1)][rreq_id(2)][origin(4)][dest(4)][hop_count(1)][metric(1)] = 13
  * RREP payload: [subtype(1)][rreq_id(2)][origin(4)][dest(4)][hop_count(1)][metric(1)] = 13
  * RERR payload: [subtype(1)][unreachable_dest(4)] = 5
  * BEACON payload: [subtype(1)][role(1)][neighbor_count(1)] = 3
+ *
+ * metric in RREQ accumulates link costs (1-8 per hop based on RSSI/link_quality).
+ * Lower metric = better path. 0 = initiator, 255 = saturated/unknown.
  */
-#define NX_RREQ_PAYLOAD_LEN   12
+#define NX_RREQ_PAYLOAD_LEN   13
 #define NX_RREP_PAYLOAD_LEN   13
 #define NX_RERR_PAYLOAD_LEN    5
 #define NX_BEACON_PAYLOAD_LEN  3

@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GroupEntity::class,
         GroupMemberEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class NexusDatabase : RoomDatabase() {
@@ -26,8 +26,8 @@ abstract class NexusDatabase : RoomDatabase() {
     abstract fun groupDao(): GroupDao
 
     companion object {
-        @Volatile
-        private var INSTANCE: NexusDatabase? = null
+        // Cache of open databases keyed by DB file name.
+        private val instances = java.util.concurrent.ConcurrentHashMap<String, NexusDatabase>()
 
         private val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -35,18 +35,39 @@ abstract class NexusDatabase : RoomDatabase() {
             }
         }
 
-        fun getInstance(context: Context): NexusDatabase {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: Room.databaseBuilder(
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN reactions TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE contacts ADD COLUMN trustLevel INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * Return the database for [identityTag].  When [identityTag] is blank
+         * the legacy "nexus_messages.db" is used for backward compatibility.
+         * Each distinct tag opens its own isolated database file so identities
+         * never share conversation history.
+         */
+        fun getInstance(context: Context, identityTag: String = ""): NexusDatabase {
+            val dbName = if (identityTag.isBlank()) "nexus_messages.db"
+                         else "nexus_messages_$identityTag.db"
+            return instances.getOrPut(dbName) {
+                Room.databaseBuilder(
                     context.applicationContext,
                     NexusDatabase::class.java,
-                    "nexus_messages.db"
+                    dbName
                 )
-                    .addMigrations(MIGRATION_3_4)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration()
                     .build()
-                    .also { INSTANCE = it }
             }
+        }
+
+        /** Close and evict a database when an identity is deleted. */
+        fun evict(identityTag: String) {
+            val dbName = if (identityTag.isBlank()) "nexus_messages.db"
+                         else "nexus_messages_$identityTag.db"
+            instances.remove(dbName)?.close()
         }
     }
 }

@@ -625,6 +625,111 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(8.dp))
 
+            // Appearance
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Appearance", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Dark theme", style = MaterialTheme.typography.bodyMedium)
+                        Switch(
+                            checked = activity.isDarkTheme,
+                            onCheckedChange = { activity.setDarkTheme(it) }
+                        )
+                    }
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                        Spacer(Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Material You dynamic color", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "Use wallpaper colors (Android 12+)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = activity.useDynamicColor,
+                                onCheckedChange = { activity.setDynamicColor(it) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Local WiFi Hotspot
+            val hotspotState by (service?.hotspot?.state?.collectAsState()
+                ?: remember { mutableStateOf(com.nexus.mesh.service.HotspotManager.HotspotState.Off) })
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Local WiFi Hotspot", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Share NEXUS mesh access with nearby devices over a local WiFi hotspot (no internet required).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    val isOn = hotspotState is com.nexus.mesh.service.HotspotManager.HotspotState.On
+                    val isStarting = hotspotState is com.nexus.mesh.service.HotspotManager.HotspotState.Starting
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                when (hotspotState) {
+                                    is com.nexus.mesh.service.HotspotManager.HotspotState.Off -> "Off"
+                                    is com.nexus.mesh.service.HotspotManager.HotspotState.Starting -> "Starting…"
+                                    is com.nexus.mesh.service.HotspotManager.HotspotState.On -> {
+                                        val info = (hotspotState as com.nexus.mesh.service.HotspotManager.HotspotState.On).info
+                                        "On — SSID: ${info.ssid}"
+                                    }
+                                    is com.nexus.mesh.service.HotspotManager.HotspotState.Failed -> {
+                                        val err = (hotspotState as com.nexus.mesh.service.HotspotManager.HotspotState.Failed).reason
+                                        "Failed: $err"
+                                    }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (isOn) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = isOn || isStarting,
+                            onCheckedChange = { on ->
+                                if (on) service?.hotspot?.start() else service?.hotspot?.stop()
+                            },
+                            enabled = !isStarting
+                        )
+                    }
+                    if (isOn) {
+                        val info = (hotspotState as com.nexus.mesh.service.HotspotManager.HotspotState.On).info
+                        if (info.passphrase.isNotBlank()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Password: ${info.passphrase}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
             // About
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {

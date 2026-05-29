@@ -42,6 +42,9 @@ import kotlinx.coroutines.launch
 
 private const val PREFS_STARTUP = "nexus_startup"
 private const val KEY_BATTERY_DISMISSED = "battery_opt_dismissed"
+private const val PREFS_THEME = "nexus_theme"
+private const val KEY_DARK_MODE = "dark_mode"
+private const val KEY_DYNAMIC_COLOR = "dynamic_color"
 
 class MainActivity : ComponentActivity() {
 
@@ -105,13 +108,28 @@ class MainActivity : ComponentActivity() {
     var showBatteryPrompt by mutableStateOf(false)
         private set
 
-    /** Flipped to true when the user taps the scheduled-update notification.
-     *  Forces [UpdateAvailableDialog] open even if the user previously
-     *  snoozed or scheduled this tag. */
     var forceShowUpdateDialog by mutableStateOf(false)
+
+    var isDarkTheme by mutableStateOf(true)
+    var useDynamicColor by mutableStateOf(false)
+
+    fun setDarkTheme(dark: Boolean) {
+        isDarkTheme = dark
+        getSharedPreferences(PREFS_THEME, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_DARK_MODE, dark).apply()
+    }
+
+    fun setDynamicColor(dynamic: Boolean) {
+        useDynamicColor = dynamic
+        getSharedPreferences(PREFS_THEME, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_DYNAMIC_COLOR, dynamic).apply()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val themePrefs = getSharedPreferences(PREFS_THEME, Context.MODE_PRIVATE)
+        isDarkTheme = themePrefs.getBoolean(KEY_DARK_MODE, true)
+        useDynamicColor = themePrefs.getBoolean(KEY_DYNAMIC_COLOR, false)
 
         // Register QR scanner launcher
         qrScanLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -283,9 +301,19 @@ fun NexusApp(activity: MainActivity) {
         else -> 0
     }
 
-    MaterialTheme(
-        colorScheme = darkColorScheme()
-    ) {
+    val colorScheme = when {
+        activity.useDynamicColor && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S -> {
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            if (activity.isDarkTheme)
+                androidx.compose.material3.dynamicDarkColorScheme(ctx)
+            else
+                androidx.compose.material3.dynamicLightColorScheme(ctx)
+        }
+        activity.isDarkTheme -> darkColorScheme()
+        else -> lightColorScheme()
+    }
+
+    MaterialTheme(colorScheme = colorScheme) {
         Scaffold(
             bottomBar = {
                 if (showBottomBar) {

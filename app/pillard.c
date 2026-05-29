@@ -84,6 +84,14 @@ typedef struct {
      * as a NICKNAME NXM, so users see "Tel-Aviv-Pillar" instead of a 4-byte
      * address. Capped at NX_MSG_MAX_NICKNAME (32 chars). Empty = disabled. */
     char     pillar_name[NX_MSG_MAX_NICKNAME + 1];
+
+    /* Web admin dashboard: read-only HTTP page at /admin. 0 = off. */
+    uint16_t admin_http_port;
+
+    /* TLS: if both cert and key are set, listen on port 4243 with TLS.
+     * Requires compile-time TLS support (PILLARD_TLS=1). */
+    char     tls_cert[512];
+    char     tls_key[512];
 } pillard_config_t;
 
 /* Per-peer rate-limit tracker. Keyed by 4-byte short address. Not a hard
@@ -140,6 +148,40 @@ static int       g_admin_running = 0;
 static int       g_admin_fd = -1;
 static char      g_admin_bound_path[256] = {0}; /* so we know what to unlink */
 
+/* ── Log tail ring buffer ────────────────────────────────────────────── */
+#define LOGTAIL_LINES  64
+#define LOGTAIL_WIDTH  256
+static char             g_logtail[LOGTAIL_LINES][LOGTAIL_WIDTH];
+static int              g_logtail_head = 0;  /* next write slot */
+static pthread_mutex_t  g_logtail_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void logtail_push(const char *ts, const char *level, const char *msg)
+{
+    pthread_mutex_lock(&g_logtail_mutex);
+    snprintf(g_logtail[g_logtail_head], LOGTAIL_WIDTH,
+             "%s %s %s", ts, level, msg);
+    g_logtail_head = (g_logtail_head + 1) % LOGTAIL_LINES;
+    pthread_mutex_unlock(&g_logtail_mutex);
+}
+
+/* ── GeoIP annotation table ──────────────────────────────────────────── */
+#define GEOIP_SLOTS   64
+typedef struct {
+    uint8_t  addr[NX_SHORT_ADDR_SIZE];
+    char     country[8];    /* 2-letter ISO + NUL */
+    char     city[48];
+    char     asn[32];       /* "AS12345 Example ISP" */
+    int      used;
+} geoip_entry_t;
+
+static geoip_entry_t    g_geoip[GEOIP_SLOTS];
+static pthread_mutex_t  g_geoip_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Web admin HTTP thread */
+static pthread_t g_webadmin_thread;
+static int       g_webadmin_running = 0;
+static int       g_webadmin_fd = -1;
+
 /* ── Logging ─────────────────────────────────────────────────────────── */
 
 static void logmsg(const char *level, const char *fmt, ...)
@@ -152,13 +194,17 @@ static void logmsg(const char *level, const char *fmt, ...)
 
     fprintf(stdout, "%s %s ", ts, level);
 
+    char msgbuf[LOGTAIL_WIDTH];
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(stdout, fmt, ap);
+    vsnprintf(msgbuf, sizeof(msgbuf), fmt, ap);
     va_end(ap);
 
+    fputs(msgbuf, stdout);
     fputc('\n', stdout);
     fflush(stdout);
+
+    logtail_push(ts, level, msgbuf);
 }
 
 #define LOG_INFO(...)  logmsg("INFO ", __VA_ARGS__)
