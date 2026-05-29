@@ -33,6 +33,10 @@ fun SettingsScreen(
     val pillarList by service?.pillarList?.collectAsState() ?: remember { mutableStateOf("") }
     val pillarConnected by service?.pillarConnected?.collectAsState() ?: remember { mutableStateOf(false) }
     val pillarsAllowMetered by service?.pillarsAllowMetered?.collectAsState() ?: remember { mutableStateOf(false) }
+    val socksProxyEnabled by service?.socksProxyEnabled?.collectAsState() ?: remember { mutableStateOf(false) }
+    val socksProxyHost by service?.socksProxyHost?.collectAsState() ?: remember { mutableStateOf(com.nexus.mesh.service.NexusService.DEFAULT_SOCKS5_HOST) }
+    val socksProxyPort by service?.socksProxyPort?.collectAsState() ?: remember { mutableStateOf(com.nexus.mesh.service.NexusService.DEFAULT_SOCKS5_PORT) }
+    val discoveredPillars by service?.discoveredPillars?.collectAsState() ?: remember { mutableStateOf(emptyList<String>()) }
     val networkState by service?.networkState?.collectAsState()
         ?: remember { mutableStateOf(com.nexus.mesh.service.NetworkState()) }
     val stampStats by service?.stampStats?.collectAsState()
@@ -53,6 +57,8 @@ fun SettingsScreen(
     var editPillars by remember(pillarList) { mutableStateOf(pillarList) }
     var showAddPillar by remember { mutableStateOf(false) }
     var newPillar by remember { mutableStateOf("") }
+    var editSocksHost by remember(socksProxyHost) { mutableStateOf(socksProxyHost) }
+    var editSocksPort by remember(socksProxyPort) { mutableStateOf(socksProxyPort.toString()) }
     var showExportDialog by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
 
@@ -416,6 +422,95 @@ fun SettingsScreen(
                             enabled = editPillars != pillarList
                         ) {
                             Text("Save Pillars")
+                        }
+                    }
+                }
+            }
+
+            // DNS-SD discovered pillars (informational)
+            if (discoveredPillars.isNotEmpty()) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("LAN Pillars (auto-discovered)", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Found via mDNS on your local network. These are added automatically.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        discoveredPillars.forEach { pillar ->
+                            Text(
+                                pillar,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Tor / Orbot SOCKS5 Proxy
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Tor / Orbot Proxy", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Route Pillar connections through a SOCKS5 proxy (e.g. Orbot). " +
+                        "Enable Orbot first, then toggle this on.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Text("Enable SOCKS5 proxy")
+                        Switch(
+                            checked = socksProxyEnabled,
+                            onCheckedChange = { enabled ->
+                                service?.setSocksProxy(
+                                    enabled,
+                                    editSocksHost.ifBlank { com.nexus.mesh.service.NexusService.DEFAULT_SOCKS5_HOST },
+                                    editSocksPort.toIntOrNull() ?: com.nexus.mesh.service.NexusService.DEFAULT_SOCKS5_PORT
+                                )
+                            }
+                        )
+                    }
+                    if (socksProxyEnabled) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = editSocksHost,
+                            onValueChange = { editSocksHost = it },
+                            label = { Text("Proxy host") },
+                            placeholder = { Text("127.0.0.1") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = editSocksPort,
+                            onValueChange = { editSocksPort = it.filter { c -> c.isDigit() } },
+                            label = { Text("Proxy port") },
+                            placeholder = { Text("9050") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                service?.setSocksProxy(
+                                    true,
+                                    editSocksHost.ifBlank { com.nexus.mesh.service.NexusService.DEFAULT_SOCKS5_HOST },
+                                    editSocksPort.toIntOrNull() ?: com.nexus.mesh.service.NexusService.DEFAULT_SOCKS5_PORT
+                                )
+                            },
+                            enabled = editSocksHost != socksProxyHost ||
+                                      editSocksPort != socksProxyPort.toString()
+                        ) {
+                            Text("Save Proxy")
                         }
                     }
                 }

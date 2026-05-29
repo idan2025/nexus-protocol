@@ -1,0 +1,165 @@
+.TH PILLARD 8 "2026-05-29" "NEXUS Protocol" "System Manager's Manual"
+.SH NAME
+pillard \- NEXUS Pillar Server (public Internet relay)
+.SH SYNOPSIS
+.B pillard
+[\fB\-p\fR \fIPORT\fR]
+[\fB\-i\fR \fIFILE\fR]
+[\fB\-c\fR \fIHOST\fB:\fIPORT\fR]...
+[\fB\-m\fR]
+[\fB\-V\fR]
+[\fB\-f\fR]
+[\fB\-M\fR \fIPORT\fR]
+[\fB\-A\fR \fIPORT\fR]
+[\fB\-C\fR \fIFILE\fR]
+[\fB\-K\fR \fIFILE\fR]
+[\fB\-r\fR \fIN\fB/\fIWINDOW\fR]
+[\fB\-u\fR \fIPATH\fR]
+[\fB\-N\fR \fINAME\fR]
+[\fB\-v\fR]
+[\fB\-h\fR]
+.SH DESCRIPTION
+.B pillard
+is a NEXUS pillar server designed for 24/7 unattended operation on a public
+VPS.  It listens on a TCP port for inbound connections from NEXUS nodes
+sitting behind NAT or mobile networks, forwards mesh traffic between
+connected peers, and stores\-and\-forwards messages for offline destinations
+via the built\-in anchor mailbox.
+.PP
+Multiple pillard instances can be peered together with \fB\-c\fR to form a
+redundant public backbone.  Inter\-pillar federation (digest/fetch gossip)
+ensures that messages reach their destination even when a recipient connects
+to a different pillar than the sender.
+.SH OPTIONS
+.TP
+.BI \-p " PORT"
+TCP listen port (default: 4242).
+.TP
+.BI \-i " FILE"
+Identity file.  Generated and saved on first run if absent.
+Default: \fI/var/lib/nexus/pillar.identity\fR.
+.TP
+.BI \-c " HOST:PORT"
+Peer with another pillard instance.  Repeatable; maximum 8 peers.
+pillard maintains persistent outbound connections to all listed peers.
+.TP
+.B \-m
+Enable UDP multicast transport.  Off by default; only useful on LAN.
+.TP
+.B \-V
+Start as VAULT (role=6) instead of PILLAR (role=5).  A VAULT has a larger
+anchor mailbox and takes part in pillar\-tier store\-and\-forward.
+.TP
+.B \-f
+Run in foreground (do not double\-fork).  Use with systemd \fBType=simple\fR.
+.TP
+.BI \-M " PORT"
+Expose Prometheus \fB/metrics\fR on this TCP port.  Off when not specified.
+.TP
+.BI \-A " PORT"
+Start a read\-only web admin dashboard on \fIhttp://127.0.0.1:PORT/admin\fR.
+The page shows uptime, node address, neighbor table, mailbox depth, traffic
+counters, and the last 64 log lines.  Off when not specified.  Bind to
+loopback only; use a reverse proxy for remote access.
+.TP
+.BI \-C " FILE"
+TLS certificate file (PEM).  When both \fB\-C\fR and \fB\-K\fR are
+provided, pillard will accept TLS connections on port 4243 (requires the
+binary to be built with \fBPILLARD_TLS=1\fR).
+.TP
+.BI \-K " FILE"
+TLS private key file (PEM).  Must accompany \fB\-C\fR.
+.TP
+.BI \-r " N/WINDOW"
+Rate\-warn threshold: log a WARN when any single peer sends more than
+\fIN\fR announce packets within \fIWINDOW\fR seconds.  Example:
+\fB\-r 60/60\fR warns at 60 announces/minute.  0 disables (default).
+.TP
+.BI \-u " PATH"
+Unix\-domain admin socket path.
+Default: \fI/run/nexus/pillard.sock\fR (privileged) or
+\fI$HOME/.nexus/pillard.sock\fR (unprivileged).
+Pass \fBoff\fR to disable.
+.TP
+.BI \-N " NAME"
+Friendly display name pushed to every connecting peer as a NICKNAME message,
+so clients show \(lqTel-Aviv\-Pillar\(rq instead of a raw 4\-byte address.
+Maximum 32 characters.  Also configurable via the \fBPILLAR_NAME\fR
+environment variable; the \fB\-N\fR flag takes precedence.
+.TP
+.B \-v
+Verbose debug logging.
+.TP
+.B \-h
+Print help and exit.
+.SH SIGNALS
+.TP
+.B SIGTERM, SIGINT
+Graceful shutdown: stops all threads, closes listeners, wipes node keys.
+.TP
+.B SIGHUP
+Re\-announce on all transports immediately.
+.TP
+.B SIGUSR1
+Dump routing and traffic statistics to the log.
+.SH ADMIN SOCKET
+The admin socket accepts single\-line commands terminated with a newline:
+.TP
+.B ping
+Returns \fBpong\en\fR.
+.TP
+.B reload
+Equivalent to SIGHUP.  Returns \fBok reload\en\fR.
+.TP
+.B stats
+Returns a one\-line traffic summary.
+.TP
+.B shutdown
+Equivalent to SIGTERM.
+.TP
+.B help
+Lists available commands.
+.PP
+Example using socat:
+.RS
+.nf
+echo reload | socat \- UNIX\-CONNECT:/run/nexus/pillard.sock
+.fi
+.RE
+.SH FILES
+.TP
+.I /var/lib/nexus/pillar.identity
+Default identity file (privileged).
+.TP
+.I $HOME/.nexus/pillar.identity
+Fallback identity file (unprivileged).
+.TP
+.I /run/nexus/pillard.sock
+Default admin socket (privileged).
+.TP
+.I $HOME/.nexus/pillard.sock
+Fallback admin socket (unprivileged).
+.SH ENVIRONMENT
+.TP
+.B PILLAR_NAME
+Pre\-populates the friendly pillar name.  Overridden by \fB\-N\fR.
+.SH EXAMPLES
+.PP
+Minimal public pillar with systemd:
+.RS
+.nf
+pillard \-f \-p 4242 \-N "nyc\-01"
+.fi
+.RE
+.PP
+Paired pillars with metrics and admin dashboard:
+.RS
+.nf
+pillard \-f \-p 4242 \-c ams.example.com:4242 \-M 9101 \-A 8080 \-N "nyc\-01"
+.fi
+.RE
+.SH SEE ALSO
+.BR nexusd (8),
+.BR nexus\-cli (1)
+.SH AUTHORS
+NEXUS Protocol contributors.

@@ -117,6 +117,10 @@ typedef struct {
      * forward to every OTHER peer (Pillar / multi-phone scenario). -1 if
      * no packet has been received yet. */
     int                last_rx_conn_idx;
+
+    /* Optional SOCKS5 proxy (Tor/Orbot). socks5_port==0 means direct. */
+    char               socks5_host[64];
+    uint16_t           socks5_port;
 } tcp_inet_state_t;
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
@@ -275,6 +279,86 @@ static int try_connect(const char *host, uint16_t port)
     return fd;
 }
 
+/* Establish an outbound connection through a SOCKS5 proxy (e.g. Tor/Orbot).
+ * Connects to proxy_host:proxy_port, performs the SOCKS5 CONNECT handshake
+ * targeting target_host:target_port (hostname ATYP=0x03), and returns a
+ * connected, non-blocking fd on success or -1 on any failure. */
+static int socks5_connect(const char *proxy_host, uint16_t proxy_port,
+                           const char *target_host, uint16_t target_port)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(proxy_port);
+    if (inet_pton(AF_INET, proxy_host, &addr.sin_addr) != 1) {
+        close(fd); return -1;
+    }
+
+    struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd); return -1;
+    }
+
+    uint8_t greeting[3] = { 0x05, 0x01, 0x00 };
+    if (send(fd, greeting, 3, 0) != 3) { close(fd); return -1; }
+
+    uint8_t sresp[2];
+    if (recv(fd, sresp, 2, MSG_WAITALL) != 2 ||
+        sresp[0] != 0x05 || sresp[1] != 0x00) {
+        close(fd); return -1;
+    }
+
+    uint8_t hnamelen = (uint8_t)strlen(target_host);
+    if (hnamelen == 0) { close(fd); return -1; }
+
+    uint8_t req[7 + 255];
+    int rlen = 0;
+    req[rlen++] = 0x05;
+    req[rlen++] = 0x01;  /* CMD: CONNECT */
+    req[rlen++] = 0x00;  /* RSV */
+    req[rlen++] = 0x03;  /* ATYP: domain name */
+    req[rlen++] = hnamelen;
+    memcpy(req + rlen, target_host, hnamelen); rlen += hnamelen;
+    req[rlen++] = (uint8_t)(target_port >> 8);
+    req[rlen++] = (uint8_t)(target_port & 0xFF);
+
+    if (send(fd, req, rlen, 0) != rlen) { close(fd); return -1; }
+
+    uint8_t rhdr[4];
+    if (recv(fd, rhdr, 4, MSG_WAITALL) != 4 ||
+        rhdr[0] != 0x05 || rhdr[1] != 0x00) {
+        close(fd); return -1;
+    }
+    if (rhdr[3] == 0x01) {
+        uint8_t tail[6]; (void)recv(fd, tail, 6, MSG_WAITALL);
+    } else if (rhdr[3] == 0x03) {
+        uint8_t dlen; (void)recv(fd, &dlen, 1, MSG_WAITALL);
+        uint8_t dbuf[258]; (void)recv(fd, dbuf, (int)dlen + 2, MSG_WAITALL);
+    } else if (rhdr[3] == 0x04) {
+        uint8_t tail[18]; (void)recv(fd, tail, 18, MSG_WAITALL);
+    }
+
+    set_nonblocking(fd);
+    set_nodelay(fd);
+    set_keepalive(fd);
+    return fd;
+}
+
+/* Connect to a peer directly or via SOCKS5 proxy based on state config. */
+static int try_connect_peer(const tcp_inet_state_t *s,
+                             const char *host, uint16_t port)
+{
+    if (s->socks5_port > 0 && s->socks5_host[0] != '\0')
+        return socks5_connect(s->socks5_host, s->socks5_port, host, port);
+    return try_connect(host, port);
+}
+
 /* ── Init ────────────────────────────────────────────────────────────── */
 
 static nx_err_t tcp_inet_init(nx_transport_t *t, const void *config)
@@ -374,7 +458,7 @@ static nx_err_t tcp_inet_init(nx_transport_t *t, const void *config)
         /* In failover mode, only connect to the first peer initially */
         if (s->failover && i > 0) continue;
 
-        int fd = try_connect(c->peer_host, c->peer_port);
+        int fd = try_connect_peer(s, c->peer_host, c->peer_port);
         if (fd >= 0) {
             c->fd = fd;
             c->active = true;
@@ -388,6 +472,13 @@ static nx_err_t tcp_inet_init(nx_transport_t *t, const void *config)
             if (s->failover)
                 s->failover_attempt_ms = nx_platform_time_ms();
         }
+    }
+
+    /* Copy SOCKS5 proxy config */
+    if (cfg->socks5_port > 0 && cfg->socks5_host[0] != '\0') {
+        strncpy(s->socks5_host, cfg->socks5_host, sizeof(s->socks5_host) - 1);
+        s->socks5_host[sizeof(s->socks5_host) - 1] = '\0';
+        s->socks5_port = cfg->socks5_port;
     }
 
     t->state = s;
@@ -470,7 +561,7 @@ static void reconnect_outbound_parallel(tcp_inet_state_t *s, uint64_t now)
 
         c->last_reconnect_ms = now;
 
-        int fd = try_connect(c->peer_host, c->peer_port);
+        int fd = try_connect_peer(s, c->peer_host, c->peer_port);
         if (fd >= 0) {
             c->fd = fd;
             c->active = true;

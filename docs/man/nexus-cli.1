@@ -1,0 +1,115 @@
+.TH NEXUS\-CLI 1 "2026-05-29" "NEXUS Protocol" "User Commands"
+.SH NAME
+nexus\-cli \- NEXUS Protocol command\-line tool
+.SH SYNOPSIS
+.B nexus\-cli
+.IR command
+[\fIoptions\fR] [\fIarguments\fR]
+.SH DESCRIPTION
+.B nexus\-cli
+provides identity management, daemon control, and network diagnostic
+utilities for the NEXUS mesh protocol.  It communicates with a running
+.BR nexusd (8)
+instance via a Unix\-domain socket, or with a
+.BR pillard (8)
+instance over TCP.
+.SH COMMANDS
+.SS identity
+.TP
+.B nexus\-cli identity generate
+Generate a fresh Ed25519/X25519 identity keypair and print the short
+address and public keys to stdout.  The identity is not saved.
+.TP
+.BI "nexus\-cli identity save " FILE
+Generate a fresh identity and write it to \fIFILE\fR in the NEXUS binary
+identity format.
+.TP
+.BI "nexus\-cli identity show " FILE
+Load an existing identity from \fIFILE\fR and print its short address and
+public keys.
+.SS Daemon control (nexusd UDS)
+These subcommands forward a single\-line command to a running nexusd process
+over its Unix\-domain socket.
+.TP
+.BI "nexus\-cli send [--sock " PATH "] " PEER " " TEXT
+Send a plaintext message to \fIPEER\fR (8\-hex\-digit short address) via nexusd.
+.TP
+.BI "nexus\-cli inbox [--sock " PATH ]
+List stored messages in the anchor mailbox.
+.TP
+.BI "nexus\-cli status [--sock " PATH ]
+Show node status: address, neighbor count, route count.
+.TP
+.BI "nexus\-cli announce [--sock " PATH ]
+Trigger an immediate announce broadcast.
+.PP
+The \fB\-\-sock\fR option (default: \fI/tmp/nexusd.sock\fR) overrides the
+nexusd Unix\-domain socket path.
+.SS pillar\-probe
+.TP
+.BI "nexus\-cli pillar\-probe [--timeout " SECS "] [--admin\-port " PORT "] " HOST : PORT
+Probe a NEXUS pillar server at \fIHOST:PORT\fR.  Establishes a TCP connection,
+measures round\-trip time, and reports reachability.
+.PP
+If \fB\-\-admin\-port\fR is given, nexus\-cli additionally fetches the pillar's
+web admin dashboard (started with pillard \fB\-A\fR) and extracts neighbor
+count, mailbox depth, and uptime.
+.TP
+.BI \-\-timeout " SECS"
+Connection timeout in seconds (default: 5.0).
+.TP
+.BI \-\-admin\-port " PORT"
+pillard web admin port for extended info (optional).
+.PP
+Example output:
+.RS
+.nf
+host:    relay.example.com
+port:    4242
+rtt_ms:  12.4
+status:  reachable
+.fi
+.RE
+.SH OPTIONS
+.TP
+.B \-h, \-\-help
+Print help and exit.
+.SH EXAMPLES
+.PP
+Generate and display a new identity:
+.RS
+.nf
+nexus\-cli identity generate
+.fi
+.RE
+.PP
+Save a new identity to a file and show its address:
+.RS
+.nf
+nexus\-cli identity save ~/.nexus/my.identity
+nexus\-cli identity show  ~/.nexus/my.identity
+.fi
+.RE
+.PP
+Probe a pillar and get admin stats:
+.RS
+.nf
+nexus\-cli pillar\-probe relay.example.com:4242 \-\-admin\-port 8080
+.fi
+.RE
+.PP
+Send a message via a locally running nexusd:
+.RS
+.nf
+nexus\-cli send \-\-sock /run/nexus/nexusd.sock deadbeef "hello"
+.fi
+.RE
+.SH FILES
+.TP
+.I /tmp/nexusd.sock
+Default nexusd Unix\-domain socket.
+.SH SEE ALSO
+.BR nexusd (8),
+.BR pillard (8)
+.SH AUTHORS
+NEXUS Protocol contributors.

@@ -1,0 +1,71 @@
+.TH NEXUSD 8 "2026-05-29" "NEXUS Protocol" "System Manager's Manual"
+.SH NAME
+nexusd \- NEXUS mesh network daemon
+.SH SYNOPSIS
+.B nexusd
+[\fB\-p\fR \fIPORT\fR]
+[\fB\-i\fR \fIFILE\fR]
+[\fB\-r\fR \fIROLE\fR]
+[\fB\-m\fR]
+[\fB\-f\fR]
+[\fB\-v\fR]
+[\fB\-h\fR]
+.SH DESCRIPTION
+.B nexusd
+is the multi-role NEXUS mesh daemon for development and embedded deployments.
+It initialises a NEXUS node, registers one or more transports, and runs the
+PRISM (Proactive\-Reactive Intelligent Segmented Mesh) routing engine.
+.PP
+Unlike
+.BR pillard (8),
+which is purpose\-built for public Internet relay, nexusd supports every
+NEXUS node role (CLIENT, RELAY, GATEWAY, ANCHOR, PILLAR, VAULT) and enables
+UDP multicast by default, making it suitable for LAN mesh testing, firmware
+development, and gateway deployments.
+.SH OPTIONS
+.TP
+.BI \-p " PORT"
+TCP listen port (default: 4242).
+.TP
+.BI \-i " FILE"
+Identity file path.  If the file does not exist a new identity is generated
+and saved.  Default: \fI/var/lib/nexus/nexusd.identity\fR (root) or
+\fI$HOME/.nexus/nexusd.identity\fR (unprivileged).
+.TP
+.BI \-r " ROLE"
+Node role: \fBclient\fR (1), \fBrelay\fR (2), \fBgateway\fR (3),
+\fBanchor\fR (4), \fBpillar\fR (5), \fBvault\fR (6).  Default: \fBrelay\fR.
+.TP
+.B \-m
+Enable UDP multicast transport for LAN neighbour discovery.
+.TP
+.B \-f
+Run in foreground (do not double\-fork).  Use with systemd \fBType=simple\fR.
+.TP
+.B \-v
+Enable verbose debug logging.
+.TP
+.B \-h
+Print help and exit.
+.SH SIGNALS
+.TP
+.B SIGTERM, SIGINT
+Graceful shutdown.
+.TP
+.B SIGHUP
+Re\-announce on all transports immediately.
+.TP
+.B SIGUSR1
+Dump routing and traffic statistics to the log.
+.SH FILES
+.TP
+.I /var/lib/nexus/nexusd.identity
+Default identity file location (privileged).
+.TP
+.I $HOME/.nexus/nexusd.identity
+Fallback identity file location (unprivileged).
+.SH SEE ALSO
+.BR pillard (8),
+.BR nexus\-cli (1)
+.SH AUTHORS
+NEXUS Protocol contributors.

@@ -173,6 +173,11 @@ typedef struct {
      * restrict outbound connects. */
     const char *allow_list[NX_TCP_INET_MAX_ALLOW];
     int         allow_count;
+
+    /* Optional SOCKS5 proxy for all outbound peer connections (e.g. Tor/Orbot).
+     * Set socks5_port > 0 to enable. Accepts hostname or dotted-quad IPv4. */
+    char     socks5_host[64];
+    uint16_t socks5_port;
 } nx_tcp_inet_config_t;
 
 /* Create a TCP Internet transport (multi-peer, auto-reconnect). */

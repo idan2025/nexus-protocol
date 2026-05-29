@@ -129,6 +129,19 @@ class NexusNode {
         if (isRunning) nativeStopTcpInet()
     }
 
+    fun startTcpInetWithProxy(
+        listenPort: Int = 0,
+        peerHosts: Array<String> = emptyArray(),
+        peerPorts: IntArray = IntArray(0),
+        reconnectMs: Int = 5000,
+        socks5Host: String,
+        socks5Port: Int
+    ): Boolean {
+        return isRunning && nativeStartTcpInetWithProxy(
+            listenPort, peerHosts, peerPorts, reconnectMs, socks5Host, socks5Port
+        )
+    }
+
     val isTcpInetActive: Boolean
         get() = isRunning && nativeIsTcpInetActive()
 
@@ -191,6 +204,7 @@ class NexusNode {
     private external fun nativeInjectPacket(packet: ByteArray): Boolean
     private external fun nativeReadBleOutbound(): ByteArray?
     private external fun nativeStartTcpInet(listenPort: Int, peerHosts: Array<String>, peerPorts: IntArray, reconnectMs: Int): Boolean
+    private external fun nativeStartTcpInetWithProxy(listenPort: Int, peerHosts: Array<String>, peerPorts: IntArray, reconnectMs: Int, socks5Host: String, socks5Port: Int): Boolean
     private external fun nativeStopTcpInet()
     private external fun nativeIsTcpInetActive(): Boolean
     private external fun nativeStartUdpMulticast(): Boolean

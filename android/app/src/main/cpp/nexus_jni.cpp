@@ -575,6 +575,79 @@ Java_com_nexus_mesh_service_NexusNode_nativeStartTcpInet(JNIEnv *env,
     return JNI_TRUE;
 }
 
+/* Like nativeStartTcpInet but routes outbound connections through a SOCKS5 proxy. */
+JNIEXPORT jboolean JNICALL
+Java_com_nexus_mesh_service_NexusNode_nativeStartTcpInetWithProxy(JNIEnv *env,
+                                                                    jobject thiz,
+                                                                    jint listenPort,
+                                                                    jobjectArray peerHosts,
+                                                                    jintArray peerPorts,
+                                                                    jint reconnectMs,
+                                                                    jstring socks5Host,
+                                                                    jint socks5Port)
+{
+    (void)thiz;
+    if (!g_running) return JNI_FALSE;
+    if (g_tcp_inet) return JNI_TRUE;
+
+    g_tcp_inet = nx_tcp_inet_transport_create();
+    if (!g_tcp_inet) return JNI_FALSE;
+
+    nx_tcp_inet_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.listen_port = (uint16_t)listenPort;
+    cfg.listen_host = "0.0.0.0";
+    cfg.reconnect_interval_ms = (uint32_t)(reconnectMs > 0 ? reconnectMs : 5000);
+
+    /* SOCKS5 proxy */
+    if (socks5Host && socks5Port > 0) {
+        const char *proxy = env->GetStringUTFChars(socks5Host, nullptr);
+        if (proxy) {
+            strncpy(cfg.socks5_host, proxy, sizeof(cfg.socks5_host) - 1);
+            cfg.socks5_host[sizeof(cfg.socks5_host) - 1] = '\0';
+            cfg.socks5_port = (uint16_t)socks5Port;
+            env->ReleaseStringUTFChars(socks5Host, proxy);
+        }
+    }
+
+    int peer_count = 0;
+    static char proxy_peer_hosts_buf[NX_TCP_INET_MAX_PEERS][64];
+    if (peerHosts && peerPorts) {
+        peer_count = env->GetArrayLength(peerHosts);
+        if (peer_count > NX_TCP_INET_MAX_PEERS) peer_count = NX_TCP_INET_MAX_PEERS;
+        jint *ports = env->GetIntArrayElements(peerPorts, nullptr);
+        for (int i = 0; i < peer_count; i++) {
+            jstring jhost = (jstring)env->GetObjectArrayElement(peerHosts, i);
+            const char *host = env->GetStringUTFChars(jhost, nullptr);
+            strncpy(proxy_peer_hosts_buf[i], host, sizeof(proxy_peer_hosts_buf[i]) - 1);
+            proxy_peer_hosts_buf[i][sizeof(proxy_peer_hosts_buf[i]) - 1] = '\0';
+            env->ReleaseStringUTFChars(jhost, host);
+            cfg.peers[i].host = proxy_peer_hosts_buf[i];
+            cfg.peers[i].port = (uint16_t)ports[i];
+        }
+        env->ReleaseIntArrayElements(peerPorts, ports, JNI_ABORT);
+    }
+    cfg.peer_count = peer_count;
+
+    nx_err_t err = g_tcp_inet->ops->init(g_tcp_inet, &cfg);
+    if (err != NX_OK) {
+        LOGE("TCP inet (proxy) init failed: %d", err);
+        nx_platform_free(g_tcp_inet);
+        g_tcp_inet = nullptr;
+        return JNI_FALSE;
+    }
+    err = nx_transport_register(g_tcp_inet);
+    if (err != NX_OK) {
+        LOGE("TCP inet (proxy) register failed: %d", err);
+        g_tcp_inet->ops->destroy(g_tcp_inet);
+        nx_platform_free(g_tcp_inet);
+        g_tcp_inet = nullptr;
+        return JNI_FALSE;
+    }
+    LOGI("TCP inet (SOCKS5 via %s:%d) started (peers:%d)", cfg.socks5_host, socks5Port, peer_count);
+    return JNI_TRUE;
+}
+
 JNIEXPORT void JNICALL
 Java_com_nexus_mesh_service_NexusNode_nativeStopTcpInet(JNIEnv *env,
                                                          jobject thiz)

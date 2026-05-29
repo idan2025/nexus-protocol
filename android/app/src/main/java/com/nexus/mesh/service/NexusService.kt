@@ -78,6 +78,14 @@ class NexusService : Service(), NexusNode.Callback {
         private const val KEY_PILLAR_LIST = "pillar_list"
         private const val KEY_PILLARS_ENABLED = "pillars_enabled"
         private const val KEY_PILLARS_ALLOW_METERED = "pillars_allow_metered"
+        private const val KEY_SOCKS5_ENABLED = "socks5_enabled"
+        private const val KEY_SOCKS5_HOST    = "socks5_host"
+        private const val KEY_SOCKS5_PORT    = "socks5_port"
+        const val DEFAULT_SOCKS5_HOST = "127.0.0.1"
+        const val DEFAULT_SOCKS5_PORT = 9050   /* Orbot default */
+
+        /* DNS-SD: well-known service type for NEXUS pillars on the LAN */
+        const val NSD_SERVICE_TYPE = "_nexus._tcp"
 
         private const val PREFS_ROLE = "nexus_role"
         private const val KEY_ROLE = "node_role"
@@ -222,6 +230,22 @@ class NexusService : Service(), NexusNode.Callback {
     private val _pillarsAllowMetered = MutableStateFlow(false)
     val pillarsAllowMetered: StateFlow<Boolean> = _pillarsAllowMetered
 
+    private val _socksProxyEnabled = MutableStateFlow(false)
+    val socksProxyEnabled: StateFlow<Boolean> = _socksProxyEnabled
+
+    private val _socksProxyHost = MutableStateFlow(DEFAULT_SOCKS5_HOST)
+    val socksProxyHost: StateFlow<String> = _socksProxyHost
+
+    private val _socksProxyPort = MutableStateFlow(DEFAULT_SOCKS5_PORT)
+    val socksProxyPort: StateFlow<Int> = _socksProxyPort
+
+    /* LAN pillars discovered via DNS-SD (NsdManager). Each entry is "host:port". */
+    private val _discoveredPillars = MutableStateFlow<List<String>>(emptyList())
+    val discoveredPillars: StateFlow<List<String>> = _discoveredPillars
+
+    private var nsdManager: android.net.nsd.NsdManager? = null
+    private var nsdDiscoveryListener: android.net.nsd.NsdManager.DiscoveryListener? = null
+
     private val _networkState = MutableStateFlow(NetworkState())
     val networkState: StateFlow<NetworkState> = _networkState
 
@@ -303,6 +327,7 @@ class NexusService : Service(), NexusNode.Callback {
     }
 
     override fun onDestroy() {
+        stopNsdDiscovery()
         pttMedia.release()
         unregisterNetworkCallback()
         unregisterUsbReceiver()
@@ -742,6 +767,7 @@ class NexusService : Service(), NexusNode.Callback {
         }
 
         connectToPillars()
+        startNsdDiscovery()
 
         Log.i(TAG, "Node started: ${_address.value}")
     }
@@ -794,17 +820,117 @@ class NexusService : Service(), NexusNode.Callback {
             return
         }
 
-        val pillarHosts = parsePillarHosts(savedPillars)
-        val ok = node.startTcpInet(0, pillarHosts, parsePillarPorts(savedPillars))
+        /* Merge configured + DNS-SD discovered pillars */
+        val allPillars = buildString {
+            append(savedPillars)
+            _discoveredPillars.value.forEach { d ->
+                if (!contains(d)) { if (isNotEmpty()) append(","); append(d) }
+            }
+        }
+
+        val pillarHosts = parsePillarHosts(allPillars)
+        val pillarPorts = parsePillarPorts(allPillars)
+
+        /* Load SOCKS5 proxy config */
+        val socksPrefs = getSharedPreferences(PREFS_PILLARS, Context.MODE_PRIVATE)
+        val socksEnabled = socksPrefs.getBoolean(KEY_SOCKS5_ENABLED, false)
+        val socksHost    = socksPrefs.getString(KEY_SOCKS5_HOST, DEFAULT_SOCKS5_HOST) ?: DEFAULT_SOCKS5_HOST
+        val socksPort    = socksPrefs.getInt(KEY_SOCKS5_PORT, DEFAULT_SOCKS5_PORT)
+        _socksProxyEnabled.value = socksEnabled
+        _socksProxyHost.value    = socksHost
+        _socksProxyPort.value    = socksPort
+
+        val ok = if (socksEnabled && socksHost.isNotBlank() && socksPort > 0) {
+            Log.i(TAG, "Pillars: connecting via SOCKS5 proxy $socksHost:$socksPort")
+            node.startTcpInetWithProxy(0, pillarHosts, pillarPorts, 5000, socksHost, socksPort)
+        } else {
+            node.startTcpInet(0, pillarHosts, pillarPorts)
+        }
         // Only set pillarConnected if we actually dialed at least one pillar host
         _pillarConnected.value = ok && pillarHosts.isNotEmpty()
         _tcpActive.value = ok
         if (ok) {
-            Log.i(TAG, "Pillars: connected to ${countPillars(savedPillars)} pillar(s)")
+            Log.i(TAG, "Pillars: connected to ${countPillars(allPillars)} pillar(s)")
             updateTransportNotification()
         } else {
             Log.w(TAG, "Pillars: failed to connect")
         }
+    }
+
+    fun setSocksProxy(enabled: Boolean, host: String, port: Int) {
+        getSharedPreferences(PREFS_PILLARS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_SOCKS5_ENABLED, enabled)
+            .putString(KEY_SOCKS5_HOST, host.trim())
+            .putInt(KEY_SOCKS5_PORT, port)
+            .apply()
+        _socksProxyEnabled.value = enabled
+        _socksProxyHost.value    = host.trim()
+        _socksProxyPort.value    = port
+        /* Reconnect with new proxy settings */
+        if (_tcpActive.value) {
+            node.stopTcpInet()
+            _tcpActive.value       = false
+            _pillarConnected.value = false
+        }
+        scope.launch { connectToPillars() }
+    }
+
+    /* ── DNS-SD (mDNS) LAN pillar discovery ─────────────────────────────── */
+
+    fun startNsdDiscovery() {
+        if (nsdManager != null) return
+        val mgr = getSystemService(Context.NSD_SERVICE) as? android.net.nsd.NsdManager ?: return
+        nsdManager = mgr
+
+        val listener = object : android.net.nsd.NsdManager.DiscoveryListener {
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                Log.w(TAG, "NSD: start discovery failed ($errorCode)")
+                nsdManager = null
+                nsdDiscoveryListener = null
+            }
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+                Log.w(TAG, "NSD: stop discovery failed ($errorCode)")
+            }
+            override fun onDiscoveryStarted(serviceType: String) {
+                Log.i(TAG, "NSD: discovery started for $serviceType")
+            }
+            override fun onDiscoveryStopped(serviceType: String) {
+                Log.i(TAG, "NSD: discovery stopped")
+            }
+            override fun onServiceFound(serviceInfo: android.net.nsd.NsdServiceInfo) {
+                mgr.resolveService(serviceInfo, object : android.net.nsd.NsdManager.ResolveListener {
+                    override fun onResolveFailed(si: android.net.nsd.NsdServiceInfo, errorCode: Int) {
+                        Log.w(TAG, "NSD: resolve failed for ${si.serviceName} ($errorCode)")
+                    }
+                    override fun onServiceResolved(si: android.net.nsd.NsdServiceInfo) {
+                        val host = si.host?.hostAddress ?: return
+                        val port = si.port
+                        if (port <= 0) return
+                        val entry = "$host:$port"
+                        val current = _discoveredPillars.value
+                        if (!current.contains(entry)) {
+                            Log.i(TAG, "NSD: discovered pillar $entry")
+                            _discoveredPillars.value = current + entry
+                            /* Attempt connection if not already active */
+                            if (!_tcpActive.value) scope.launch { connectToPillars() }
+                        }
+                    }
+                })
+            }
+            override fun onServiceLost(serviceInfo: android.net.nsd.NsdServiceInfo) {
+                val name = serviceInfo.serviceName
+                _discoveredPillars.value = _discoveredPillars.value.filter { !it.startsWith(name) }
+            }
+        }
+        nsdDiscoveryListener = listener
+        mgr.discoverServices(NSD_SERVICE_TYPE, android.net.nsd.NsdManager.PROTOCOL_DNS_SD, listener)
+    }
+
+    fun stopNsdDiscovery() {
+        val listener = nsdDiscoveryListener ?: return
+        try { nsdManager?.stopServiceDiscovery(listener) } catch (_: Exception) {}
+        nsdManager = null
+        nsdDiscoveryListener = null
     }
 
     private fun parsePillarHosts(pillars: String): Array<String> {
