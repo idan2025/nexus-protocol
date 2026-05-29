@@ -419,6 +419,15 @@ fun NexusApp(activity: MainActivity) {
                     val groupId = backStackEntry.arguments?.getString("groupId") ?: ""
                     GroupInfoScreen(activity, navController, groupId)
                 }
+                composable("identities") { IdentityListScreen(activity, navController) }
+                composable("offline_maps") { OfflineMapScreen(navController) }
+                composable(
+                    "call/{peerAddr}",
+                    arguments = listOf(navArgument("peerAddr") { type = NavType.StringType })
+                ) { backStackEntry ->
+                    val peerAddr = backStackEntry.arguments?.getString("peerAddr") ?: ""
+                    CallScreen(activity, navController, peerAddr)
+                }
                 }   // NavHost
             }       // Column
         }

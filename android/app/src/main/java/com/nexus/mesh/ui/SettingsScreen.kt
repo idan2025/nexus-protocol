@@ -95,6 +95,40 @@ fun SettingsScreen(
                         ) { Text("Open Flash Node") }
                     }
                 }
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Identities", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Create, import, switch, or delete NEXUS identities. " +
+                                "Each identity has its own mesh address and conversation history.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { navController.navigate("identities") },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Manage Identities") }
+                    }
+                }
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Offline Maps", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Download or import MBTiles archives for offline map viewing. " +
+                                "Supports both vector and raster tile formats.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { navController.navigate("offline_maps") },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Manage Offline Maps") }
+                    }
+                }
             }
 
             // Identity
