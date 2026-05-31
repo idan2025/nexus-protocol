@@ -767,7 +767,7 @@ fun SettingsScreen(
                         Text("Dark theme", style = MaterialTheme.typography.bodyMedium)
                         Switch(
                             checked = activity.isDarkTheme,
-                            onCheckedChange = { activity.setDarkTheme(it) }
+                            onCheckedChange = { activity.applyDarkTheme(it) }
                         )
                     }
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {

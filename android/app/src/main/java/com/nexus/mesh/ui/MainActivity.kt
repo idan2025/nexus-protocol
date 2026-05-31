@@ -113,7 +113,7 @@ class MainActivity : ComponentActivity() {
     var isDarkTheme by mutableStateOf(true)
     var useDynamicColor by mutableStateOf(false)
 
-    fun setDarkTheme(dark: Boolean) {
+    fun applyDarkTheme(dark: Boolean) {
         isDarkTheme = dark
         getSharedPreferences(PREFS_THEME, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_DARK_MODE, dark).apply()
