@@ -16,7 +16,7 @@
 | 7 | Advanced Features | **DONE** |
 | 8 | Android App + Production Firmware | **DONE** |
 | 9 | Messenger Feature Parity | **DONE** |
-| 10 | In-App Updater + Node Flasher | **IN PROGRESS** |
+| 10 | In-App Updater + Node Flasher | **DONE** |
 
 **Total**: 75+ source files, ~15500+ lines of code, 20/20 C test suites + 43/43 Python tests passing
 
@@ -668,7 +668,7 @@ PYTHONPATH=.. python3 -m unittest discover -v
 
 ---
 
-## Phase 10: In-App Updater + Node Flasher -- IN PROGRESS
+## Phase 10: In-App Updater + Node Flasher -- DONE
 
 **Goal**: Self-update over GitHub releases, and an on-phone flasher hub so users can deploy / refresh nodes without a desktop.
 
