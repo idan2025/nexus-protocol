@@ -17,6 +17,10 @@
 
 #include <string.h>
 
+/* Forward declarations for static helpers used before their definitions. */
+static nx_err_t transmit_all(const nx_packet_t *pkt);
+static nx_err_t transmit_bridge(const nx_packet_t *pkt, int exclude_idx);
+
 /* ── Jitter PRNG (XORshift32) ────────────────────────────────────────── */
 
 static uint32_t jitter_rand(uint32_t *state)

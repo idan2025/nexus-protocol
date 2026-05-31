@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
@@ -210,6 +211,9 @@ fun ConversationScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { navController.navigate("call/$peerAddr") }) {
+                        Icon(Icons.Default.Call, "Voice Call")
+                    }
                     IconButton(onClick = { showRouteInfo = true }) {
                         Icon(Icons.Default.Info, "Route Info")
                     }
