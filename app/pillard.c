@@ -164,19 +164,6 @@ static void logtail_push(const char *ts, const char *level, const char *msg)
     pthread_mutex_unlock(&g_logtail_mutex);
 }
 
-/* ── GeoIP annotation table ──────────────────────────────────────────── */
-#define GEOIP_SLOTS   64
-typedef struct {
-    uint8_t  addr[NX_SHORT_ADDR_SIZE];
-    char     country[8];    /* 2-letter ISO + NUL */
-    char     city[48];
-    char     asn[32];       /* "AS12345 Example ISP" */
-    int      used;
-} geoip_entry_t;
-
-static geoip_entry_t    g_geoip[GEOIP_SLOTS];
-static pthread_mutex_t  g_geoip_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 /* Web admin HTTP thread */
 static pthread_t g_webadmin_thread;
 static int       g_webadmin_running = 0;
