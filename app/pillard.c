@@ -159,7 +159,7 @@ static void logtail_push(const char *ts, const char *level, const char *msg)
 {
     pthread_mutex_lock(&g_logtail_mutex);
     snprintf(g_logtail[g_logtail_head], LOGTAIL_WIDTH,
-             "%s %s %s", ts, level, msg);
+             "%.28s %.8s %.215s", ts, level, msg);
     g_logtail_head = (g_logtail_head + 1) % LOGTAIL_LINES;
     pthread_mutex_unlock(&g_logtail_mutex);
 }
