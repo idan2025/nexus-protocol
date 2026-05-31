@@ -309,10 +309,10 @@ class NexusService : Service(), NexusNode.Callback {
         repository = MessageRepository(db)
 
         // Wire PTT audio frame → NXM send
-        pttMedia.onAudioFrame = { frame ->
-            val peer = _callPeer.value ?: return@onAudioFrame
-            val sid = callSessionId ?: return@onAudioFrame
-            val destBytes = hexToBytes(peer) ?: return@onAudioFrame
+        pttMedia.onAudioFrame = audio@{ frame ->
+            val peer = _callPeer.value ?: return@audio
+            val sid = callSessionId ?: return@audio
+            val destBytes = hexToBytes(peer) ?: return@audio
             val nxm = NxmBuilder.buildVoiceAudio(sid, frame, PttMediaSessionManager.CODEC)
             node.sendSession(destBytes, nxm) || node.send(destBytes, nxm)
         }
