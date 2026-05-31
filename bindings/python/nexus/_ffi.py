@@ -452,25 +452,53 @@ class GroupStore(ctypes.Structure):
 assert ctypes.sizeof(GroupStore) == 6240
 
 
-class NodeState(ctypes.Structure):
+class FloodDefer(ctypes.Structure):
+    # nx_flood_defer_t: pkt(274,align=1) + pad(2) + int(4) + uint64(8) + bool(1) → 296
     _fields_ = [
-        ("identity", CIdentity),            # off=0
-        ("_pad0", ctypes.c_uint8 * 4),      # padding (180 -> 184)
-        ("config", NodeConfig),              # off=184
-        ("route_table", RouteTable),         # off=256
-        ("frag_buffer", FragBuffer),         # off=9360
-        ("anchor", Anchor),                  # off=41112
-        ("sessions", SessionStore),          # off=50592
-        ("groups", GroupStore),              # off=91360
-        ("next_seq_id", ctypes.c_uint16),   # off=97600
-        ("running", ctypes.c_bool),          # off=97602
-        ("has_telemetry", ctypes.c_bool),    # off=97603
-        ("telemetry", ctypes.c_uint8 * 4),   # off=97604  (nx_announce_telemetry_t)
-        ("msgring", ctypes.c_uint8 * 8200),  # off=97608  (nx_msgring_t)
+        ("pkt", Packet),
+        ("ingress_transport", ctypes.c_int),
+        ("send_after_ms", ctypes.c_uint64),
+        ("valid", ctypes.c_bool),
     ]
 
 
-assert ctypes.sizeof(NodeState) == 105808
+assert ctypes.sizeof(FloodDefer) == 296
+
+
+class OpfwdSlot(ctypes.Structure):
+    # nx_opfwd_slot_t: pkt(274,align=1) + pad(6) + uint64(8) + bool(1) → 296
+    _fields_ = [
+        ("pkt", Packet),
+        ("expires_ms", ctypes.c_uint64),
+        ("valid", ctypes.c_bool),
+    ]
+
+
+assert ctypes.sizeof(OpfwdSlot) == 296
+
+
+class NodeState(ctypes.Structure):
+    _fields_ = [
+        ("identity", CIdentity),                 # off=0
+        ("_pad0", ctypes.c_uint8 * 4),           # padding (180 -> 184)
+        ("config", NodeConfig),                   # off=184
+        ("route_table", RouteTable),              # off=256
+        ("frag_buffer", FragBuffer),              # off=9360
+        ("anchor", Anchor),                       # off=41112
+        ("sessions", SessionStore),               # off=50592
+        ("groups", GroupStore),                   # off=91360
+        ("next_seq_id", ctypes.c_uint16),        # off=97600
+        ("running", ctypes.c_bool),               # off=97602
+        ("has_telemetry", ctypes.c_bool),         # off=97603
+        ("telemetry", ctypes.c_uint8 * 4),        # off=97604  (nx_announce_telemetry_t)
+        ("msgring", ctypes.c_uint8 * 8200),       # off=97608  (nx_msgring_t)
+        ("flood_defer", FloodDefer * 8),          # off=105808 (nx_flood_defer_t[8])
+        ("flood_jitter_seed", ctypes.c_uint32),   # off=108176
+        ("opfwd", OpfwdSlot * 8),                 # off=108184 (4-byte auto-pad; nx_opfwd_slot_t[8])
+    ]
+
+
+assert ctypes.sizeof(NodeState) == 110552
 
 # ── Function signatures ──────────────────────────────────────────────
 
