@@ -238,6 +238,11 @@ static void handle_ble_config(const uint8_t *payload, size_t len)
         if (settings.led_off) {
             digitalWrite(LED_GREEN, HIGH);
             digitalWrite(LED_BLUE,  HIGH);
+        } else {
+            /* Brief blink to confirm re-enable */
+            digitalWrite(LED_GREEN, LOW);
+            delay(200);
+            digitalWrite(LED_GREEN, HIGH);
         }
         Serial.printf("[CFG] SET_LED off=%d\n", settings.led_off);
         send_config_response();

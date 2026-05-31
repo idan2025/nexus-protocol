@@ -325,7 +325,14 @@ static void handle_ble_config(const uint8_t *payload, size_t len)
         {
             settings.led_off = payload[1] ? 1 : 0;
             nx_settings_save(&settings);
-            if (settings.led_off) digitalWrite(LED_PIN, HIGH); /* off (active LOW) */
+            if (settings.led_off) {
+                digitalWrite(LED_PIN, HIGH); /* off (active LOW) */
+            } else {
+                /* Brief blink to confirm re-enable */
+                digitalWrite(LED_PIN, LOW);
+                delay(200);
+                digitalWrite(LED_PIN, HIGH);
+            }
             Serial.printf("[CFG] SET_LED off=%d\n", settings.led_off);
             send_config_response();
         }
