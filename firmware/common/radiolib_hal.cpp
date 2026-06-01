@@ -60,6 +60,10 @@ static inline SX1262 *get_rl(nx_lora_radio_t *radio)
 static void rl_arm_rx(SX1262 *rl)
 {
     s_rx_flag = false;
+    /* Re-register ISR every time: RadioLib's scanChannel() overwrites the
+     * DIO1 action for CAD-done, so any call to rl_cad() disconnects our
+     * packet-received ISR.  Always restore it before startReceive(). */
+    rl->setPacketReceivedAction(rl_dio1_isr);
     rl->startReceive();
     s_rx_armed = true;
 }
@@ -270,6 +274,14 @@ static nx_err_t rl_receive(nx_lora_radio_t *radio,
 static nx_err_t rl_cad(nx_lora_radio_t *radio, bool *activity)
 {
     SX1262 *rl = get_rl(radio);
+
+    /* scanChannel() requires STANDBY, not RX.  Park the radio and clear
+     * s_rx_armed so lora_recv() will re-arm after this call returns
+     * regardless of whether a transmit follows. */
+    if (s_rx_armed) {
+        rl->standby();
+        s_rx_armed = false;
+    }
 
     radio->state = NX_RADIO_CAD;
     int state = rl->scanChannel();
