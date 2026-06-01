@@ -697,6 +697,58 @@ fun SettingsScreen(
                 }
             }
 
+            // App Data
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("App Data", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Contacts are auto-pruned after 30 days of inactivity. " +
+                            "You can also clear them manually.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    var showClearContactsConfirm by remember { mutableStateOf(false) }
+                    OutlinedButton(
+                        onClick = { showClearContactsConfirm = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("Clear All Contacts")
+                    }
+                    if (showClearContactsConfirm) {
+                        AlertDialog(
+                            onDismissRequest = { showClearContactsConfirm = false },
+                            title = { Text("Clear All Contacts?") },
+                            text = {
+                                Text(
+                                    "All discovered neighbors will be removed from your contact list. " +
+                                        "Your messages and conversations are not affected."
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    service?.clearAllContacts()
+                                    showClearContactsConfirm = false
+                                }) {
+                                    Text("Clear", color = MaterialTheme.colorScheme.error)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showClearContactsConfirm = false }) {
+                                    Text("Cancel")
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
             // Stop Mesh Service & Quit
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {

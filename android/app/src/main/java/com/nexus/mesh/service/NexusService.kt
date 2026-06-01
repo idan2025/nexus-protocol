@@ -308,6 +308,12 @@ class NexusService : Service(), NexusNode.Callback {
         db = NexusDatabase.getInstance(this, activeDbTag)
         repository = MessageRepository(db)
 
+        // Auto-prune contacts not seen in 30 days
+        scope.launch {
+            val cutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
+            repository.pruneStaleContacts(cutoff)
+        }
+
         // Wire PTT audio frame → NXM send
         pttMedia.onAudioFrame = audio@{ frame ->
             val peer = _callPeer.value ?: return@audio
@@ -2108,6 +2114,10 @@ class NexusService : Service(), NexusNode.Callback {
 
     fun clearConversation(peerAddr: String) {
         scope.launch { repository.clearMessages(peerAddr) }
+    }
+
+    fun clearAllContacts() {
+        scope.launch { repository.clearAllContacts() }
     }
 
     // --- Group operations ---

@@ -277,6 +277,7 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
     var showRebootConfirm by remember { mutableStateOf(false) }
     var showFlashModeConfirm by remember { mutableStateOf(false) }
     var showShutdownConfirm by remember { mutableStateOf(false) }
+    var showFactoryResetConfirm by remember { mutableStateOf(false) }
 
     // Refresh battery + config periodically while card is on screen.
     LaunchedEffect(Unit) {
@@ -508,6 +509,16 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
             ) {
                 Text("Power Off Node")
             }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { showFactoryResetConfirm = true },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Text("Factory Reset Node")
+            }
         }
     }
 
@@ -652,6 +663,33 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
             },
             dismissButton = {
                 TextButton(onClick = { showShutdownConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showFactoryResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showFactoryResetConfirm = false },
+            title = { Text("Factory Reset Node?") },
+            text = {
+                Text(
+                    "This will erase all saved settings on the node (radio config, " +
+                    "role, screen timeout) and reboot to factory defaults. " +
+                    "Your mesh identity and messages are not affected."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    ble.factoryResetNode()
+                    showFactoryResetConfirm = false
+                }) {
+                    Text("Factory Reset", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFactoryResetConfirm = false }) {
                     Text("Cancel")
                 }
             }

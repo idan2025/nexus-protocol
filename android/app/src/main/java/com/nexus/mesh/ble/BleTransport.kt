@@ -47,6 +47,7 @@ class BleTransport(private val context: Context) {
         const val CFG_CMD_SET_LED: Byte = 0x06
         const val CFG_CMD_SHUTDOWN: Byte = 0x07
         const val CFG_CMD_ENTER_BOOTLOADER: Byte = 0x08
+        const val CFG_CMD_FACTORY_RESET: Byte = 0x09
         const val CFG_RESP_FLAG: Int = 0x80
     }
 
@@ -323,6 +324,15 @@ class BleTransport(private val context: Context) {
         payload[4] = CFG_CMD_REBOOT
         send(payload)
         Log.i(TAG, "Reboot command sent")
+    }
+
+    /** Erase all saved settings on the node and reboot to factory defaults. */
+    fun factoryResetNode() {
+        val payload = ByteArray(5)
+        System.arraycopy(CFG_MAGIC, 0, payload, 0, 4)
+        payload[4] = CFG_CMD_FACTORY_RESET
+        send(payload)
+        Log.i(TAG, "Factory reset command sent")
     }
 
     /** Power off the connected node (deep sleep). User wakes it with the
