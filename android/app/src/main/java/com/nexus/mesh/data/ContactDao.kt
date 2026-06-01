@@ -16,4 +16,10 @@ interface ContactDao {
 
     @Query("DELETE FROM contacts WHERE address = :address")
     suspend fun delete(address: String)
+
+    @Query("DELETE FROM contacts WHERE lastSeen < :before")
+    suspend fun deleteStale(before: Long)
+
+    @Query("DELETE FROM contacts")
+    suspend fun deleteAll()
 }

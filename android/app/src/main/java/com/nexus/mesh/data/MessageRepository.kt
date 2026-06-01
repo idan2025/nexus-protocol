@@ -92,6 +92,10 @@ class MessageRepository(private val db: NexusDatabase) {
 
     suspend fun getContact(address: String): ContactEntity? = contactDao.getByAddress(address)
 
+    suspend fun pruneStaleContacts(cutoffMs: Long) = contactDao.deleteStale(cutoffMs)
+
+    suspend fun clearAllContacts() = contactDao.deleteAll()
+
     // --- Groups ---
 
     fun getGroups(): Flow<List<GroupEntity>> = groupDao.getAll()
