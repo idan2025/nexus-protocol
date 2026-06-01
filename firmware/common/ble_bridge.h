@@ -33,6 +33,12 @@ void nx_ble_bridge_stop(void);
 /* Check if a phone is connected. */
 bool nx_ble_bridge_connected(void);
 
+/* Check if the connected phone has enabled BLE notifications (CCCD write).
+ * Use this instead of nx_ble_bridge_connected() to gate the connect-time
+ * announce, so the announce fires only after the phone can actually receive
+ * it (avoids the silent notify-drop when CCCD isn't yet enabled). */
+bool nx_ble_bridge_subscribed(void);
+
 /* Send a packet to the connected phone.
  * Called by firmware when a LoRa packet arrives that should be
  * forwarded to the phone app. */

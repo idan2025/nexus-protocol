@@ -640,16 +640,18 @@ void loop()
 {
     nx_node_poll(&node, 10);
 
-    /* Rising-edge BLE connect: announce immediately so the phone sees us
-     * (and via pipe→LoRa, every LoRa peer) without waiting a full
-     * beacon_interval_ms. */
-    static bool ble_was_connected = false;
-    bool ble_now_connected = nx_ble_bridge_connected();
-    if (ble_now_connected && !ble_was_connected) {
-        Serial.println("[NEXUS] BLE client connected -- announcing");
+    /* Rising-edge CCCD subscribe: announce only after the phone enables
+     * BLE notifications. Triggering on raw connect fires before the phone
+     * writes the CCCD descriptor, so tx_char->notify() silently drops the
+     * packet. Waiting for onSubscribe guarantees delivery. */
+    static bool ble_was_subscribed = false;
+    bool ble_now_connected  = nx_ble_bridge_connected();
+    bool ble_now_subscribed = nx_ble_bridge_subscribed();
+    if (ble_now_subscribed && !ble_was_subscribed) {
+        Serial.println("[NEXUS] BLE notifications enabled -- announcing");
         nx_node_announce(&node);
     }
-    ble_was_connected = ble_now_connected;
+    ble_was_subscribed = ble_now_subscribed;
 
     /* Bridge BLE-NUS <-> registered NEXUS pipe transport. See heltec_v3
      * main.cpp for the full rationale. */
