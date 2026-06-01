@@ -1151,12 +1151,21 @@ class NexusService : Service(), NexusNode.Callback {
         existing.add(Neighbor(addrHex, role))
         _neighbors.value = existing
 
-        // Bump lastSeen + refresh role on known contacts (don't auto-create).
+        // Bump lastSeen + refresh role on known contacts; auto-create for newly discovered peers.
         scope.launch {
-            repository.getContact(addrHex)?.let {
-                repository.upsertContact(it.copy(
+            val existingContact = repository.getContact(addrHex)
+            if (existingContact != null) {
+                repository.upsertContact(existingContact.copy(
                     lastSeen = System.currentTimeMillis(),
                     role = role
+                ))
+            } else if (role < NexusNode.ROLE_PILLAR) {
+                // Auto-create contact for mesh peers discovered via LoRa (or any transport).
+                // Infrastructure nodes (PILLAR+) are excluded — they don't need a conversation entry.
+                repository.upsertContact(ContactEntity(
+                    address = addrHex,
+                    role = role,
+                    trustLevel = ContactTrust.SEEN
                 ))
             }
         }

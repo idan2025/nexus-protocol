@@ -8,6 +8,7 @@ set(TESTS
     test_route
     test_fragment
     test_lora
+    test_lora_bridge
     test_ble
     test_anchor
     test_session
