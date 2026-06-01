@@ -37,6 +37,7 @@ static NimBLEServer *ble_server = nullptr;
 static NimBLECharacteristic *tx_char = nullptr;
 static NimBLECharacteristic *rx_char = nullptr;
 static volatile bool client_connected = false;
+static volatile bool cccd_enabled     = false;
 
 /* ── BLE Callbacks ────────────────────────────────────────────────────── */
 
@@ -46,7 +47,6 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         (void)info;
         client_connected = true;
         Serial.println("[BLE] Client connected");
-        /* Allow multiple connections / update connection params */
         NimBLEDevice::startAdvertising();
     }
 
@@ -55,8 +55,22 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         (void)info;
         (void)reason;
         client_connected = false;
+        cccd_enabled     = false;
         Serial.println("[BLE] Client disconnected");
         NimBLEDevice::startAdvertising();
+    }
+};
+
+/* Fires when the phone writes to the TX characteristic's CCCD descriptor,
+ * i.e. when it enables (or disables) notifications. */
+class TxCallbacks : public NimBLECharacteristicCallbacks {
+    void onSubscribe(NimBLECharacteristic *c, NimBLEConnInfo &info,
+                     uint16_t subValue) override {
+        (void)c;
+        (void)info;
+        /* subValue bit 0: notifications enabled */
+        cccd_enabled = (subValue & 0x0001) != 0;
+        Serial.printf("[BLE] CCCD %s\n", cccd_enabled ? "enabled" : "disabled");
     }
 };
 
@@ -85,7 +99,8 @@ class RxCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 static ServerCallbacks server_cb;
-static RxCallbacks rx_cb;
+static RxCallbacks     rx_cb;
+static TxCallbacks     tx_cb;
 
 /* ── Public API ───────────────────────────────────────────────────────── */
 
@@ -111,6 +126,7 @@ void nx_ble_bridge_init(const char *device_name)
         NUS_TX_UUID,
         NIMBLE_PROPERTY::NOTIFY
     );
+    tx_char->setCallbacks(&tx_cb);  /* track CCCD subscription state */
 
     /* RX: phone -> firmware (write) */
     rx_char = nus->createCharacteristic(
@@ -141,6 +157,11 @@ void nx_ble_bridge_stop(void)
 bool nx_ble_bridge_connected(void)
 {
     return client_connected;
+}
+
+bool nx_ble_bridge_subscribed(void)
+{
+    return cccd_enabled;
 }
 
 nx_err_t nx_ble_bridge_send(const uint8_t *data, size_t len)
@@ -240,6 +261,7 @@ static BLECharacteristic *nus_tx_char = NULL;
 static BLECharacteristic *nus_rx_char = NULL;
 
 static volatile bool client_connected = false;
+static volatile bool cccd_enabled     = false;
 
 /* ── BLE Callbacks ────────────────────────────────────────────────────── */
 
@@ -255,7 +277,17 @@ static void disconnect_callback(uint16_t conn_handle, uint8_t reason)
     (void)conn_handle;
     (void)reason;
     client_connected = false;
+    cccd_enabled     = false;
     Serial.println("[BLE] Client disconnected");
+}
+
+static void cccd_write_callback(uint16_t conn_hdl, BLECharacteristic *chr,
+                                 uint16_t value)
+{
+    (void)conn_hdl;
+    (void)chr;
+    cccd_enabled = (value & 0x0001) != 0;
+    Serial.printf("[BLE] CCCD %s\n", cccd_enabled ? "enabled" : "disabled");
 }
 
 static void rx_write_callback(uint16_t conn_handle,
@@ -317,6 +349,7 @@ void nx_ble_bridge_init(const char *device_name)
     nus_tx_char->setProperties(CHR_PROPS_NOTIFY);
     nus_tx_char->setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
     nus_tx_char->setMaxLen(BLE_MAX_PKT);
+    nus_tx_char->setCccdWriteCallback(cccd_write_callback);  /* track CCCD state */
     nus_tx_char->begin();
 
     /* RX characteristic: phone -> firmware (write) */
@@ -353,6 +386,11 @@ void nx_ble_bridge_stop(void)
 bool nx_ble_bridge_connected(void)
 {
     return client_connected;
+}
+
+bool nx_ble_bridge_subscribed(void)
+{
+    return cccd_enabled;
 }
 
 nx_err_t nx_ble_bridge_send(const uint8_t *data, size_t len)
