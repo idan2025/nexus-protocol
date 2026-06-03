@@ -65,7 +65,9 @@ class BleTransport(private val context: Context) {
         /** Battery millivolts at the terminal, null if unsupported / not reported. */
         val batteryMv: Int? = null,
         /** Battery state-of-charge 0..100, null if unsupported / not reported. */
-        val batteryPct: Int? = null
+        val batteryPct: Int? = null,
+        /** True if the node's LoRa radio initialised OK; false = BLE-only mode. */
+        val loraOk: Boolean = true
     )
 
     data class ScannedDevice(val name: String, val address: String, val rssi: Int)
@@ -382,6 +384,8 @@ class BleTransport(private val context: Context) {
             val raw = data[28].toInt() and 0xFF
             if (raw == 0xFF) null else raw
         } else null
+        // Optional byte 29: lora_ok (0 = BLE-only mode, radio init failed). Defaults true on older firmware.
+        val loraOk = if (data.size >= 30) (data[29].toInt() and 0xFF) != 0 else true
 
         val config = NodeConfig(
             frequencyHz = getLeU32(data, 5),
@@ -398,7 +402,8 @@ class BleTransport(private val context: Context) {
                 data[24].toInt() and 0xFF),
             ledOff = ledOff,
             batteryMv = batteryMv,
-            batteryPct = batteryPct
+            batteryPct = batteryPct,
+            loraOk = loraOk
         )
 
         _nodeConfig.value = config

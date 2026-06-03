@@ -546,11 +546,13 @@ static void on_session(const nx_addr_short_t *src,
 
 static void send_config_response()
 {
-    /* Response: [MAGIC(4)][0x81][freq(4)][bw(4)][sf][cr][pwr][timeout(4)][role][addr(4)][led_off][bat_mv(2 LE)][bat_pct] = 29B
-     * Older Android clients parse only the first 25/26 bytes; the
-     * trailing battery telemetry is ignored on those builds, preserving
-     * compatibility. bat_pct = 0xFF means unsupported / unknown. */
-    uint8_t resp[29];
+    /* Response layout (30B):
+     * [0..3]=MAGIC [4]=0x81 [5..8]=freq [9..12]=bw [13]=sf [14]=cr [15]=pwr
+     * [16..19]=timeout [20]=role [21..24]=addr [25]=led_off
+     * [26..27]=bat_mv(LE) [28]=bat_pct [29]=lora_ok(1=OK, 0=BLE-only)
+     * Older Android clients ignore trailing bytes, preserving compatibility.
+     * bat_pct = 0xFF means unsupported / unknown. */
+    uint8_t resp[30];
     memcpy(resp, CFG_MAGIC, 4);
     resp[4] = CFG_CMD_GET_CONFIG | CFG_RESP_FLAG;
 
@@ -583,6 +585,8 @@ static void send_config_response()
     resp[26] = (uint8_t)(mv_u16);
     resp[27] = (uint8_t)(mv_u16 >> 8);
     resp[28] = (bat_pct >= 0 && bat_pct <= 100) ? (uint8_t)bat_pct : 0xFF;
+    /* Heltec halts on LoRa failure, so if we reach here LoRa is always OK. */
+    resp[29] = 1;
 
     /* Send config response directly -- bridge adds NUS [LEN_HI][LEN_LO] framing */
     nx_ble_bridge_send(resp, sizeof(resp));

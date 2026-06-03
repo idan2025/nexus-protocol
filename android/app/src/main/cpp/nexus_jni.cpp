@@ -486,7 +486,7 @@ Java_com_nexus_mesh_service_NexusNode_nativeReadBleOutbound(JNIEnv *env,
     (void)thiz;
     if (!g_running || !g_ble_pipe_app) return nullptr;
 
-    uint8_t buf[NX_MAX_PAYLOAD + 16];
+    uint8_t buf[NX_MAX_PACKET];
     size_t out_len = 0;
     nx_err_t err = g_ble_pipe_app->ops->recv(g_ble_pipe_app, buf, sizeof(buf),
                                               &out_len, 0 /* non-blocking */);

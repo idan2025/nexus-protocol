@@ -1,5 +1,6 @@
 package com.nexus.mesh.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -327,6 +328,28 @@ fun NodeSettingsCard(ble: BleTransport, config: BleTransport.NodeConfig?) {
                      fontWeight = FontWeight.Bold)
             }
             Spacer(Modifier.height(8.dp))
+
+            // LoRa failure warning (shown when firmware reports BLE-only mode)
+            if (!config.loraOk) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            MaterialTheme.colorScheme.errorContainer,
+                            shape = MaterialTheme.shapes.small
+                        )
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "LoRa radio failed to initialise — node is in BLE-only mode. " +
+                        "Check the WIO-SX1262 expansion board connection and reflash.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
 
             // Battery indicator (only shown when firmware reports it)
             if (config.batteryPct != null || config.batteryMv != null) {
