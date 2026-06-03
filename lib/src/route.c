@@ -258,7 +258,7 @@ bool nx_dedup_check(nx_route_table_t *rt,
         uint64_t oldest = UINT64_MAX;
         for (int i = 0; i < NX_MAX_DEDUP; i++) {
             if (rt->dedup[i].expires_ms < oldest) {
-                oldest = oldest;
+                oldest = rt->dedup[i].expires_ms;
                 free_slot = i;
             }
         }

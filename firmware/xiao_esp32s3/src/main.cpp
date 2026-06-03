@@ -92,6 +92,9 @@ static nx_settings_t settings;
 static nx_lora_radio_t *g_lora_radio = NULL;
 static char ble_name[20];
 
+/* LoRa status -- set in setup(), read by send_config_response() */
+static bool g_lora_ok = false;
+
 /* Stats */
 static uint32_t rx_count = 0;
 static uint32_t neighbor_count = 0;
@@ -219,9 +222,12 @@ static void on_session(const nx_addr_short_t *src,
 
 static void send_config_response()
 {
-    /* 26B = 25B legacy layout + trailing led_off byte. Older Android
-     * clients only parse the first 25 bytes and ignore the rest. */
-    uint8_t resp[26];
+    /* 30B layout (matches heltec_v3 29B + lora_ok at [29]):
+     * [0..3]=MAGIC [4]=0x81 [5..8]=freq [9..12]=bw [13]=sf [14]=cr [15]=pwr
+     * [16..19]=timeout(0) [20]=role [21..24]=addr [25]=led_off
+     * [26..27]=bat_mv(LE) [28]=bat_pct [29]=lora_ok
+     * Older Android clients ignore trailing bytes they don't know about. */
+    uint8_t resp[30];
     memcpy(resp, CFG_MAGIC, 4);
     resp[4] = CFG_CMD_GET_CONFIG | CFG_RESP_FLAG;
 
@@ -247,6 +253,14 @@ static void send_config_response()
     const nx_identity_t *id = nx_node_identity(&node);
     memcpy(&resp[21], id->short_addr.bytes, 4);
     resp[25] = settings.led_off;
+
+    int32_t bat_mv = battery_read_mv();
+    int bat_pct = battery_percent();
+    uint16_t mv_u16 = (bat_mv >= 0 && bat_mv <= 0xFFFF) ? (uint16_t)bat_mv : 0;
+    resp[26] = (uint8_t)(mv_u16);
+    resp[27] = (uint8_t)(mv_u16 >> 8);
+    resp[28] = (bat_pct >= 0 && bat_pct <= 100) ? (uint8_t)bat_pct : 0xFF;
+    resp[29] = g_lora_ok ? 1 : 0;
 
     nx_ble_bridge_send(resp, sizeof(resp));
 }
@@ -617,6 +631,9 @@ void setup()
 
     battery_init();
     nx_event_log("boot");
+
+    /* Persist LoRa status for config responses to the phone. */
+    g_lora_ok = lora_ok;
 
     /* Initial announce only if LoRa is up (BLE-only mode skips it). */
     if (lora_ok) nx_node_announce(&node);
