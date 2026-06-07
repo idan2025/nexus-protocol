@@ -211,7 +211,7 @@ static void gw_fixture_init(gw_fixture_t *f, nx_role_t gw_role)
                        NX_ROLE_LEAF, 0, now);
     nx_route_update(&f->gateway.route_table,
                     &f->alice_id.short_addr, &f->alice_id.short_addr,
-                    1, 1, now);
+                    1, 1, 0, now);
 
     /* Gateway knows Bob */
     nx_neighbor_update(&f->gateway.route_table,
@@ -220,7 +220,7 @@ static void gw_fixture_init(gw_fixture_t *f, nx_role_t gw_role)
                        NX_ROLE_LEAF, 0, now);
     nx_route_update(&f->gateway.route_table,
                     &f->bob_id.short_addr, &f->bob_id.short_addr,
-                    1, 1, now);
+                    1, 1, 0, now);
 }
 
 static void gw_fixture_cleanup(gw_fixture_t *f)

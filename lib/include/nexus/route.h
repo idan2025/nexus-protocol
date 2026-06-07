@@ -134,11 +134,13 @@ int nx_neighbor_count(const nx_route_table_t *rt);
 
 /* ── Route Management ────────────────────────────────────────────────── */
 
-/* Add or update a route. Keeps the better metric if route exists. */
+/* Add or update a route. Keeps the better metric if route exists.
+ * via_transport is the transport index the route was learned on. */
 nx_err_t nx_route_update(nx_route_table_t *rt,
                          const nx_addr_short_t *dest,
                          const nx_addr_short_t *next_hop,
                          uint8_t hop_count, uint8_t metric,
+                         uint8_t via_transport,
                          uint64_t now_ms);
 
 /* Look up next hop for a destination. Returns NULL if no route. */
@@ -190,6 +192,7 @@ nx_err_t nx_route_process(nx_route_table_t *rt,
                           const nx_addr_short_t *from_neighbor,
                           const uint8_t *payload, size_t len,
                           nx_route_subtype_t *out_subtype,
+                          uint8_t ingress_transport,
                           uint64_t now_ms);
 
 #endif /* NEXUS_ROUTE_H */

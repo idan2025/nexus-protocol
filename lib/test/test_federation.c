@@ -276,13 +276,13 @@ static void test_federation_roundtrip(void)
                        bob_id.sign_public, bob_id.x25519_public,
                        NX_ROLE_PILLAR, 0, now);
     nx_route_update(&alice.route_table,
-                    &bob_id.short_addr, &bob_id.short_addr, 1, 1, now);
+                    &bob_id.short_addr, &bob_id.short_addr, 1, 1, 0, now);
     nx_neighbor_update(&bob.route_table,
                        &alice_id.short_addr, &alice_id.full_addr,
                        alice_id.sign_public, alice_id.x25519_public,
                        NX_ROLE_PILLAR, 1, now);
     nx_route_update(&bob.route_table,
-                    &alice_id.short_addr, &alice_id.short_addr, 1, 1, now);
+                    &alice_id.short_addr, &alice_id.short_addr, 1, 1, 0, now);
 
     /* ── Store a packet for offline chuck in alice's anchor ──────── */
     nx_packet_t stored = make_stored_pkt(&alice_id.short_addr,

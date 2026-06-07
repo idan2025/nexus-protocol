@@ -129,7 +129,7 @@ static void test_route_add_lookup(void)
     nx_addr_short_t dest = make_addr(0xDE, 0xAD, 0x00, 0x01);
     nx_addr_short_t hop  = make_addr(0xCA, 0xFE, 0x00, 0x01);
 
-    nx_err_t err = nx_route_update(&rt, &dest, &hop, 3, 5, 1000);
+    nx_err_t err = nx_route_update(&rt, &dest, &hop, 3, 5, 0, 1000);
     ASSERT(err == NX_OK, "update");
 
     const nx_route_t *r = nx_route_lookup(&rt, &dest);
@@ -152,8 +152,8 @@ static void test_route_prefer_better_metric(void)
     nx_addr_short_t hop1 = make_addr(0xAA, 0x00, 0x00, 0x01);
     nx_addr_short_t hop2 = make_addr(0xBB, 0x00, 0x00, 0x02);
 
-    nx_route_update(&rt, &dest, &hop1, 5, 10, 1000);
-    nx_route_update(&rt, &dest, &hop2, 2, 3, 1000);  /* Better */
+    nx_route_update(&rt, &dest, &hop1, 5, 10, 0, 1000);
+    nx_route_update(&rt, &dest, &hop2, 2, 3, 0, 1000);  /* Better */
 
     const nx_route_t *r = nx_route_lookup(&rt, &dest);
     ASSERT(r != NULL, "found");
@@ -162,7 +162,7 @@ static void test_route_prefer_better_metric(void)
 
     /* Worse update should NOT replace */
     nx_addr_short_t hop3 = make_addr(0xCC, 0x00, 0x00, 0x03);
-    nx_route_update(&rt, &dest, &hop3, 8, 20, 1000);
+    nx_route_update(&rt, &dest, &hop3, 8, 20, 0, 1000);
 
     r = nx_route_lookup(&rt, &dest);
     ASSERT(r->metric == 3, "worse not replaced");
@@ -180,7 +180,7 @@ static void test_route_expire(void)
     nx_addr_short_t dest = make_addr(0x11, 0x22, 0x33, 0x44);
     nx_addr_short_t hop  = make_addr(0x55, 0x66, 0x77, 0x88);
 
-    nx_route_update(&rt, &dest, &hop, 1, 1, 1000);
+    nx_route_update(&rt, &dest, &hop, 1, 1, 0, 1000);
     ASSERT(nx_route_lookup(&rt, &dest) != NULL, "before");
 
     nx_route_expire(&rt, 1000 + NX_ROUTE_TIMEOUT_MS + 1);
@@ -202,9 +202,9 @@ static void test_route_invalidate_via(void)
     nx_addr_short_t d3  = make_addr(0x03, 0x00, 0x00, 0x00);
     nx_addr_short_t other_hop = make_addr(0x99, 0x00, 0x00, 0x00);
 
-    nx_route_update(&rt, &d1, &hop, 1, 1, 1000);
-    nx_route_update(&rt, &d2, &hop, 2, 2, 1000);
-    nx_route_update(&rt, &d3, &other_hop, 1, 1, 1000);
+    nx_route_update(&rt, &d1, &hop, 1, 1, 0, 1000);
+    nx_route_update(&rt, &d2, &hop, 2, 2, 0, 1000);
+    nx_route_update(&rt, &d3, &other_hop, 1, 1, 0, 1000);
 
     int removed = nx_route_invalidate_via(&rt, &hop);
     ASSERT(removed == 2, "removed 2");
@@ -316,7 +316,7 @@ static void test_process_rreq(void)
     /* Simulate: received from neighbor */
     nx_route_subtype_t sub;
     nx_err_t err = nx_route_process(&rt, &neighbor, rreq, sizeof(rreq),
-                                    &sub, 1000);
+                                    &sub, 0, 1000);
     ASSERT(err == NX_OK, "process");
     ASSERT(sub == NX_ROUTE_SUB_RREQ, "subtype");
 
@@ -344,7 +344,7 @@ static void test_process_rrep(void)
 
     nx_route_subtype_t sub;
     nx_err_t err = nx_route_process(&rt, &neighbor, rrep, sizeof(rrep),
-                                    &sub, 1000);
+                                    &sub, 0, 1000);
     ASSERT(err == NX_OK, "process");
     ASSERT(sub == NX_ROUTE_SUB_RREP, "subtype");
 
@@ -369,14 +369,14 @@ static void test_process_rerr(void)
     nx_addr_short_t from  = make_addr(0x11, 0x22, 0x33, 0x44);
 
     /* Install route via the "bad" node */
-    nx_route_update(&rt, &dest, &bad, 2, 2, 1000);
+    nx_route_update(&rt, &dest, &bad, 2, 2, 0, 1000);
     ASSERT(nx_route_lookup(&rt, &dest) != NULL, "route exists");
 
     uint8_t rerr[NX_RERR_PAYLOAD_LEN];
     nx_route_build_rerr(&bad, rerr, sizeof(rerr));
 
     nx_route_subtype_t sub;
-    nx_route_process(&rt, &from, rerr, sizeof(rerr), &sub, 1000);
+    nx_route_process(&rt, &from, rerr, sizeof(rerr), &sub, 0, 1000);
 
     ASSERT(sub == NX_ROUTE_SUB_RERR, "subtype");
     ASSERT(nx_route_lookup(&rt, &dest) == NULL, "route removed");

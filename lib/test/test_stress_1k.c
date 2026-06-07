@@ -167,7 +167,7 @@ static void test_route_table_stress(void)
             &node.route_table,
             &g_nodes[i].short_addr,
             &g_nodes[1].short_addr,
-            2, 1, now);
+            2, 1, 0, now);
         if (rc == 0) routes_added++;
     }
 

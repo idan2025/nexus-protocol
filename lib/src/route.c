@@ -164,6 +164,7 @@ nx_err_t nx_route_update(nx_route_table_t *rt,
                          const nx_addr_short_t *dest,
                          const nx_addr_short_t *next_hop,
                          uint8_t hop_count, uint8_t metric,
+                         uint8_t via_transport,
                          uint64_t now_ms)
 {
     if (!rt || !dest || !next_hop) return NX_ERR_INVALID_ARG;
@@ -175,10 +176,11 @@ nx_err_t nx_route_update(nx_route_table_t *rt,
             if (nx_addr_short_cmp(&rt->routes[i].dest, dest) == 0) {
                 /* Update if better or same */
                 if (metric <= rt->routes[i].metric) {
-                    rt->routes[i].next_hop   = *next_hop;
-                    rt->routes[i].hop_count  = hop_count;
-                    rt->routes[i].metric     = metric;
-                    rt->routes[i].expires_ms = now_ms + NX_ROUTE_TIMEOUT_MS;
+                    rt->routes[i].next_hop       = *next_hop;
+                    rt->routes[i].hop_count      = hop_count;
+                    rt->routes[i].metric         = metric;
+                    rt->routes[i].via_transport  = via_transport;
+                    rt->routes[i].expires_ms     = now_ms + NX_ROUTE_TIMEOUT_MS;
                 }
                 return NX_OK;
             }
@@ -191,12 +193,13 @@ nx_err_t nx_route_update(nx_route_table_t *rt,
     if (free_slot < 0) return NX_ERR_FULL;
 
     nx_route_t *r = &rt->routes[free_slot];
-    r->dest       = *dest;
-    r->next_hop   = *next_hop;
-    r->hop_count  = hop_count;
-    r->metric     = metric;
-    r->expires_ms = now_ms + NX_ROUTE_TIMEOUT_MS;
-    r->valid      = true;
+    r->dest          = *dest;
+    r->next_hop      = *next_hop;
+    r->hop_count     = hop_count;
+    r->metric        = metric;
+    r->via_transport = via_transport;
+    r->expires_ms    = now_ms + NX_ROUTE_TIMEOUT_MS;
+    r->valid         = true;
     return NX_OK;
 }
 
@@ -356,6 +359,7 @@ nx_err_t nx_route_process(nx_route_table_t *rt,
                           const nx_addr_short_t *from_neighbor,
                           const uint8_t *payload, size_t len,
                           nx_route_subtype_t *out_subtype,
+                          uint8_t ingress_transport,
                           uint64_t now_ms)
 {
     if (!rt || !from_neighbor || !payload || len < 1 || !out_subtype)
@@ -381,7 +385,7 @@ nx_err_t nx_route_process(nx_route_table_t *rt,
 
         /* Install reverse route to origin via the neighbor who sent this */
         nx_route_update(rt, &origin, from_neighbor,
-                        hop_count + 1, (uint8_t)new_metric, now_ms);
+                        hop_count + 1, (uint8_t)new_metric, ingress_transport, now_ms);
         return NX_OK;
     }
     case NX_ROUTE_SUB_RREP: {
@@ -393,7 +397,7 @@ nx_err_t nx_route_process(nx_route_table_t *rt,
 
         /* Install forward route to dest via the neighbor who sent this */
         nx_route_update(rt, &dest, from_neighbor,
-                        hop_count, metric, now_ms);
+                        hop_count, metric, ingress_transport, now_ms);
         return NX_OK;
     }
     case NX_ROUTE_SUB_RERR: {

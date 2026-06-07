@@ -285,12 +285,12 @@ static void handle_announce(nx_node_t *node, const nx_packet_t *pkt,
     nx_neighbor_update(&node->route_table,
                        &ann.short_addr, &ann.full_addr,
                        ann.sign_pubkey, ann.x25519_pubkey,
-                       ann.role, ingress_transport, now);
+                       ann.role, 0, now);
 
     /* Also install a direct route to this neighbor */
     nx_route_update(&node->route_table,
                     &ann.short_addr, &ann.short_addr,
-                    1, 1, now);
+                    1, 1, (uint8_t)ingress_transport, now);
 
     if (node->config.on_neighbor) {
         node->config.on_neighbor(&ann.short_addr, ann.role,
@@ -313,14 +313,15 @@ static void handle_announce(nx_node_t *node, const nx_packet_t *pkt,
 
 /* ── Internal: handle a routing control packet ───────────────────────── */
 
-static void handle_route(nx_node_t *node, const nx_packet_t *pkt)
+static void handle_route(nx_node_t *node, const nx_packet_t *pkt,
+                         int ingress_transport)
 {
     nx_route_subtype_t sub;
     uint64_t now = nx_platform_time_ms();
 
     nx_route_process(&node->route_table, &pkt->header.src,
                      pkt->payload, pkt->header.payload_len,
-                     &sub, now);
+                     &sub, (uint8_t)ingress_transport, now);
 
     /* If this is an RREQ for us, generate RREP */
     if (sub == NX_ROUTE_SUB_RREQ && pkt->header.payload_len >= NX_RREQ_PAYLOAD_LEN) {
@@ -672,7 +673,7 @@ static void dispatch_packet(nx_node_t *node, const nx_packet_t *pkt,
         handle_announce(node, pkt, ingress_transport);
         break;
     case NX_PTYPE_ROUTE:
-        handle_route(node, pkt);
+        handle_route(node, pkt, ingress_transport);
         break;
     case NX_PTYPE_DATA:
         handle_data(node, pkt, ingress_transport);
