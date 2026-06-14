@@ -38,25 +38,30 @@ extern "C" {
 
 /* -- Pin definitions (XIAO ESP32S3 + WIO-SX1262 expansion) --------------- */
 /*
- * WIO-SX1262 expansion board connects to XIAO header pins:
- *   D0 (GPIO1)  -> SX1262 RESET
- *   D1 (GPIO2)  -> SX1262 BUSY
- *   D2 (GPIO3)  -> SX1262 DIO1
- *   D3 (GPIO4)  -> SX1262 NSS (chip select)
+ * WIO-SX1262 for XIAO pin mapping (schematic SKU 113010003, confirmed
+ * against Seeed schematic and Meshtastic firmware, mirrors xiao_nrf52840):
+ *   D1 (GPIO2)  -> SX1262 DIO1
+ *   D2 (GPIO3)  -> SX1262 RESET
+ *   D3 (GPIO4)  -> SX1262 BUSY
+ *   D4 (GPIO5)  -> SX1262 NSS (chip select)
+ *   D5 (GPIO6)  -> RXEN (external RF switch RX enable)
  *   D8 (GPIO7)  -> SPI SCK   (default SPI bus)
  *   D9 (GPIO8)  -> SPI MISO  (default SPI bus)
  *   D10(GPIO9)  -> SPI MOSI  (default SPI bus)
+ *
+ * Note: on XIAO ESP32S3, Arduino pin N = GPIO N (D0=GPIO1, D1=GPIO2, …).
+ * Earlier firmware incorrectly used D0-D3 (GPIO1-4); the correct range
+ * is D1-D5 (GPIO2-6), matching the WIO-SX1262 schematic and the nRF52840
+ * variant which verified against the same schematic.
  */
-#define LORA_SS     4   /* D3 = GPIO4 */
-#define LORA_DIO1   3   /* D2 = GPIO3 */
-#define LORA_RST    1   /* D0 = GPIO1 */
-#define LORA_BUSY   2   /* D1 = GPIO2 */
+#define LORA_SS     5   /* D4 = GPIO5 */
+#define LORA_DIO1   2   /* D1 = GPIO2 */
+#define LORA_RST    3   /* D2 = GPIO3 */
+#define LORA_BUSY   4   /* D3 = GPIO4 */
+#define LORA_RXEN   6   /* D5 = GPIO6 - external RF switch RX enable */
 
-/* WIO-SX1262 SPI pins per the schematic. The board variant's "default
- * SPI" generally maps to these, but we call SPI.begin() with explicit
- * pins anyway -- the Heltec V3 firmware ran into silent init failures
- * when relying on framework defaults, and the cost of being explicit
- * is one extra line. */
+/* WIO-SX1262 SPI pins. Explicit SPI.begin() avoids silent init failures
+ * from framework defaults (same lesson learned on Heltec V3). */
 #define LORA_SCK    7   /* D8  = GPIO7  */
 #define LORA_MISO   8   /* D9  = GPIO8  */
 #define LORA_MOSI   9   /* D10 = GPIO9  */
@@ -546,6 +551,20 @@ void setup()
         Serial.println("[NEXUS] LoRa radio init failed -- continuing BLE-only");
         Serial.println("[NEXUS] Check WIO-SX1262 expansion board connection");
     } else {
+        /* WIO-SX1262 has an external RF switch: RXEN (GPIO6/D5) enables
+         * LNA in RX mode; DIO2 is wired to the PA and handles TX side.
+         * This matches the xiao_nrf52840 variant and the WIO-SX1262 schematic. */
+        static const uint32_t rfswitch_pins[] = {
+            LORA_RXEN, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC
+        };
+        static const Module::RfSwitchMode_t rfswitch_table[] = {
+            {Module::MODE_IDLE, {LOW}},
+            {Module::MODE_RX,   {HIGH}},
+            {Module::MODE_TX,   {LOW}},
+            END_OF_MODE_TABLE,
+        };
+        radio_ptr->setRfSwitchTable(rfswitch_pins, rfswitch_table);
+
         nx_transport_t *lora_t = nx_lora_transport_create();
         if (lora_t && lora_t->ops->init(lora_t, &g_lora_radio) == NX_OK &&
             nx_transport_register(lora_t) == NX_OK) {
