@@ -15,9 +15,9 @@
  * screen / Serial banner / BLE advertisement; CI is welcome to inject
  * NX_VERSION_STRING via -D for tagged builds, but the source-tree
  * value is what unsigned dev builds report. */
-#define NX_VERSION_MAJOR  1
-#define NX_VERSION_MINOR  0
-#define NX_VERSION_PATCH  0
+#define NX_VERSION_MAJOR  0
+#define NX_VERSION_MINOR  6
+#define NX_VERSION_PATCH  38
 
 #define NX_STRINGIFY_(x) #x
 #define NX_STRINGIFY(x)  NX_STRINGIFY_(x)
