@@ -143,14 +143,18 @@ static nx_err_t halow_send(nx_transport_t *t, const uint8_t *data, size_t len)
         return NX_ERR_TRANSPORT;
     }
     
-    (void)sent;
-    
 #ifdef __linux__
     if (state->sock_fd >= 0) {
-        /* STUB: Would construct and send 802.11 frame */
-        sent = (ssize_t)len;
+        struct sockaddr_ll sll;
+        memset(&sll, 0, sizeof(sll));
+        sll.sll_family   = AF_PACKET;
+        sll.sll_protocol = htons(ETH_P_ALL);
+        sll.sll_ifindex  = (int)if_nametoindex(state->config.ifname);
+        sll.sll_halen    = ETH_ALEN;
+        memset(sll.sll_addr, 0xFF, ETH_ALEN);  /* broadcast */
+        sent = sendto(state->sock_fd, data, len, 0,
+                      (struct sockaddr *)&sll, sizeof(sll));
     } else {
-        /* Stub mode -- no real socket, simulate success */
         sent = (ssize_t)len;
     }
 #else
@@ -196,14 +200,17 @@ static nx_err_t halow_recv(nx_transport_t *t, uint8_t *buf, size_t buf_len,
         
 #ifdef __linux__
         if (state->sock_fd >= 0) {
-            received = 0;
-            (void)received;
-        } else {
-            received = 0;
+            received = recvfrom(state->sock_fd, buf, buf_len, MSG_DONTWAIT,
+                                NULL, NULL);
+            if (received > 0) {
+                *out_len = (size_t)received;
+                state->rx_packets++;
+                state->rx_bytes += *out_len;
+                return NX_OK;
+            }
         }
-#else
-        received = 0;
 #endif
+        received = 0;
         
         now = nx_platform_time_ms();
         if (timeout_ms > 0 && (now - start_time) >= timeout_ms) {

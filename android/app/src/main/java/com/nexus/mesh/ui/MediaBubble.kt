@@ -1,12 +1,16 @@
 package com.nexus.mesh.ui
 
 import android.graphics.BitmapFactory
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -16,6 +20,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import com.nexus.mesh.data.MessageEntity
 import com.nexus.mesh.data.MessageType
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun MediaBubble(
@@ -40,7 +49,6 @@ fun MediaBubble(
         Column(modifier = Modifier.padding(8.dp)) {
             when (msg.messageType) {
                 MessageType.IMAGE -> {
-                    // Try to load image from mediaPath
                     val bitmap = remember(msg.mediaPath) {
                         msg.mediaPath?.let {
                             try { BitmapFactory.decodeFile(it) } catch (e: Exception) { null }
@@ -86,24 +94,101 @@ fun MediaBubble(
                     }
                 }
                 MessageType.VOICE_NOTE -> {
+                    var isPlaying by remember { mutableStateOf(false) }
+                    var progress by remember { mutableFloatStateOf(0f) }
+                    val scope = rememberCoroutineScope()
+                    val trackRef = remember { mutableStateOf<AudioTrack?>(null) }
+
+                    DisposableEffect(msg.id) {
+                        onDispose {
+                            trackRef.value?.let { t -> t.stop(); t.release() }
+                            trackRef.value = null
+                        }
+                    }
+
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        IconButton(onClick = { /* TODO: playback */ }) {
-                            Icon(Icons.Default.PlayArrow, "Play", tint = textColor)
+                        IconButton(onClick = {
+                            if (isPlaying) {
+                                trackRef.value?.let { t -> t.stop(); t.release() }
+                                trackRef.value = null
+                                isPlaying = false
+                                progress = 0f
+                            } else {
+                                val path = msg.mediaPath ?: return@IconButton
+                                scope.launch(Dispatchers.IO) {
+                                    val pcm = try {
+                                        File(path).readBytes()
+                                    } catch (e: Exception) {
+                                        return@launch
+                                    }
+                                    val sampleRate = 8000
+                                    val minBuf = AudioTrack.getMinBufferSize(
+                                        sampleRate,
+                                        AudioFormat.CHANNEL_OUT_MONO,
+                                        AudioFormat.ENCODING_PCM_16BIT
+                                    )
+                                    val track = AudioTrack(
+                                        AudioManager.STREAM_MUSIC,
+                                        sampleRate,
+                                        AudioFormat.CHANNEL_OUT_MONO,
+                                        AudioFormat.ENCODING_PCM_16BIT,
+                                        maxOf(minBuf, pcm.size),
+                                        AudioTrack.MODE_STATIC
+                                    )
+                                    track.write(pcm, 0, pcm.size)
+                                    trackRef.value = track
+                                    withContext(Dispatchers.Main) { isPlaying = true }
+                                    track.play()
+                                    // PCM_8K: 16-bit signed mono 8 kHz = 2 bytes per sample
+                                    val totalMs = (pcm.size.toLong() * 1000L) / (sampleRate * 2)
+                                    val startMs = System.currentTimeMillis()
+                                    while (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                                        val elapsed = System.currentTimeMillis() - startMs
+                                        withContext(Dispatchers.Main) {
+                                            progress = (elapsed.toFloat() / totalMs).coerceIn(0f, 1f)
+                                        }
+                                        delay(50)
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        isPlaying = false
+                                        progress = 0f
+                                    }
+                                    trackRef.value = null
+                                    track.release()
+                                }
+                            }
+                        }) {
+                            Icon(
+                                if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                                if (isPlaying) "Stop" else "Play",
+                                tint = textColor
+                            )
                         }
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 "Voice Note",
                                 color = textColor,
                                 style = MaterialTheme.typography.bodyMedium
                             )
-                            Text(
-                                "${msg.duration}s",
-                                color = textColor.copy(alpha = 0.7f),
-                                style = MaterialTheme.typography.labelSmall
-                            )
+                            if (isPlaying) {
+                                LinearProgressIndicator(
+                                    progress = { progress },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp),
+                                    color = textColor,
+                                    trackColor = textColor.copy(alpha = 0.3f)
+                                )
+                            } else {
+                                Text(
+                                    "${msg.duration}s",
+                                    color = textColor.copy(alpha = 0.7f),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
                         }
                     }
                 }
